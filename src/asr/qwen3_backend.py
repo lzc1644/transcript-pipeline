@@ -35,7 +35,13 @@ class QwenBackend:
         original_generate = self.model.model.generate
 
         def checked_generate(*args: Any, **kwargs: Any) -> Any:
-            output = original_generate(*args, **kwargs)
+            # The pinned SDK projects every prefill position onto its large
+            # vocabulary, but autoregressive generation only uses the last one.
+            # Scope the hook to ASR generation; alignment/full forward is unchanged.
+            with self.model.model.thinker.lm_head.register_forward_pre_hook(
+                lambda _module, inputs: (inputs[0][:, -1:, :],)
+            ):
+                output = original_generate(*args, **kwargs)
             sequences = output.sequences
             eos = self.model.model.generation_config.eos_token_id
             eos_ids = eos if isinstance(eos, list) else [eos]
@@ -100,7 +106,7 @@ class QwenBackend:
             "timestamp_granularity": "text_segment_from_character_or_word_alignment",
             "resolved_parameters": {"dtype": str(self.dtype), "batch_size": 1,
                                     "max_new_tokens": self.limit, "context_terms": terms,
-                                    "attn_implementation": "sdpa"},
+                                    "attn_implementation": "sdpa", "generation_logits": "last_token"},
             "chunking": {"strategy": "bounded Silero VAD PCM slices + official SDK", "max_seconds": self.chunk_seconds,
                          "sdk_target_seconds": self.chunk_limit, "overlap": 0,
                          "short_tail_threshold_seconds": min_tail / sample_rate,

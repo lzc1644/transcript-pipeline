@@ -151,7 +151,14 @@ bash scripts/install_wsl2_env.sh
 
 ## Docker 部署
 
-本项目提供单服务 `trans` 的 FastAPI + Vue Docker 部署（宿主默认端口 8080）。WSL2 Debian/Ubuntu 原生 Docker 可先执行 `bash scripts/deploy_docker_wsl2.sh --check` 只读预检，再由管理员确认风险后执行 `bash scripts/deploy_docker_wsl2.sh` 安装缺失依赖并后台部署。旧 `app` 容器须在任务结束后人工停止和移除；脚本不会擅自中断它。其他操作、GPU 验收、WSL 网络、持久化和密钥边界见 [`docs/DOCKER.md`](docs/DOCKER.md)。
+本项目提供单服务 `trans` 的 FastAPI + Vue Docker 部署（宿主默认端口 8080），两个入口共用现有 Dockerfile / Compose：
+
+| 宿主平台 | 只读预检 | 部署与验收文档 |
+| --- | --- | --- |
+| 原生 Ubuntu 22.04/24.04/26.04 + NVIDIA，x86_64/systemd、本机 rootful Engine | `bash scripts/deploy_docker_linux.sh --check` | [`docs/DOCKER_LINUX.md`](docs/DOCKER_LINUX.md) |
+| WSL2 Debian/Ubuntu + NVIDIA，WSL 内原生 Engine | `bash scripts/deploy_docker_wsl2.sh --check` | [`docs/DOCKER.md`](docs/DOCKER.md) |
+
+预检后，由管理员确认风险再运行对应脚本（不带 `--check`），输入 `DEPLOY` 才安装缺失依赖并后台部署。Ubuntu 入口不经过 WSL2 / Docker Desktop，不提供完全不用 Docker 的安装方案；`--check` 退出码 `2` 表示信息不足，不是通过。首次建议 `DOCKER_BIND_IP=127.0.0.1`，默认无认证/HTTPS，不应暴露公网。旧 `app` 须在任务结束后人工停止/移除；已有 `trans` 更新可能中断内存任务，healthy 不代表空闲。现有 GPU profile 的历史 WSL2 名称可用于 Ubuntu，但须检查 Web 保存设置；构建成功不等于 Whisper/Qwen GPU 推理验收通过。
 
 ## Codex API 模式
 

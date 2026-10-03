@@ -177,6 +177,80 @@ def test_alignment_preserves_punctuation_and_real_offsets():
     ]
 
 
+@pytest.mark.parametrize("candidate", ["qwen3-asr-1.7b", "qwen3-asr-0.6b"])
+@pytest.mark.parametrize("outcome", ["success", "generate_error", "token_limit", "eos_at_limit"])
+def test_qwen_generation_projects_only_last_token_and_restores_head(monkeypatch, tmp_path, candidate, outcome):
+    import numpy as np
+    from src.asr.qwen3_backend import QwenBackend
+
+    class Head:
+        def __init__(self):
+            self.hooks = []
+            self.seen_shapes = []
+            self.weight = np.arange(12, dtype=np.float32).reshape(3, 4)
+
+        def register_forward_pre_hook(self, hook):
+            self.hooks.append(hook)
+            owner = self
+
+            class Handle:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    owner.hooks.remove(hook)
+
+            return Handle()
+
+        def __call__(self, hidden):
+            for hook in self.hooks:
+                hidden, = hook(self, (hidden,))
+            self.seen_shapes.append(hidden.shape)
+            return hidden @ self.weight
+
+    head, aligner_head = Head(), Head()
+    hidden = np.arange(2 * 4096 * 3, dtype=np.float32).reshape(2, 4096, 3)
+    seen = []
+
+    def generate(**kwargs):
+        seen.append(kwargs)
+        logits = head(hidden)
+        assert logits.shape == (2, 1, 4)
+        np.testing.assert_allclose(logits[:, -1, :], (hidden @ head.weight)[:, -1, :])
+        # The separate aligner must continue projecting every position.
+        assert aligner_head(hidden).shape == (2, 4096, 4)
+        if outcome == "generate_error":
+            raise RuntimeError("simulated generation failure")
+        final_token = 9 if outcome == "token_limit" else 2
+        extra = 2 if outcome in ("token_limit", "eos_at_limit") else 1
+        return SimpleNamespace(sequences=np.full((2, kwargs["input_ids"].shape[1] + extra), final_token))
+
+    model = SimpleNamespace(
+        model=SimpleNamespace(generate=generate, generation_config=SimpleNamespace(eos_token_id=[2]),
+                              thinker=SimpleNamespace(lm_head=head)),
+        _infer_asr=lambda *args: [],
+    )
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        float16="float16", float32="float32", cuda=SimpleNamespace(is_available=lambda: True)))
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(snapshot_download=lambda *a, **kw: str(tmp_path)))
+    monkeypatch.setitem(sys.modules, "qwen_asr", SimpleNamespace(
+        Qwen3ASRModel=SimpleNamespace(from_pretrained=lambda *a, **kw: model)))
+    monkeypatch.setitem(sys.modules, "qwen_asr.inference.utils", SimpleNamespace(MAX_FORCE_ALIGN_INPUT_SECONDS=180))
+    backend = QwenBackend(get_candidate(candidate), "cuda", tmp_path, {"max_new_tokens": 2})
+    kwargs = {"input_ids": np.ones((2, 4096), dtype=np.int64), "max_new_tokens": 2}
+    if outcome in ("generate_error", "token_limit"):
+        match = "simulated generation failure" if outcome == "generate_error" else "拒绝发布截断转录"
+        with pytest.raises(RuntimeError, match=match):
+            backend.model.model.generate(**kwargs)
+    else:
+        backend.model.model.generate(**kwargs)
+    assert seen == [kwargs]
+    assert head.seen_shapes == [(2, 1, 3)]
+    assert head.hooks == [] and aligner_head.hooks == []
+    # Full forwards outside generation retain the SDK's original shape.
+    assert head(hidden).shape == (2, 4096, 4)
+
+
 def test_qwen_adapter_records_real_vad_offsets_and_has_no_whisper_parameters():
     import numpy as np
     from src.asr.qwen3_backend import QwenBackend

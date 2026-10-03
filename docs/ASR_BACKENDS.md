@@ -28,6 +28,7 @@ Web 不接受用户自选仓库、revision 或任意 worker Python。
 - 不同候选必须新建任务或使用独立阶段文件工作区；同一工作区切换候选会报错。
 - profile 仍决定 device；Whisper model/compute type/beam 不传给新后端。
 - 新候选首版只验收 `language=zh`，其他语言配置会明确拒绝。
+- Qwen 生成时仅对最后一个位置计算词表 logits，避免固定 SDK 对长音频/术语上下文的全部输入位置分配无用的大张量。优化只作用于 ASR generation，ForcedAligner 和其他完整 forward 不变；不减少术语、不改变分块/精度、不自动换模型或 CPU。8 GB GPU 仍需为桌面和其他进程预留显存，不能据一次短片段通过保证所有输入可用。真实 OOM 对照记录见 [`2027-o-ff-qwen-generation-vram.md`](../codestable/issues/2027-o-ff-qwen-generation-vram.md)。
 
 ## 安装：基础环境不变，可选 worker 隔离
 
@@ -99,7 +100,7 @@ API 请求字段为 `asr_candidate`。Web 设置页保存默认候选；单任�
 
 ## Docker 可选镜像
 
-直接运行 `docker build` 默认仍只安装基础 Whisper；`docker compose build trans` 和 `scripts/deploy_docker_wsl2.sh` 默认安装 Whisper + Qwen（`ASR_BACKENDS=qwen`），不改变默认转录模型。Compose 可通过环境变量选择，例如 `ASR_BACKENDS=whisper docker compose build trans`；部署脚本同样支持此环境变量，包含 sudo 路径。已有容器须在任务结束后重新构建并用 `docker compose up -d --no-build trans` 更新，仅重启不会补装依赖。
+直接运行 `docker build` 默认仍只安装基础 Whisper；`docker compose build trans`、`scripts/deploy_docker_wsl2.sh` 和原生 Ubuntu 入口 `scripts/deploy_docker_linux.sh` 默认安装 Whisper + Qwen（`ASR_BACKENDS=qwen`），两种部署入口共用同一 Dockerfile/Compose，不改变默认转录模型。Ubuntu 支持范围、sudo 配置传递和隔离 GPU 验收见 [DOCKER_LINUX.md](DOCKER_LINUX.md)；沿用历史 `wsl2_gpu_high_accuracy` profile，不新增 Linux 专属 profile。Compose 可通过环境变量选择，例如 `ASR_BACKENDS=whisper docker compose build trans`；部署脚本同样支持此环境变量，包含 sudo 路径。已有容器须在任务结束后重新构建并用 `docker compose up -d --no-build trans` 更新，仅重启不会补装依赖。
 
 直接构建可选环境：
 

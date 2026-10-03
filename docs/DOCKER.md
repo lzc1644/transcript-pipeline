@@ -1,4 +1,15 @@
-# WSL2 原生 Docker 单容器部署
+# Docker 单容器部署
+
+## 选择宿主平台
+
+| 平台 | 部署入口 | 详细文档 |
+| --- | --- | --- |
+| 原生 Ubuntu + NVIDIA（不经过 WSL2 / Desktop） | `bash scripts/deploy_docker_linux.sh --check`，确认后运行同一脚本部署 | [DOCKER_LINUX.md](DOCKER_LINUX.md)：Ubuntu 支持范围、权限/提权边界、迁移和分层验收 |
+| WSL2 Debian/Ubuntu + NVIDIA，WSL 内原生 Engine | `bash scripts/deploy_docker_wsl2.sh --check`，确认后运行同一脚本部署 | 本页后续内容 |
+
+两者共用现有 Dockerfile、Compose、`trans` 服务与数据/模型缓存结构，不使用 Docker Desktop。Ubuntu 入口不代表完全不用 Docker 的 Linux 安装方案。以下驱动与网络说明仍针对 **WSL2**，不要在 Ubuntu 套用 Windows portproxy / Hyper-V 配置。
+
+## WSL2 原生 Docker 部署
 
 一个 Compose 服务 `trans`：Node 22 多阶段构建 Vue，Python 3.12 slim 非 root 运行一个 Uvicorn worker；FastAPI 在容器 `8000` 同时提供 `/api/*`、Vue 页面和静态资源。不使用 Docker Desktop、Nginx、数据库或本机 codex-lb 容器；原来的 `./start_web.sh` / Vite 开发方式不变。**仅适用于可信局域网，默认无认证、无 HTTPS，不要映射公网。**
 

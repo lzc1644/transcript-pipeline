@@ -1,6 +1,12 @@
-# 新电脑 WSL2 安装脚本
+# 新电脑安装入口
 
-本文件只说明 WSL2 Linux 内部的项目环境安装。
+- **原生 Ubuntu + NVIDIA Docker：** 先运行 `bash scripts/deploy_docker_linux.sh --check`，按 [DOCKER_LINUX.md](DOCKER_LINUX.md) 核对信息不足/阻塞项，再批准安装及部署。Docker Engine 直接运行在 Ubuntu 上，不使用 WSL2 / Docker Desktop，本轮不提供无 Docker 的 Ubuntu 安装方案。
+- **WSL2 Docker：** 见 [DOCKER.md](DOCKER.md)，保留原 `deploy_docker_wsl2.sh` 入口。
+- **WSL2 本地开发环境：** 以下内容及 `install_wsl2_env.sh` 仅适用于 WSL2，勿直接用于原生 Ubuntu。
+
+## WSL2 项目环境安装
+
+以下只说明 WSL2 Linux 内部的项目环境安装。
 
 Windows 宿主机侧的 WSL2、显卡驱动、系统功能启用暂不由本项目脚本处理。进入本步骤前，请先确保已经能打开 WSL2 发行版。
 
