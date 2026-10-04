@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from src.asr.registry import ALIGNER_MODEL, ALIGNER_REVISION, Candidate
-from src.asr.segmentation import ZeroDurationAlignmentError, aligned_segments, bounded_speech_intervals
+from src.asr.segmentation import ZeroDurationAlignmentError, aligned_segments, bounded_speech_intervals, lexical_text
 
 
 class QwenGenerationLimitError(RuntimeError):
@@ -86,9 +86,10 @@ class QwenBackend:
                                        context=context, return_time_stamps=True)[0]
         if not result.text.strip():
             raise ValueError("VAD 语音分块返回空文字，拒绝静默遗漏该分块")
-        if not result.time_stamps:
-            raise ValueError("Qwen 返回文字但 ForcedAligner 未返回时间戳")
-        units = [(v.text, v.start_time, v.end_time) for v in result.time_stamps.items]
+        if not lexical_text(result.text):
+            raise ValueError("VAD 语音分块只有标点而无可用文字，拒绝静默遗漏该分块")
+        units = ([(v.text, v.start_time, v.end_time) for v in result.time_stamps.items]
+                 if result.time_stamps else [])
         return result, units
 
     def transcribe(self, audio: Any, sample_rate: int, duration: float, terms: list[str],
@@ -101,6 +102,7 @@ class QwenBackend:
         zero_units = 0
         sdk_intervals = []
         recoveries = []
+        timestamp_fallbacks = []
         for begin, finish in intervals:
             offset = begin / sample_rate
             chunk = audio[begin:finish]
@@ -119,25 +121,48 @@ class QwenBackend:
                         "%s 分块 [%s, %s] %s；同模型重试一次：不使用术语上下文，保留中文识别",
                         self.candidate.id, offset, finish / sample_rate, first_error)
                     result, local_units = self._transcribe_chunk(chunk, sample_rate, context="")
+                alignment_error = None
                 try:
-                    # Validate against this actual PCM slice before applying offsets.
+                    # Validate fine alignment without ever publishing invalid units.
+                    if not local_units:
+                        raise ValueError("Qwen 返回文字但 ForcedAligner 未返回时间戳")
                     current = aligned_segments(result.text, local_units, len(chunk) / sample_rate)
-                except ZeroDurationAlignmentError as first_error:
-                    # Chinese tokenization collapses all-kana Japanese into one
-                    # unit. Re-align the SAME text, without another ASR attempt.
-                    # No chained recovery after an already retried generation.
-                    if (self.candidate.id != "qwen3-asr-0.6b" or recovery is not None
-                            or not _uses_japanese_script(result.text)):
-                        raise
-                    recovery = {"reason": "zero_duration_alignment", "first_error": str(first_error),
-                                "retry": {"stage": "alignment", "language": "Japanese", "text_changed": False}}
+                except ValueError as first_error:
+                    alignment_error = first_error
+                    # Keep the proven narrow re-alignment before coarse fallback.
+                    # No additional inference after a generation retry. SDK/OOM
+                    # exceptions are outside validation catches and remain fatal.
+                    if (isinstance(first_error, ZeroDurationAlignmentError)
+                            and self.candidate.id == "qwen3-asr-0.6b" and recovery is None
+                            and _uses_japanese_script(result.text)):
+                        recovery = {"reason": "zero_duration_alignment", "first_error": str(first_error),
+                                    "retry": {"stage": "alignment", "language": "Japanese", "text_changed": False}}
+                        logging.getLogger(__name__).warning(
+                            "%s 分块 [%s, %s] %s；含假名日文按 Japanese 重新对齐一次，保留原识别文字",
+                            self.candidate.id, offset, finish / sample_rate, first_error)
+                        alignment = self.model.forced_aligner.align(
+                            audio=(chunk, sample_rate), text=result.text, language="Japanese")[0]
+                        local_units = [(v.text, v.start_time, v.end_time) for v in alignment.items]
+                        try:
+                            current = aligned_segments(result.text, local_units, len(chunk) / sample_rate)
+                        except ValueError as exc:
+                            alignment_error = exc
+                        else:
+                            alignment_error = None
+                if alignment_error is not None:
+                    # One whole real PCM slice, NOT guessed word/sentence timing.
+                    current = [{"id": 1, "start": 0.0, "end": len(chunk) / sample_rate,
+                                "text": result.text.strip()}]
+                    timestamp_fallbacks.append({
+                        "interval": [offset, finish / sample_rate], "segment_ids": [len(segments) + 1],
+                        "reason": "invalid_fine_alignment", "alignment_error": str(alignment_error),
+                        "timestamp_source": "silero_vad_pcm_slice", "timestamp_granularity": "vad_audio_chunk",
+                        "text_changed": False, "requires_review": True,
+                    })
+                    local_units = []  # Discard invalid alignment; do not count it as usable.
                     logging.getLogger(__name__).warning(
-                        "%s 分块 [%s, %s] %s；含假名日文按 Japanese 重新对齐一次，保留原识别文字",
-                        self.candidate.id, offset, finish / sample_rate, first_error)
-                    alignment = self.model.forced_aligner.align(
-                        audio=(chunk, sample_rate), text=result.text, language="Japanese")[0]
-                    local_units = [(v.text, v.start_time, v.end_time) for v in alignment.items]
-                    current = aligned_segments(result.text, local_units, len(chunk) / sample_rate)
+                        "%s 分块 [%s, %s] %s；保留原文字，降级为真实 PCM 分块粗粒度时间戳，需人工复核",
+                        self.candidate.id, offset, finish / sample_rate, alignment_error)
                 if recovery is not None:
                     recoveries.append({"interval": [offset, finish / sample_rate], "retry_count": 1,
                                        "first_attempt": {"language": "Chinese", "context_terms_count": len(terms)},
@@ -156,17 +181,25 @@ class QwenBackend:
             warnings.append("Qwen 0.6B 部分分块解码触顶后经同模型无术语重试恢复；"
                             "仍按中文识别，恢复块的专名需人工复核，详见 chunk_recoveries")
         if any(r["retry"]["stage"] == "alignment" for r in recoveries):
-            warnings.append("Qwen 0.6B 含假名日文的零时长分块已按 Japanese 重新对齐，未改识别文字；"
-                            "外语文字及时间戳需人工复核，详见 chunk_recoveries")
+            warnings.append("Qwen 0.6B 含假名日文的零时长分块已尝试按 Japanese 重新对齐，未改识别文字；"
+                            "外语文字及时间戳需人工复核，详见 chunk_recoveries 和 chunk_timestamp_fallbacks")
+        if timestamp_fallbacks:
+            warnings.append("Qwen 部分分块细粒度对齐无效，已保留原识别文字并使用真实 PCM 分块粗粒度时间戳；"
+                            "不是字/词/句边界，需后续 AI 校对与人工复核，详见 chunk_timestamp_fallbacks")
         if zero_units:
             warnings.append("ForcedAligner 存在零时长字/词，已按实际边界聚合文本段；细粒度对齐需人工关注")
         if any(r["end"] - r["start"] > step for r in speech_regions):
             warnings.append("长 VAD 语音区间按真实 PCM 上限切分；分块边界可能截断词语，需人工复核")
+        all_coarse = bool(timestamp_fallbacks) and len(timestamp_fallbacks) == len(intervals)
         return segments, {
-            "timestamp_source": ALIGNER_MODEL, "aligner_revision": ALIGNER_REVISION,
+            "timestamp_source": ("silero_vad_pcm_slice" if all_coarse else
+                                 "mixed_forced_alignment_and_vad_pcm_slice" if timestamp_fallbacks else ALIGNER_MODEL),
+            "aligner_revision": ALIGNER_REVISION,
             "zero_duration_alignment_units": zero_units, "warnings": warnings,
-            "chunk_recoveries": recoveries,
-            "timestamp_granularity": "text_segment_from_character_or_word_alignment",
+            "chunk_recoveries": recoveries, "chunk_timestamp_fallbacks": timestamp_fallbacks,
+            "timestamp_granularity": ("vad_audio_chunk" if all_coarse else
+                                      "mixed_alignment_and_vad_audio_chunk" if timestamp_fallbacks else
+                                      "text_segment_from_character_or_word_alignment"),
             "resolved_parameters": {"dtype": str(self.dtype), "batch_size": 1,
                                     "max_new_tokens": self.limit, "context_terms": terms,
                                     "attn_implementation": "sdpa", "generation_logits": "last_token"},

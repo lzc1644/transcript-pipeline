@@ -274,8 +274,10 @@ def test_qwen_adapter_records_real_vad_offsets_and_has_no_whisper_parameters():
     with pytest.raises(RuntimeError, match="拒绝静默遗漏"):
         backend.transcribe(np.zeros(60), 10, 6, [], [{"start": 10, "end": 60}])
     backend.model.transcribe = lambda **kw: [SimpleNamespace(text="字", time_stamps=None)]
-    with pytest.raises(RuntimeError, match="ForcedAligner 未返回时间戳"):
-        backend.transcribe(np.zeros(60), 10, 6, [], [{"start": 10, "end": 60}])
+    coarse_segments, coarse_details = backend.transcribe(np.zeros(60), 10, 6, [], [{"start": 10, "end": 60}])
+    assert [(s["start"], s["end"], s["text"]) for s in coarse_segments] == [(1, 3, "字"), (3, 5, "字"), (5, 6, "字")]
+    assert coarse_details["timestamp_granularity"] == "vad_audio_chunk"
+    assert len(coarse_details["chunk_timestamp_fallbacks"]) == 3
 
 
 @pytest.mark.parametrize("failure", ["token_limit", "zero_alignment"])
@@ -340,7 +342,7 @@ def test_qwen06_recovery_is_bounded_local_and_observable(failure, caplog):
     assert next_details["chunk_recoveries"] == []
 
 
-@pytest.mark.parametrize("retry_failure", ["token_limit", "zero_alignment", "oom", "mismatch"])
+@pytest.mark.parametrize("retry_failure", ["token_limit", "oom"])
 def test_qwen06_failed_context_retry_preserves_both_errors_and_stops(retry_failure):
     import numpy as np
     from src.asr.qwen3_backend import QwenBackend, QwenGenerationLimitError
@@ -358,9 +360,7 @@ def test_qwen06_failed_context_retry_preserves_both_errors_and_stops(retry_failu
             raise QwenGenerationLimitError("retry token limit")
         if retry_failure == "oom":
             raise RuntimeError("CUDA out of memory")
-        text = "こんにちは" if retry_failure == "zero_alignment" else "字"
-        return [SimpleNamespace(text=text, language="Chinese", time_stamps=SimpleNamespace(items=[
-            SimpleNamespace(text="错" if retry_failure == "mismatch" else text, start_time=0, end_time=0)]))]
+        raise AssertionError("unexpected retry scenario")
 
     backend.model = SimpleNamespace(transcribe=recognize)
     with pytest.raises(RuntimeError, match="首试失败: original token limit；一次恢复仍失败"):
@@ -368,7 +368,7 @@ def test_qwen06_failed_context_retry_preserves_both_errors_and_stops(retry_failu
     assert len(calls) == 2  # no third attempt and no next chunk
 
 
-@pytest.mark.parametrize("failure", ["oom", "generic", "empty", "no_timestamps", "mismatch", "out_of_bounds", "chinese_zero"])
+@pytest.mark.parametrize("failure", ["oom", "generic", "sdk_value_error", "empty", "punctuation"])
 def test_qwen06_does_not_retry_unrelated_failures(failure):
     import numpy as np
     from src.asr.qwen3_backend import QwenBackend
@@ -382,10 +382,9 @@ def test_qwen06_does_not_retry_unrelated_failures(failure):
         calls.append(kwargs)
         if failure in ("oom", "generic"):
             raise RuntimeError("CUDA out of memory" if failure == "oom" else "SDK failure")
-        return [SimpleNamespace(text="" if failure == "empty" else "字", language="Chinese",
-                                time_stamps=None if failure == "no_timestamps" else SimpleNamespace(items=[
-                                    SimpleNamespace(text="错" if failure == "mismatch" else "字", start_time=0,
-                                                    end_time=10 if failure == "out_of_bounds" else (0 if failure == "chinese_zero" else 1))]))]
+        if failure == "sdk_value_error":
+            raise ValueError("SDK invalid input")
+        return [SimpleNamespace(text="" if failure == "empty" else "。！？", time_stamps=None)]
 
     backend.model = SimpleNamespace(transcribe=recognize)
     with pytest.raises(RuntimeError, match="分块"):
@@ -393,8 +392,7 @@ def test_qwen06_does_not_retry_unrelated_failures(failure):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("failure", ["token_limit", "zero_alignment"])
-def test_qwen17_does_not_use_qwen06_recovery(failure):
+def test_qwen17_does_not_retry_generation_limit():
     import numpy as np
     from src.asr.qwen3_backend import QwenBackend, QwenGenerationLimitError
 
@@ -405,10 +403,7 @@ def test_qwen17_does_not_use_qwen06_recovery(failure):
 
     def recognize(**kwargs):
         calls.append(kwargs)
-        if failure == "token_limit":
-            raise QwenGenerationLimitError("token limit")
-        return [SimpleNamespace(text="字", time_stamps=SimpleNamespace(items=[
-            SimpleNamespace(text="字", start_time=0, end_time=0)]))]
+        raise QwenGenerationLimitError("token limit")
 
     backend.model = SimpleNamespace(transcribe=recognize)
     with pytest.raises(RuntimeError):
@@ -424,8 +419,8 @@ def test_qwen_japanese_tokenizer_routing_is_conservative(text, expected):
     assert _uses_japanese_script(text) is expected
 
 
-@pytest.mark.parametrize("second_error", ["zero", "mismatch", "bounds", "oom"])
-def test_qwen06_realign_failure_is_not_swallowed_or_retried(second_error):
+@pytest.mark.parametrize("second_error", ["oom", "sdk_value_error"])
+def test_qwen06_realign_sdk_failure_is_not_swallowed_or_retried(second_error):
     import numpy as np
     from src.asr.qwen3_backend import QwenBackend
 
@@ -444,8 +439,7 @@ def test_qwen06_realign_failure_is_not_swallowed_or_retried(second_error):
         calls.append("alignment")
         if second_error == "oom":
             raise RuntimeError("CUDA out of memory")
-        return [SimpleNamespace(items=[SimpleNamespace(text="さようなら" if second_error == "mismatch" else text,
-                                                      start_time=0, end_time=10 if second_error == "bounds" else 0)])]
+        raise ValueError("SDK invalid input")
 
     backend.model = SimpleNamespace(transcribe=recognize, forced_aligner=SimpleNamespace(align=align))
     with pytest.raises(RuntimeError, match="一次恢复仍失败"):
