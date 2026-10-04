@@ -274,8 +274,195 @@ def test_qwen_adapter_records_real_vad_offsets_and_has_no_whisper_parameters():
     with pytest.raises(RuntimeError, match="拒绝静默遗漏"):
         backend.transcribe(np.zeros(60), 10, 6, [], [{"start": 10, "end": 60}])
     backend.model.transcribe = lambda **kw: [SimpleNamespace(text="字", time_stamps=None)]
-    with pytest.raises(RuntimeError, match="ForcedAligner 未返回时间戳"):
-        backend.transcribe(np.zeros(60), 10, 6, [], [{"start": 10, "end": 60}])
+    coarse_segments, coarse_details = backend.transcribe(np.zeros(60), 10, 6, [], [{"start": 10, "end": 60}])
+    assert [(s["start"], s["end"], s["text"]) for s in coarse_segments] == [(1, 3, "字"), (3, 5, "字"), (5, 6, "字")]
+    assert coarse_details["timestamp_granularity"] == "vad_audio_chunk"
+    assert len(coarse_details["chunk_timestamp_fallbacks"]) == 3
+
+
+@pytest.mark.parametrize("failure", ["token_limit", "zero_alignment"])
+def test_qwen06_recovery_is_bounded_local_and_observable(failure, caplog):
+    import numpy as np
+    from src.asr.qwen3_backend import QwenBackend, QwenGenerationLimitError
+
+    backend = QwenBackend.__new__(QwenBackend)
+    backend.candidate = get_candidate("qwen3-asr-0.6b")
+    backend.chunk_seconds, backend.chunk_limit, backend.limit, backend.dtype = 2, 180, 2048, "float16"
+    calls, alignment_calls = [], []
+
+    def recognize(audio, **kwargs):
+        waveform, rate = audio
+        calls.append((waveform.copy(), kwargs))
+        backend.chunk_intervals = [[0, len(waveform) / rate]]
+        if len(calls) == 1 and failure == "token_limit":
+            raise QwenGenerationLimitError("budget exhausted")
+        text = "こんにちは。" if len(calls) == 1 else "字。"
+        return [SimpleNamespace(text=text, language="Chinese", time_stamps=SimpleNamespace(items=[
+            SimpleNamespace(text=text[:-1], start_time=0,
+                            end_time=0 if len(calls) == 1 else len(waveform) / rate)]))]
+
+    def align(audio, text, language):
+        alignment_calls.append((audio, text, language))
+        return [SimpleNamespace(items=[SimpleNamespace(text=text[:-1], start_time=0, end_time=2)])]
+
+    backend.model = SimpleNamespace(transcribe=recognize, forced_aligner=SimpleNamespace(align=align))
+    audio = np.arange(60)
+    regions = [{"start": 10, "end": 50}]
+    terms = ["术语", "词表"]
+    segments, details = backend.transcribe(audio, 10, 6, terms, regions)
+    np.testing.assert_array_equal(calls[0][0], audio[10:30])
+    np.testing.assert_array_equal(calls[-1][0], audio[30:50])
+    assert calls[0][1] == calls[-1][1] == {
+        "language": "Chinese", "context": "术语、词表", "return_time_stamps": True}
+    recovery, = details["chunk_recoveries"]
+    if failure == "token_limit":
+        assert len(calls) == 3 and alignment_calls == []
+        np.testing.assert_array_equal(calls[1][0], calls[0][0])
+        assert calls[1][1] == {"language": "Chinese", "context": "", "return_time_stamps": True}
+        assert recovery["retry"] == {"stage": "asr", "language": "Chinese", "context_terms_count": 0}
+        assert "同模型重试一次" in caplog.text
+    else:
+        assert len(calls) == 2 and len(alignment_calls) == 1
+        aligned_audio, aligned_text, aligned_language = alignment_calls[0]
+        np.testing.assert_array_equal(aligned_audio[0], calls[0][0])
+        assert aligned_audio[1] == 10 and aligned_text == "こんにちは。" and aligned_language == "Japanese"
+        assert recovery["retry"] == {"stage": "alignment", "language": "Japanese", "text_changed": False}
+        assert "重新对齐一次" in caplog.text
+    assert terms == ["术语", "词表"]
+    assert [(s["id"], s["start"], s["end"], s["text"]) for s in segments] == [
+        (1, 1, 3, "字。" if failure == "token_limit" else "こんにちは。"), (2, 3, 5, "字。")]
+    assert recovery["interval"] == [1, 3] and recovery["retry_count"] == 1
+    assert recovery["reason"] == ("generation_token_limit" if failure == "token_limit" else "zero_duration_alignment")
+    assert recovery["first_attempt"] == {"language": "Chinese", "context_terms_count": 2}
+    assert details["resolved_parameters"]["context_terms"] == terms
+    assert details["chunking"]["inference_intervals_including_tail_padding"] == [[1, 3], [3, 5]]
+    assert any("人工复核" in warning for warning in details["warnings"])
+    # Recovery state belongs to this call, not a subsequent file in the worker.
+    _, next_details = backend.transcribe(audio, 10, 6, terms, regions)
+    assert next_details["chunk_recoveries"] == []
+
+
+@pytest.mark.parametrize("retry_failure", ["token_limit", "oom"])
+def test_qwen06_failed_context_retry_on_short_chunk_preserves_both_errors_and_stops(retry_failure):
+    import numpy as np
+    from src.asr.qwen3_backend import QwenBackend, QwenGenerationLimitError
+
+    backend = QwenBackend.__new__(QwenBackend)
+    backend.candidate = get_candidate("qwen3-asr-0.6b")
+    backend.chunk_seconds, backend.chunk_limit, backend.limit, backend.dtype = 2, 180, 2048, "float16"
+    calls = []
+
+    def recognize(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise QwenGenerationLimitError("original token limit")
+        if retry_failure == "token_limit":
+            raise QwenGenerationLimitError("retry token limit")
+        if retry_failure == "oom":
+            raise RuntimeError("CUDA out of memory")
+        raise AssertionError("unexpected retry scenario")
+
+    backend.model = SimpleNamespace(transcribe=recognize)
+    backend.chunk_seconds = 1  # a split would create sub-second fragments
+    with pytest.raises(RuntimeError, match="首试失败: original token limit；一次恢复仍失败"):
+        backend.transcribe(np.zeros(40), 10, 4, ["术语"], [{"start": 0, "end": 40}])
+    assert len(calls) == 2  # no split and no next chunk
+
+
+@pytest.mark.parametrize("failure", ["oom", "generic", "sdk_value_error", "empty", "punctuation"])
+def test_qwen06_does_not_retry_unrelated_failures(failure):
+    import numpy as np
+    from src.asr.qwen3_backend import QwenBackend
+
+    backend = QwenBackend.__new__(QwenBackend)
+    backend.candidate = get_candidate("qwen3-asr-0.6b")
+    backend.chunk_seconds, backend.chunk_limit, backend.limit, backend.dtype = 2, 180, 2048, "float16"
+    calls = []
+
+    def recognize(**kwargs):
+        calls.append(kwargs)
+        if failure in ("oom", "generic"):
+            raise RuntimeError("CUDA out of memory" if failure == "oom" else "SDK failure")
+        if failure == "sdk_value_error":
+            raise ValueError("SDK invalid input")
+        return [SimpleNamespace(text="" if failure == "empty" else "。！？", time_stamps=None)]
+
+    backend.model = SimpleNamespace(transcribe=recognize)
+    with pytest.raises(RuntimeError, match="分块"):
+        backend.transcribe(np.zeros(20), 10, 2, ["术语"], [{"start": 0, "end": 20}])
+    assert len(calls) == 1
+
+
+def test_qwen17_does_not_retry_generation_limit():
+    import numpy as np
+    from src.asr.qwen3_backend import QwenBackend, QwenGenerationLimitError
+
+    backend = QwenBackend.__new__(QwenBackend)
+    backend.candidate = get_candidate("qwen3-asr-1.7b")
+    backend.chunk_seconds, backend.chunk_limit, backend.limit, backend.dtype = 2, 180, 2048, "float16"
+    calls = []
+
+    def recognize(**kwargs):
+        calls.append(kwargs)
+        raise QwenGenerationLimitError("token limit")
+
+    backend.model = SimpleNamespace(transcribe=recognize)
+    with pytest.raises(RuntimeError):
+        backend.transcribe(np.zeros(20), 10, 2, ["术语"], [{"start": 0, "end": 20}])
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("text,expected", [("みなさんこんにちは。", True), ("皆さんこんばんは。", True),
+                                           ("コーヒー。", True), ("中文。", False), ("中文ABCこんにちは", False),
+                                           ("안녕하세요", False), ("。", False)])
+def test_qwen_japanese_tokenizer_routing_is_conservative(text, expected):
+    from src.asr.qwen3_backend import _uses_japanese_script
+    assert _uses_japanese_script(text) is expected
+
+
+@pytest.mark.parametrize("second_error", ["oom", "sdk_value_error"])
+def test_qwen06_realign_sdk_failure_is_not_swallowed_or_retried(second_error):
+    import numpy as np
+    from src.asr.qwen3_backend import QwenBackend
+
+    backend = QwenBackend.__new__(QwenBackend)
+    backend.candidate = get_candidate("qwen3-asr-0.6b")
+    backend.chunk_seconds, backend.chunk_limit, backend.limit, backend.dtype = 2, 180, 2048, "float16"
+    calls = []
+    text = "こんにちは"
+
+    def recognize(**kwargs):
+        calls.append("asr")
+        return [SimpleNamespace(text=text, time_stamps=SimpleNamespace(items=[
+            SimpleNamespace(text=text, start_time=0, end_time=0)]))]
+
+    def align(**kwargs):
+        calls.append("alignment")
+        if second_error == "oom":
+            raise RuntimeError("CUDA out of memory")
+        raise ValueError("SDK invalid input")
+
+    backend.model = SimpleNamespace(transcribe=recognize, forced_aligner=SimpleNamespace(align=align))
+    with pytest.raises(RuntimeError, match="一次恢复仍失败"):
+        backend.transcribe(np.zeros(40), 10, 4, [], [{"start": 0, "end": 40}])
+    assert calls == ["asr", "alignment"]
+
+
+def test_qwen06_without_terms_does_not_retry_same_generation():
+    import numpy as np
+    from src.asr.qwen3_backend import QwenBackend, QwenGenerationLimitError
+
+    backend = QwenBackend.__new__(QwenBackend)
+    backend.candidate = get_candidate("qwen3-asr-0.6b")
+    backend.chunk_seconds = 2
+    calls = []
+    def recognize(**kwargs):
+        calls.append(kwargs)
+        raise QwenGenerationLimitError("token limit")
+    backend.model = SimpleNamespace(transcribe=recognize)
+    with pytest.raises(RuntimeError, match="token limit"):
+        backend.transcribe(np.zeros(20), 10, 2, [], [{"start": 0, "end": 20}])
+    assert len(calls) == 1
 
 
 def test_zero_duration_phrases_merge_only_with_actual_adjacent_alignment():

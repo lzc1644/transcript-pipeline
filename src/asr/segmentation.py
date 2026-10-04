@@ -4,6 +4,10 @@ import math
 from typing import Any
 
 
+class ZeroDurationAlignmentError(ValueError):
+    """All aligned lexical units lack a usable time interval."""
+
+
 def lexical_text(text: str) -> str:
     return "".join(c.casefold() for c in text if c.isalnum())
 
@@ -110,5 +114,5 @@ def aligned_segments(text: str, units: list[tuple[str, float, float]], duration:
         segment["id"] = len(merged) + 1
         merged.append(segment)
     if not merged:
-        raise ValueError("非空转录全部只有零时长对齐，无法提供可信音频区间")
+        raise ZeroDurationAlignmentError("非空转录全部只有零时长对齐，无法提供可信音频区间")
     return merged
