@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from src.asr.registry import ALIGNER_MODEL, ALIGNER_REVISION, Candidate
-from src.asr.segmentation import aligned_segments, bounded_speech_intervals
+from src.asr.segmentation import ZeroDurationAlignmentError, aligned_segments, bounded_speech_intervals
+
+
+class QwenGenerationLimitError(RuntimeError):
+    """Generation exhausted its budget without an end token."""
+
+
+def _uses_japanese_script(text: str) -> bool:
+    """Conservative tokenizer routing, not audio language identification."""
+    def kana(char: str) -> bool:
+        return "\u3041" <= char <= "\u3096" or "\u30a1" <= char <= "\u30fa"
+
+    return any(kana(c) for c in text) and all(
+        not c.isalpha() or kana(c) or "\u3400" <= c <= "\u9fff" or c == "ー" for c in text)
 
 
 class QwenBackend:
@@ -47,7 +61,7 @@ class QwenBackend:
             eos_ids = eos if isinstance(eos, list) else [eos]
             if sequences.shape[1] - kwargs["input_ids"].shape[1] >= self.limit:
                 if any(int(row[-1]) not in eos_ids for row in sequences):
-                    raise RuntimeError("Qwen 解码达到 token 上限，拒绝发布截断转录")
+                    raise QwenGenerationLimitError("Qwen 解码达到 token 上限，拒绝发布截断转录")
             return output
 
         self.model.model.generate = checked_generate
@@ -67,6 +81,16 @@ class QwenBackend:
 
         self.model._infer_asr = recorded_infer
 
+    def _transcribe_chunk(self, audio: Any, sample_rate: int, *, context: str) -> tuple[Any, list[tuple]]:
+        result = self.model.transcribe(audio=(audio, sample_rate), language="Chinese",
+                                       context=context, return_time_stamps=True)[0]
+        if not result.text.strip():
+            raise ValueError("VAD 语音分块返回空文字，拒绝静默遗漏该分块")
+        if not result.time_stamps:
+            raise ValueError("Qwen 返回文字但 ForcedAligner 未返回时间戳")
+        units = [(v.text, v.start_time, v.end_time) for v in result.time_stamps.items]
+        return result, units
+
     def transcribe(self, audio: Any, sample_rate: int, duration: float, terms: list[str],
                    speech_regions: list[dict[str, int]]) -> tuple[list[dict], dict]:
         step = round(self.chunk_seconds * sample_rate)
@@ -76,26 +100,64 @@ class QwenBackend:
         segments = []
         zero_units = 0
         sdk_intervals = []
+        recoveries = []
         for begin, finish in intervals:
             offset = begin / sample_rate
+            chunk = audio[begin:finish]
+            recovery = None
             try:
-                result = self.model.transcribe(audio=(audio[begin:finish], sample_rate), language="Chinese",
-                                               context="、".join(terms), return_time_stamps=True)[0]
-                if not result.text.strip():
-                    raise ValueError("VAD 语音分块返回空文字，拒绝静默遗漏该分块")
-                if not result.time_stamps:
-                    raise ValueError("Qwen 返回文字但 ForcedAligner 未返回时间戳")
-                local_units = [(v.text, v.start_time, v.end_time) for v in result.time_stamps.items] if result.time_stamps else []
-                # Validate against this actual PCM slice before applying offsets.
-                current = aligned_segments(result.text, local_units, (finish - begin) / sample_rate)
+                try:
+                    result, local_units = self._transcribe_chunk(chunk, sample_rate, context="、".join(terms))
+                except QwenGenerationLimitError as first_error:
+                    # Only remove the observed source of term echo. Keep Chinese:
+                    # automatic language ID misclassified this short mixed speech.
+                    if self.candidate.id != "qwen3-asr-0.6b" or not terms:
+                        raise
+                    recovery = {"reason": "generation_token_limit", "first_error": str(first_error),
+                                "retry": {"stage": "asr", "language": "Chinese", "context_terms_count": 0}}
+                    logging.getLogger(__name__).warning(
+                        "%s 分块 [%s, %s] %s；同模型重试一次：不使用术语上下文，保留中文识别",
+                        self.candidate.id, offset, finish / sample_rate, first_error)
+                    result, local_units = self._transcribe_chunk(chunk, sample_rate, context="")
+                try:
+                    # Validate against this actual PCM slice before applying offsets.
+                    current = aligned_segments(result.text, local_units, len(chunk) / sample_rate)
+                except ZeroDurationAlignmentError as first_error:
+                    # Chinese tokenization collapses all-kana Japanese into one
+                    # unit. Re-align the SAME text, without another ASR attempt.
+                    # No chained recovery after an already retried generation.
+                    if (self.candidate.id != "qwen3-asr-0.6b" or recovery is not None
+                            or not _uses_japanese_script(result.text)):
+                        raise
+                    recovery = {"reason": "zero_duration_alignment", "first_error": str(first_error),
+                                "retry": {"stage": "alignment", "language": "Japanese", "text_changed": False}}
+                    logging.getLogger(__name__).warning(
+                        "%s 分块 [%s, %s] %s；含假名日文按 Japanese 重新对齐一次，保留原识别文字",
+                        self.candidate.id, offset, finish / sample_rate, first_error)
+                    alignment = self.model.forced_aligner.align(
+                        audio=(chunk, sample_rate), text=result.text, language="Japanese")[0]
+                    local_units = [(v.text, v.start_time, v.end_time) for v in alignment.items]
+                    current = aligned_segments(result.text, local_units, len(chunk) / sample_rate)
+                if recovery is not None:
+                    recoveries.append({"interval": [offset, finish / sample_rate], "retry_count": 1,
+                                       "first_attempt": {"language": "Chinese", "context_terms_count": len(terms)},
+                                       **recovery})
             except Exception as exc:
-                raise RuntimeError(f"{self.candidate.id} 分块 [{offset}, {finish / sample_rate}] 失败: {exc}") from exc
+                detail = (f"首试失败: {recovery['first_error']}；一次恢复仍失败: {exc}"
+                          if recovery is not None else str(exc))
+                raise RuntimeError(f"{self.candidate.id} 分块 [{offset}, {finish / sample_rate}] 失败: {detail}") from exc
             zero_units += sum(start == end for _, start, end in local_units)
             sdk_intervals.extend([[offset + start, offset + end] for start, end in self.chunk_intervals])
             for segment in current:
                 segment.update(id=len(segments) + 1, start=segment["start"] + offset, end=segment["end"] + offset)
                 segments.append(segment)
         warnings = []
+        if any(r["retry"]["stage"] == "asr" for r in recoveries):
+            warnings.append("Qwen 0.6B 部分分块解码触顶后经同模型无术语重试恢复；"
+                            "仍按中文识别，恢复块的专名需人工复核，详见 chunk_recoveries")
+        if any(r["retry"]["stage"] == "alignment" for r in recoveries):
+            warnings.append("Qwen 0.6B 含假名日文的零时长分块已按 Japanese 重新对齐，未改识别文字；"
+                            "外语文字及时间戳需人工复核，详见 chunk_recoveries")
         if zero_units:
             warnings.append("ForcedAligner 存在零时长字/词，已按实际边界聚合文本段；细粒度对齐需人工关注")
         if any(r["end"] - r["start"] > step for r in speech_regions):
@@ -103,6 +165,7 @@ class QwenBackend:
         return segments, {
             "timestamp_source": ALIGNER_MODEL, "aligner_revision": ALIGNER_REVISION,
             "zero_duration_alignment_units": zero_units, "warnings": warnings,
+            "chunk_recoveries": recoveries,
             "timestamp_granularity": "text_segment_from_character_or_word_alignment",
             "resolved_parameters": {"dtype": str(self.dtype), "batch_size": 1,
                                     "max_new_tokens": self.limit, "context_terms": terms,

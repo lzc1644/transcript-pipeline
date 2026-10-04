@@ -27,8 +27,19 @@ Web 不接受用户自选仓库、revision 或任意 worker Python。
 - 历史任务：显式同候选重试 > 任务 YAML 快照。后来的 Web 默认/profile 不重选旧任务模型。转录阶段另存有效 ASR 配置快照，阶段/文件阶段重试沿用保存的 config/profile/candidate。
 - 不同候选必须新建任务或使用独立阶段文件工作区；同一工作区切换候选会报错。
 - profile 仍决定 device；Whisper model/compute type/beam 不传给新后端。
-- 新候选首版只验收 `language=zh`，其他语言配置会明确拒绝。
+- 新候选首版只验收 `language=zh`，其他语言配置会明确拒绝。Qwen 0.6B 对中文录音内的含假名日文片段有窄范围对齐恢复（见下），不是全面多语言验收，也不翻译外语文字。
 - Qwen 生成时仅对最后一个位置计算词表 logits，避免固定 SDK 对长音频/术语上下文的全部输入位置分配无用的大张量。优化只作用于 ASR generation，ForcedAligner 和其他完整 forward 不变；不减少术语、不改变分块/精度、不自动换模型或 CPU。8 GB GPU 仍需为桌面和其他进程预留显存，不能据一次短片段通过保证所有输入可用。真实 OOM 对照记录见 [`2027-o-ff-qwen-generation-vram.md`](../codestable/issues/2027-o-ff-qwen-generation-vram.md)。
+
+### Qwen 0.6B 的两种有界恢复
+
+正常块仍按中文、完整术语上下文、原 PCM 分块处理。仅 0.6B 在下列明确错误时做一次局部恢复，不换模型、CPU 或精度，不增加 token 上限：
+
+- **带术语生成触顶且无 EOS**：同 PCM、同模型撤掉该块术语上下文重试一次，仍强制中文。短片段曾回显整份词表；没有术语时不重复相同尝试。不能统一改自动语言检测：实测会把短中文夹英文误判为葡语。
+- **全部零时长且文字属于含假名的日文脚本**：不重跑识别、不改首试文字，只对同 PCM/同文字以 `Japanese` 分词规则调用原 ForcedAligner 一次。中文规则曾把整串假名合成一个零时长单元。纯中文或含其他语言字母的零时长不启用此恢复。
+
+每块最多一次恢复，不串联两种策略。恢复后仍检查非空文字、token 结束、字词一致、时间戳顺序与范围；二次失败保留两次原因并停止，不发布半成品。OOM、空文字、缺失时间戳、字词不一致、越界等其他异常不触发恢复。1.7B 及其他候选不启用这些规则。
+
+日志及 `metadata.warnings` 会提示人工复核；`metadata.chunk_recoveries` 记录局部音频区间、原因、首试参数、恢复阶段及实际语言/术语策略。`resolved_parameters.context_terms` 保留首试使用的原术语表；恢复块的实际策略以 `chunk_recoveries` 为准。无术语重试可能损失专名准确度，成功退出不等于人工质量验收。证据及被否决方案见 [`2028-x-qwen06-short-chunk-recovery.md`](../codestable/issues/2028-x-qwen06-short-chunk-recovery.md)。
 
 ## 安装：基础环境不变，可选 worker 隔离
 
@@ -85,7 +96,7 @@ API 请求字段为 `asr_candidate`。Web 设置页保存默认候选；单任�
 
 - JSON 保留 `source_file`、`engine`、`model_size`、`device`、`compute_type`、`language`、`segments`、`full_text`；新增可选 `metadata`。下游仍读取同目录 JSON/TXT。
 - 时间戳统一为秒，来自实际 SDK 对齐或真实 PCM/VAD 区间，不按文字长度均分。
-- 新候选非空文字但无对齐、文字和对齐 lexical content 不一致、解码触顶无结束 token、检测到语音但返回空文，均明确失败。
+- 新候选非空文字但无对齐、文字和对齐 lexical content 不一致、检测到语音但返回空文，均明确失败。解码触顶无结束 token、全部零时长通常失败；仅上述 Qwen 0.6B 条件可进行一次恢复，仍不得发布截断或无效时间戳。
 - 新候选先做 CPU Silero VAD。无检测到语音时发布带 `inference_performed=false` 的空结果，不加载识别模型；VAD 本身可能漏检弱语音，人工仍需复核。
 - 新候选只处理记录的 VAD 区间并按最长 30 秒切块，保留原音频绝对偏移。长连续语音可能被硬切，metadata 提醒复核漏字/重复；没有自动补字或合并猜测。
 - Qwen 对每个子块使用固定 SDK 的识别和 ForcedAligner，记录实际区间/推理 padding。SDK 自身对齐分块目标为 180 秒，但接入层使用更小的上限，避免已实测 0.6B 在较长块上触顶。个别零时长字/词只能与相邻实际边界聚合并告警；全部对齐零时长仍失败。Qwen 分块若人为切出不足 1 秒的末尾块，会在同一 VAD 区间内平衡最后两块（仍不超过配置上限、无重叠/漏采样），避免几十或几百毫秒残片缺少对齐和识别上下文。天然的极短 VAD 区间不丢弃、不虚构 padding 或跨静音合并，仍须真实校验。
