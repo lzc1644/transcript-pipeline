@@ -343,7 +343,7 @@ def test_qwen06_recovery_is_bounded_local_and_observable(failure, caplog):
 
 
 @pytest.mark.parametrize("retry_failure", ["token_limit", "oom"])
-def test_qwen06_failed_context_retry_preserves_both_errors_and_stops(retry_failure):
+def test_qwen06_failed_context_retry_on_short_chunk_preserves_both_errors_and_stops(retry_failure):
     import numpy as np
     from src.asr.qwen3_backend import QwenBackend, QwenGenerationLimitError
 
@@ -363,9 +363,10 @@ def test_qwen06_failed_context_retry_preserves_both_errors_and_stops(retry_failu
         raise AssertionError("unexpected retry scenario")
 
     backend.model = SimpleNamespace(transcribe=recognize)
+    backend.chunk_seconds = 1  # a split would create sub-second fragments
     with pytest.raises(RuntimeError, match="首试失败: original token limit；一次恢复仍失败"):
         backend.transcribe(np.zeros(40), 10, 4, ["术语"], [{"start": 0, "end": 40}])
-    assert len(calls) == 2  # no third attempt and no next chunk
+    assert len(calls) == 2  # no split and no next chunk
 
 
 @pytest.mark.parametrize("failure", ["oom", "generic", "sdk_value_error", "empty", "punctuation"])
