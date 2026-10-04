@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from src.ocr_page_markers import strip_ocr_page_break_markers
 from src.runtime_utils import ensure_directory, relativize_path
 from src.schemas import LoadedSettings
 
@@ -230,6 +231,8 @@ def split_reference_paragraph_into_sentence_blocks(text: str, max_chars_per_bloc
 
 
 def split_reference_text(reference_text: str, loaded_settings: LoadedSettings) -> list[str]:
+    # 工程页标记仅供全文校对理解，不能成为正文对齐候选；不回写源 TXT。
+    reference_text = strip_ocr_page_break_markers(reference_text)
     segmentation = loaded_settings.settings.segmentation
     reference_settings = loaded_settings.settings.reference
 

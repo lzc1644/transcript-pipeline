@@ -472,7 +472,7 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
 
     text, warnings = run_codex_api_pdf_ocr(source, loaded_settings)
 
-    assert text == "目录第2页 OCR 识别出的完整正文内容。"
+    assert text == "目录\n\n----- OCR_PAGE_BREAK: 1 -> 2 -----\n\n第2页 OCR 识别出的完整正文内容。"
     assert "Codex API OCR" in " ".join(warnings)
     requests = seen["requests"]
     assert isinstance(requests, list)
@@ -499,7 +499,7 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
         assert "PDF 总页数：2" in content[0]["text"]
         assert content[1] == {"type": "input_image", "image_url": image_url}
     sidecar_path = loaded_settings.path_for("ocr_dir") / f"{source.stem}.codex_api_ocr.txt"
-    assert sidecar_path.read_text(encoding="utf-8") == "目录第2页 OCR 识别出的完整正文内容。"
+    assert sidecar_path.read_text(encoding="utf-8") == text
 
 
 def test_run_codex_api_pdf_ocr_writes_to_explicit_sidecar_path(
@@ -633,8 +633,10 @@ def test_run_codex_api_pdf_ocr_resumes_only_missing_checkpoint_pages(
 
     assert rendered_pages == [2]
     assert text == (
-        "第1页 OCR 识别出的完整正文内容。"
-        "第2页 OCR 识别出的完整正文内容。"
+        "第1页 OCR 识别出的完整正文内容。\n\n"
+        "----- OCR_PAGE_BREAK: 1 -> 2 -----\n\n"
+        "第2页 OCR 识别出的完整正文内容。\n\n"
+        "----- OCR_PAGE_BREAK: 2 -> 3 -----\n\n"
         "第3页 OCR 识别出的完整正文内容。"
     )
     assert sidecar_path.read_text(encoding="utf-8") == text
@@ -689,8 +691,10 @@ def test_prepare_reference_batch_retries_only_missing_pages_and_writes_text_afte
     assert second_summary.partial == 0
     assert rendered_pages == [2]
     assert output_path.read_text(encoding="utf-8") == (
-        "第1页识别正文。"
-        "第2页识别正文。"
+        "第1页识别正文。\n\n"
+        "----- OCR_PAGE_BREAK: 1 -> 2 -----\n\n"
+        "第2页识别正文。\n\n"
+        "----- OCR_PAGE_BREAK: 2 -> 3 -----\n\n"
         "第3页识别正文。"
     )
 

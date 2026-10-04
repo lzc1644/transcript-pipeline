@@ -590,7 +590,7 @@ http://127.0.0.1:5173
 - `单任务`：对应 `scripts/08_run_job.py`
 - `批量任务`：对应 `scripts/09_run_batch_jobs.py`
 - `单阶段`：对应 `scripts/run_pipeline.py --stage`
-- `PDF OCR`：独立上传单本 PDF 或 PDF 目录，识别完成后逐本下载 TXT 或 EPUB；失败页会单独列出，任务历史可重试缺失页并沿用成功页检查点
+- `PDF OCR`：独立上传单本 PDF 或 PDF 目录，识别完成后逐本下载 TXT，或一键下载当前项目中完整书籍的 TXT ZIP（保留子目录，附未完成书籍清单）；失败页可重试并沿用成功页检查点。支持二次确认删除项目，运行中禁止删除；仅清理任务记录、结果与检查点，保留上传 PDF。已移除 EPUB 导出
 - `任务列表`：查看 `data/jobs/` 下已有任务状态，下载单任务结果、批量结果 ZIP 和批量子任务结果
 - `设置`：配置 Codex API 的 base URL、API key、阶段 6 模型和 PDF OCR 模型；“API 直连
   （绕过代理）”默认关闭，开启并保存后只把当前 Codex API 主机加入新任务的 `NO_PROXY`，不会清除或
@@ -1049,7 +1049,7 @@ PDF 支持边界：
 - 当前 PDF 默认优先尝试 `codex_api` OCR
 - `codex_api` OCR 先读取 PDF 总页数，再由受限工作线程按需用 `pdftoppm` 渲染当前页，并通过 codex-lb `/v1/responses` 发送一个 `input_image`；页面完成后立即释放图片数据，不会一次性把整本书的 PNG/base64 保存在内存中
 - 独立 PDF OCR 任务会把每个成功页原子写入任务目录；单页失败后继续处理其余页面并记录完整失败页码，点击“重试缺失页”只重新请求没有成功检查点的页面
-- 最终 TXT 仍只在所有页检查点齐全后按页序生成，且不会在页边界额外插入换行；服务或任务进程重启不会删除已成功页面
+- 最终 TXT 仍只在所有页检查点齐全后按页序生成，在真实页边界插入 `----- OCR_PAGE_BREAK: 1 -> 2 -----`（页码随原 PDF 变化）；单页检查点不包含新增标记，服务或任务进程重启不会删除已成功页面
 - `codex_api` OCR 默认模型是 `gpt-6-luna`，reasoning effort 是 `high`
 - 直接运行阶段 3 时，可用 `--ocr-model` 和 `--ocr-reasoning-effort` 临时覆盖 OCR 模型与 reasoning
 - 如果 Codex API OCR 失败，但 PDF 自带文字层可提取，则回退到文字层提取
@@ -1058,9 +1058,11 @@ PDF 支持边界：
 - 当前 OCR 路线面向中文扫描版 PDF
 - 如果 OCR 结果仍为空或接近空，会提示当前 PDF 质量可能较差
 
-## OCR 文本整合与 EPUB 导出
+## OCR 文本整合
 
-EPUB 导出采用两步流程：先把单页/片段 OCR TXT 按自然顺序整合为一个独立 TXT，再以这个整合后的 TXT 生成 EPUB。这样尾注是否可用取决于整合 TXT 是否包含全集尾注区；缺少定义的普通数字会保留原文，不会被猜测成链接。
+Codex API PDF OCR 合并各页时保留页内自然段和换行，仅在真实 PDF 页边界加入独立一行的 `----- OCR_PAGE_BREAK: 1 -> 2 -----`，并以空行隔开；页码随原 PDF 变化，空白页也保留边界。标记不代表自然段结束，便于后续 AI 区分物理换页与普通换行。阶段 6 的 `final_cleanup.md` 和 `classify_and_correct.md` 已说明标记含义、按语义衔接硬换行、保留注释及最终文稿去除标记的规则。无参考文本的对谈提示词不变。
+
+标记只加入整本合并输出，单页检查点保留原 OCR 文本。阶段 4 参考块切分、阶段 6 高置信预替换及参考相似度评分会排除完整工程标记行，不让其参与正文匹配；源 TXT 和模型全文附件仍保留标记。普通书籍横线、数字及非完整标记不会被过滤。EPUB 导出已移除，不再生成 EPUB，也不做额外模型排版。
 
 独立 PDF OCR 后台使用专用 OCR 提示词，要求识别正文、脚注、尾注及其编号；提示词不在前端页面展示。校对流程中的参考文本准备仍使用原有的纯文本 OCR 提示词，不会套用独立书籍 OCR 的注释要求。
 
@@ -1068,15 +1070,13 @@ EPUB 导出采用两步流程：先把单页/片段 OCR TXT 按自然顺序整�
 .venv/bin/python scripts/11_integrate_ocr_txt.py \
   /path/to/ocr-pages/ \
   --output /path/to/book.integrated.txt
-
-.venv/bin/python scripts/12_export_epub.py \
-  /path/to/book.integrated.txt \
-  --output /path/to/book.epub \
-  --title "书名" \
-  --author "作者"
 ```
 
-目录片段会按文件名中的数字自然排序，例如 `page-1.txt`、`page-2.txt`、`page-10.txt`。EPUB 使用 reflowable 排版，支持章节目录、圆圈数字脚注、全书普通数字尾注以及正文与注释之间的返回链接。
+目录片段会按文件名中的数字自然排序，例如 `page-1.txt`、`page-2.txt`、`page-10.txt`。整合输出不会覆盖源 TXT。
+
+上述通用 TXT 整合脚本只按自然顺序拼接任意片段，不知道 PDF 物理页码，不生成换页标记；不得把章节片段或多本书误当成 PDF 页。
+
+旧版整本 TXT 不会被自动覆盖。要离线生成带换页标记的新 TXT，应调用公共 PDF OCR 合并流程（`ocr_pdf_book_batch` / `run_codex_api_pdf_ocr`），使用原 PDF、原 OCR 模型与推理强度、对应身份的页检查点，以及独立输出路径。全部页检查点存在时不发起模型请求；有缺页则会尝试识别缺失页，不应误称为纯离线重建。通用 TXT 整合 CLI 不等价于这种重建。已粘连且没有页检查点的旧 TXT 无法可靠恢复原始段落。
 
 ## 对齐与分段行为
 

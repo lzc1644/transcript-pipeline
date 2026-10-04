@@ -1064,12 +1064,15 @@ def test_pdf_book_ocr_api_creates_task_and_serves_task_result(tmp_path: Path) ->
         f"/api/pdf-book-ocr/{task_id}/results/book.txt",
         params={"format": "epub"},
     )
-    assert epub_response.status_code == 200
-    assert epub_response.headers["content-type"] == "application/epub+zip"
-    assert "book.epub" in epub_response.headers["content-disposition"]
-    with zipfile.ZipFile(io.BytesIO(epub_response.content)) as archive:
-        assert archive.read("mimetype") == b"application/epub+zip"
-        assert "OEBPS/text/book.xhtml" in archive.namelist()
+    assert epub_response.status_code == 422
+    assert not (build_pdf_book_ocr_task_paths(tmp_path, task_id).output_dir / "book.epub").exists()
+
+    archive_response = request_json(app, "GET", f"/api/pdf-book-ocr/{task_id}/download")
+    assert archive_response.status_code == 200
+    assert archive_response.headers["content-type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(archive_response.content)) as archive:
+        assert archive.read("books/book.txt") == "OCR 文本".encode("utf-8")
+        assert json.loads(archive.read("summary.json"))["included_books"] == ["book.txt"]
 
 
 def test_pdf_book_ocr_api_rejects_input_outside_uploaded_pdf_area(tmp_path: Path) -> None:

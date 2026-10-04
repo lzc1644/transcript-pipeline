@@ -2,12 +2,14 @@
 doc_type: feature-design
 feature: 2026-07-30-ocr-epub-export
 requirement: 将 OCR 后的整本书文本导出为适合静读天下等阅读器的 EPUB，并保留可跳转的脚注与尾注
-status: approved
+status: retired
 summary: 为 OCR TXT 增加独立 EPUB 3 导出能力，区分局部圆圈数字脚注与全书末尾普通数字尾注
 tags: [epub, ocr, footnote, endnote, export, chinese-text]
 ---
 
 # OCR 文本 EPUB 导出设计
+
+> 2026-10-04：按用户要求移除 EPUB 的 Web 下载、导出模块及 CLI；保留独立 TXT 整合能力。本文仅保留为历史设计，不再代表当前功能。见 `codestable/issues/2028-o-ff-pdf-ocr-project-actions.md`。
 
 ## 0. 术语约定
 

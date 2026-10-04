@@ -14,6 +14,7 @@ from typing import Any
 from rapidfuzz import fuzz
 
 from src.codex_lb_client import CodexLBClient, CodexLBClientError, endpoint_url
+from src.ocr_page_markers import strip_ocr_page_break_markers
 from src.request_trace import (
     TRACE_SCHEMA_VERSION,
     RequestTrace,
@@ -408,7 +409,8 @@ def build_pre_replaced_document(
     loaded_settings: LoadedSettings,
 ) -> list[PreReplacementSegment]:
     source_sentences = split_text_into_sentences(asr_full_text)
-    reference_sentences = split_text_into_sentences(reference_full_text)
+    # 只过滤规则预替换的匹配输入；交给模型的全文附件仍保留页边界。
+    reference_sentences = split_text_into_sentences(strip_ocr_page_break_markers(reference_full_text))
     settings = get_safe_replace_settings(loaded_settings)
 
     sentence_states: list[dict[str, Any]] = []
@@ -1832,8 +1834,9 @@ def calculate_document_score(
 ) -> float:
     refined_text = normalize_inline_text(markdown_to_plain_text(result.final_markdown))
     asr_similarity = fuzz.ratio(refined_text, normalize_inline_text(asr_full_text)) if asr_full_text else 0.0
-    reference_similarity = fuzz.ratio(refined_text, normalize_inline_text(reference_full_text)) if reference_full_text else 0.0
-    reference_weight = 0.6 if reference_full_text else 0.0
+    reference_plain_text = normalize_inline_text(strip_ocr_page_break_markers(reference_full_text))
+    reference_similarity = fuzz.ratio(refined_text, reference_plain_text) if reference_plain_text else 0.0
+    reference_weight = 0.6 if reference_plain_text else 0.0
     asr_weight = 1.0 - reference_weight
     penalty = min(len(result.needs_review_sections), 5) * 2.0
     return round(asr_similarity * asr_weight + reference_similarity * reference_weight - penalty, 2)

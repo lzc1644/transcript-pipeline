@@ -482,8 +482,14 @@ export function pdfBookOCRResultUrl(taskId: string, outputFile: string): string 
   return `/api/pdf-book-ocr/${encodeURIComponent(taskId)}/results/${encodedPath}`;
 }
 
-export function pdfBookOCREpubUrl(taskId: string, outputFile: string): string {
-  return `${pdfBookOCRResultUrl(taskId, outputFile)}?format=epub`;
+export function pdfBookOCRArchiveUrl(taskId: string): string {
+  return `/api/pdf-book-ocr/${encodeURIComponent(taskId)}/download`;
+}
+
+export function deletePDFBookOCRTask(taskId: string): Promise<{ success: boolean }> {
+  return requestJson<{ success: boolean }>(`/api/pdf-book-ocr/${encodeURIComponent(taskId)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function uploadStageInput(

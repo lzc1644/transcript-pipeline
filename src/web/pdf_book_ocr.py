@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from src.web.uploads import upload_root
 
@@ -31,7 +34,10 @@ def build_pdf_book_ocr_task_paths(project_root: Path, task_id: str) -> PDFBookOC
     if not PDF_BOOK_OCR_TASK_ID_PATTERN.fullmatch(task_id):
         raise PDFBookOCRTaskError(f"无效的 PDF OCR 任务 ID: {task_id}")
 
-    task_root = project_root / "data/jobs/pdf-ocr" / task_id
+    tasks_root = (project_root / "data/jobs/pdf-ocr").resolve()
+    task_root = tasks_root / task_id
+    if task_root.is_symlink() or task_root.resolve().parent != tasks_root:
+        raise PDFBookOCRTaskError("PDF OCR 任务目录无效。")
     return PDFBookOCRTaskPaths(
         task_id=task_id,
         task_root=task_root,
@@ -84,6 +90,8 @@ def resolve_pdf_book_ocr_output_file(task_paths: PDFBookOCRTaskPaths, relative_p
         raise PDFBookOCRTaskError("PDF OCR 下载路径无效。")
 
     output_root = task_paths.output_dir.resolve()
+    if not output_root.is_relative_to(task_paths.task_root.resolve()):
+        raise PDFBookOCRTaskError("PDF OCR 输出目录超出当前任务目录。")
     candidate = (output_root / requested_path).resolve()
     try:
         candidate.relative_to(output_root)
@@ -93,3 +101,41 @@ def resolve_pdf_book_ocr_output_file(task_paths: PDFBookOCRTaskPaths, relative_p
     if candidate.suffix.lower() != ".txt":
         raise PDFBookOCRTaskError("PDF OCR 仅支持下载 TXT 结果。")
     return candidate
+
+
+def build_pdf_book_ocr_archive(task_paths: PDFBookOCRTaskPaths, state: dict) -> bytes:
+    """只打包完整书籍，保留相对目录，附带未完成书籍清单。"""
+    files: dict[str, Path] = {}
+    incomplete: list[str] = []
+    for item in state.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if not item.get("success"):
+            incomplete.append(str(item.get("source_file") or "未知书籍"))
+            continue
+        output_path = resolve_pdf_book_ocr_output_file(task_paths, str(item.get("output_file") or ""))
+        if not output_path.is_file():
+            raise PDFBookOCRTaskError(f"完整书籍的 TXT 文件缺失：{item.get('output_file')}")
+        relative_name = output_path.relative_to(task_paths.output_dir.resolve()).as_posix()
+        files[relative_name] = output_path
+    if not files:
+        raise PDFBookOCRTaskError("当前任务暂无完整书籍可下载，请先完成识别或重试缺失页。")
+
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        for relative_name, output_path in files.items():
+            archive.write(output_path, f"books/{relative_name}")
+        archive.writestr(
+            "summary.json",
+            json.dumps(
+                {
+                    "task_id": task_paths.task_id,
+                    "status": state.get("status"),
+                    "included_books": list(files),
+                    "incomplete_books": incomplete,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+    return buffer.getvalue()

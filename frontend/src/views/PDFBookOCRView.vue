@@ -16,15 +16,17 @@ import {
   NSelect,
   NSpace,
   NTag,
+  useDialog,
   useMessage,
 } from "naive-ui";
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
 import {
+  deletePDFBookOCRTask,
   getFrontendSettings,
   getPDFBookOCRTask,
   listPDFBookOCRTasks,
-  pdfBookOCREpubUrl,
+  pdfBookOCRArchiveUrl,
   pdfBookOCRResultUrl,
   retryPDFBookOCR,
   submitPDFBookOCR,
@@ -37,6 +39,9 @@ import RemoteFileUpload from "../components/RemoteFileUpload.vue";
 type InputMode = "file" | "directory";
 
 const message = useMessage();
+const dialog = useDialog();
+const deletingTaskId = ref("");
+const downloading = ref(false);
 const inputMode = ref<InputMode>("file");
 const currentTask = ref<PDFBookOCRTask | null>(null);
 const activeTaskId = ref("");
@@ -65,6 +70,7 @@ const isTaskRunning = computed(() => {
 });
 
 const taskItems = computed(() => currentTask.value?.items ?? []);
+const downloadableCount = computed(() => taskItems.value.filter((item) => item.success && item.output_file).length);
 const canRetryMissingPages = computed(() => {
   const task = currentTask.value;
   if (!task || isTaskRunning.value || task.status === "success") {
@@ -132,14 +138,21 @@ async function refreshTask() {
   if (!activeTaskId.value) {
     return;
   }
+  const taskId = activeTaskId.value;
   try {
-    const task = await getPDFBookOCRTask(activeTaskId.value);
+    const task = await getPDFBookOCRTask(taskId);
+    if (activeTaskId.value !== taskId) {
+      return;
+    }
     currentTask.value = task;
     if (task.status !== "pending" && task.status !== "running") {
       stopPolling();
       void loadTaskHistory();
     }
   } catch (caught) {
+    if (activeTaskId.value !== taskId) {
+      return;
+    }
     stopPolling();
     message.error(caught instanceof Error ? caught.message : "读取 PDF OCR 任务状态失败");
   }
@@ -229,12 +242,62 @@ function openResult(item: PDFBookOCRItem) {
   window.location.href = pdfBookOCRResultUrl(currentTask.value.id, item.output_file);
 }
 
-function openEpubResult(item: PDFBookOCRItem) {
-  if (!currentTask.value || !item.output_file) {
-    message.error("当前结果不可下载。");
+async function downloadAll() {
+  if (!currentTask.value || isTaskRunning.value || !downloadableCount.value) {
     return;
   }
-  window.location.href = pdfBookOCREpubUrl(currentTask.value.id, item.output_file);
+  const taskId = currentTask.value.id;
+  downloading.value = true;
+  try {
+    const response = await fetch(pdfBookOCRArchiveUrl(taskId));
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || "打包下载失败");
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${taskId}-txt.zip`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (caught) {
+    message.error(caught instanceof Error ? caught.message : "打包下载失败");
+  } finally {
+    downloading.value = false;
+  }
+}
+
+function confirmDelete(task: PDFBookOCRTask) {
+  if (task.status === "pending" || task.status === "running" || deletingTaskId.value) {
+    return;
+  }
+  dialog.warning({
+    title: "删除 PDF OCR 项目？",
+    content: `将永久删除“${taskSourceLabel(task)}”的任务记录、TXT 结果和页检查点，之后无法补页恢复。上传的 PDF 会保留。`,
+    positiveText: "确认删除",
+    negativeText: "取消",
+    onPositiveClick: async () => {
+      deletingTaskId.value = task.id;
+      try {
+        await deletePDFBookOCRTask(task.id);
+        if (activeTaskId.value === task.id) {
+          stopPolling();
+          activeTaskId.value = "";
+          currentTask.value = null;
+        }
+        taskHistory.value = taskHistory.value.filter((item) => item.id !== task.id);
+        await loadTaskHistory();
+        message.success("PDF OCR 项目已删除。");
+      } catch (caught) {
+        message.error(caught instanceof Error ? caught.message : "删除 PDF OCR 项目失败");
+        return false;
+      } finally {
+        deletingTaskId.value = "";
+      }
+    },
+  });
 }
 
 async function submit() {
@@ -303,7 +366,7 @@ onBeforeUnmount(stopPolling);
       <div>
         <p class="view-hero__eyebrow">独立工具</p>
         <h2 class="view-hero__title">PDF 书籍 OCR</h2>
-        <p class="view-hero__copy">上传一本书或整套 PDF，逐页识别后直接下载 TXT 或 EPUB。</p>
+        <p class="view-hero__copy">上传一本书或整套 PDF，逐页识别后下载 TXT，多本书可一键打包。</p>
       </div>
       <div class="pdf-book-ocr-view__hero-mark" aria-hidden="true">
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
@@ -314,7 +377,7 @@ onBeforeUnmount(stopPolling);
     </section>
 
     <n-alert type="info" :bordered="false" class="pdf-book-ocr-view__notice">
-      本页只接收 PDF。目录上传会保留原有子目录层级；每本书的 TXT 和 EPUB 仅在全部页面成功后才会出现。
+      本页只接收 PDF。目录上传会保留原有子目录层级；每本书的 TXT 仅在全部页面成功后才会出现。TXT 保留页内段落，真实换页处添加 OCR_PAGE_BREAK 横线标记（含原页码），便于后续校对识别跨页硬换行。
     </n-alert>
 
     <n-grid :cols="2" :x-gap="20" :y-gap="20" responsive="screen" item-responsive>
@@ -431,6 +494,27 @@ onBeforeUnmount(stopPolling);
               </div>
             </div>
 
+            <n-flex class="pdf-book-ocr-task__actions" :size="10" wrap>
+              <n-button
+                type="primary"
+                secondary
+                :loading="downloading"
+                :disabled="isTaskRunning || downloadableCount === 0"
+                @click="downloadAll"
+              >
+                一键下载 TXT（ZIP · {{ downloadableCount }} 本）
+              </n-button>
+              <n-button
+                type="error"
+                secondary
+                :loading="deletingTaskId === currentTask.id"
+                :disabled="isTaskRunning || !!deletingTaskId || retrying"
+                @click="confirmDelete(currentTask)"
+              >删除项目</n-button>
+              <span v-if="!isTaskRunning && currentTask.failed">仅打包完整书籍；未完成书籍列于 ZIP 内的 summary.json。</span>
+              <span v-if="isTaskRunning">识别结束后可打包下载或删除项目。</span>
+            </n-flex>
+
             <n-alert
               v-if="currentTask.error_message"
               :type="currentTask.status === 'partial' ? 'warning' : 'error'"
@@ -475,7 +559,6 @@ onBeforeUnmount(stopPolling);
                 </details>
                 <n-space v-if="item.success" :size="8" class="pdf-book-ocr-result-item__actions">
                   <n-button tertiary type="primary" size="small" @click="openResult(item)">下载 TXT</n-button>
-                  <n-button tertiary type="primary" size="small" @click="openEpubResult(item)">下载 EPUB</n-button>
                 </n-space>
               </div>
             </div>
@@ -497,25 +580,38 @@ onBeforeUnmount(stopPolling);
 
           <n-empty v-if="!historyLoading && taskHistory.length === 0" description="还没有 PDF OCR 任务记录。" />
           <div v-else class="pdf-book-ocr-history__list">
-            <button
+            <div
               v-for="task in taskHistory"
               :key="task.id"
-              type="button"
-              class="pdf-book-ocr-history-item"
-              :class="{ 'is-selected': currentTask?.id === task.id }"
-              @click="loadTask(task.id)"
+              class="pdf-book-ocr-history-row"
             >
-              <div class="pdf-book-ocr-history-item__main">
-                <strong>{{ taskSourceLabel(task) }}</strong>
-                <span>{{ task.id }}</span>
-              </div>
-              <div class="pdf-book-ocr-history-item__meta">
-                <n-tag size="small" :type="taskStatusTypeFor(task.status)" :bordered="false">
-                  {{ taskStatusLabelFor(task.status) }}
-                </n-tag>
-                <span>{{ task.updated_at }}</span>
-              </div>
-            </button>
+              <button
+                type="button"
+                class="pdf-book-ocr-history-item"
+                :class="{ 'is-selected': currentTask?.id === task.id }"
+                @click="loadTask(task.id)"
+              >
+                <div class="pdf-book-ocr-history-item__main">
+                  <strong>{{ taskSourceLabel(task) }}</strong>
+                  <span>{{ task.id }}</span>
+                </div>
+                <div class="pdf-book-ocr-history-item__meta">
+                  <n-tag size="small" :type="taskStatusTypeFor(task.status)" :bordered="false">
+                    {{ taskStatusLabelFor(task.status) }}
+                  </n-tag>
+                  <span>{{ task.updated_at }}</span>
+                </div>
+              </button>
+              <n-button
+                type="error"
+                tertiary
+                size="small"
+                :loading="deletingTaskId === task.id"
+                :disabled="task.status === 'pending' || task.status === 'running' || !!deletingTaskId || retrying"
+                :aria-label="`删除 ${taskSourceLabel(task)}`"
+                @click="confirmDelete(task)"
+              >删除</n-button>
+            </div>
           </div>
         </n-card>
       </n-grid-item>
@@ -625,6 +721,12 @@ onBeforeUnmount(stopPolling);
   border-left: 1px solid rgba(148, 163, 184, 0.3);
 }
 
+.pdf-book-ocr-task__actions {
+  margin-top: 14px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .pdf-book-ocr-task__error {
   margin-top: 14px;
 }
@@ -655,7 +757,14 @@ onBeforeUnmount(stopPolling);
   gap: 8px;
 }
 
+.pdf-book-ocr-history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .pdf-book-ocr-history-item {
+  min-width: 0;
   display: flex;
   width: 100%;
   align-items: center;

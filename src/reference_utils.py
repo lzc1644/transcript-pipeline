@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from src.codex_lb_client import CodexLBClient
+from src.ocr_page_markers import format_ocr_page_break
 from src.ocr_scheduler import OCRPageTask, run_staggered_page_ocr_tasks
 from src.pdf_ocr_workflow import (
     PDFOCRPageState,
@@ -806,7 +807,16 @@ def run_codex_api_pdf_ocr(
         )
 
     page_texts = [completed_page_texts[page_number] for page_number in range(1, page_count + 1)]
-    text = "".join(page_texts)
+    # 页内换行照原样保留；仅在真实 PDF 页边界加入可识别标记。
+    # 空白页也保留页边界，页码始终对应原 PDF，不猜测跨页自然段。
+    parts: list[str] = []
+    for page_number, page_text in enumerate(page_texts, start=1):
+        if page_number > 1:
+            parts.append(format_ocr_page_break(page_number - 1))
+        normalized_text = page_text.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+        if normalized_text.strip():
+            parts.append(normalized_text)
+    text = "\n\n".join(parts)
 
     if sidecar_path is None:
         ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
