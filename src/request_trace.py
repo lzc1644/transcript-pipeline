@@ -191,6 +191,7 @@ def describe_refine_attempt(
     reasons: list[str],
     markdown: str = "",
     error: BaseException | None = None,
+    refinement_reason: str | None = None,
 ) -> dict[str, Any]:
     """把根因而非回退副作用放入汇总；候选稿仅保存到诊断目录。"""
     details: dict[str, Any] = {
@@ -198,6 +199,16 @@ def describe_refine_attempt(
     }
     if not reasons and error is None:
         return {**details, "failure_category": None, "failure_summary": None}
+
+    if error is None and (
+        refinement_reason == "locked_quote_changed" or "locked_quote_changed" in reasons
+    ):
+        return {
+            **details,
+            "failure_category": "locked_quote_validation",
+            "failure_summary": "模型结果未完整保留锁定原文的实词或顺序（locked_quote_changed），不是后端调用失败。",
+            "failure_evidence_file": "locked-quote-validation.json",
+        }
 
     if error is not None or "programmatic_markdown_fallback" in reasons:
         for filename, category, label in (

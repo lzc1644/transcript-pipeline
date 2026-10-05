@@ -53,6 +53,7 @@ data/output/logs/*
 !data/output/logs/.gitkeep
 
 # Temporary debug artifacts
+tmp/
 tmp_*
 *.tmp
 
@@ -62,3 +63,4 @@ tmp_*
 # Frontend
 frontend/node_modules/
 frontend/dist/
+frontend/test-results/

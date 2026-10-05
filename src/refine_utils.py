@@ -196,7 +196,7 @@ def normalize_multiline_text(text: str) -> str:
     return "\n\n".join(paragraph for paragraph in paragraphs if paragraph).strip()
 
 
-def markdown_to_plain_text(markdown_text: str) -> str:
+def markdown_to_plain_text(markdown_text: str, *, preserve_headings: bool = False) -> str:
     lines: list[str] = []
     in_code_block = False
     for raw_line in markdown_text.splitlines():
@@ -208,7 +208,9 @@ def markdown_to_plain_text(markdown_text: str) -> str:
         if in_code_block:
             continue
         if stripped.startswith("#"):
-            continue
+            if not preserve_headings:
+                continue
+            stripped = re.sub(r"^#{1,6}\s+", "", stripped)
         if stripped.startswith(">"):
             stripped = stripped.lstrip(">").strip()
         if not stripped:
@@ -758,7 +760,8 @@ def build_single_pass_refine_prompt(
 
 
 def locked_quotes_preserved(final_markdown: str, pre_replaced_segments: list[PreReplacementSegment]) -> bool:
-    plain_text = normalize_for_match(markdown_to_plain_text(final_markdown))
+    # 标题也是锁定原文的一部分；只去 Markdown 标记，不能丢弃标题文字。
+    plain_text = normalize_for_match(markdown_to_plain_text(final_markdown, preserve_headings=True))
     for segment in pre_replaced_segments:
         if segment.segment_type != "locked_quote":
             continue
@@ -1604,6 +1607,8 @@ def validate_final_markdown_contract(
     reasons: list[str] = []
     if result.refinement_strategy == "programmatic_markdown_fallback":
         reasons.append("programmatic_markdown_fallback")
+        if result.refinement_reason == "locked_quote_changed":
+            reasons.append("locked_quote_changed")
     if "\ufffd" in final_markdown:
         reasons.append("contains_unicode_replacement_character")
 
@@ -1619,11 +1624,19 @@ def validate_final_markdown_contract(
 
 def build_validation_retry_prompt(markdown_prompt_text: str, reasons: list[str]) -> str:
     rendered_reasons = "、".join(reasons)
+    locked_quote_guidance = (
+        [
+            "锁定原文校验失败：必须保留每个 locked_quote 的全部实词、标题文字和顺序；"
+            "只允许调整标点、断句和 Markdown 格式，不得删除、替换或插入实词。"
+        ]
+        if "locked_quote_changed" in reasons else []
+    )
     return "\n\n".join(
         [
             markdown_prompt_text.strip(),
             "## 上一次校对结果未通过交付校验，必须重新完整润色",
             f"检测原因：{rendered_reasons}。",
+            *locked_quote_guidance,
             "这不是让你解释错误；请重新输出完整 JSON，且 final_markdown 必须是可直接交付的 Markdown。",
             "final_markdown 不得使用 `# source` 等内部占位标题；如果输出一级标题，必须使用真实内容标题。",
             "不得保留 Unicode 替换字符 `�`，应结合 ASR 和参考原文纠正明显损坏的文字。",
@@ -1690,6 +1703,7 @@ def run_validated_single_pass_backend_refinement(
             reasons=reasons,
             markdown=result.final_markdown if result is not None else "",
             error=error,
+            refinement_reason=result.refinement_reason if result is not None else None,
         )
         validation_payload.update(diagnostic_details)
         request_trace.write_json("validation.json", validation_payload)
