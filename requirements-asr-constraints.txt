@@ -112,7 +112,9 @@ qwen-omni-utils==0.0.9
 regex==2026.9.29
 requests==2.34.2
 rich==15.0.0
-ruff==0.16.9
+# Gradio's tooling dependency, not part of ASR inference. Allow available
+# compatible wheels rather than making one patch release a deployment blocker.
+ruff>=0.9.3,<0.17
 safehttpx==0.1.7
 safetensors==0.8.0
 scikit-learn==1.9.1

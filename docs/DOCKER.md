@@ -40,6 +40,10 @@ bash scripts/deploy_docker_wsl2.sh           # 人工确认后安装缺失的 Do
 
 Compose 和部署脚本默认 `ASR_BACKENDS=qwen`：保留 Whisper，并在独立 Python 环境安装两款 Qwen3-ASR 的依赖，不改变默认转录模型。首次构建会下载较大的 PyTorch 等依赖，但不下载模型权重；首次转录仍可能下载权重。可用 `ASR_BACKENDS=whisper bash scripts/deploy_docker_wsl2.sh` 构建精简版，或选择 `funasr` / `all`。脚本在使用 sudo 时也会保留此选项。仅设置宿主环境或重启旧容器不会安装依赖，必须重新构建并创建容器；先确认没有运行中任务。
 
+WSL2 脚本与原生 Linux 入口默认使用 `TRANSCRIPT_PROFILE=wsl2_gpu_high_accuracy`，包括 sudo 路径；项目 `.env` 中的 `local_cpu` 不再意外覆盖脚本默认值。显式导出的 profile 和 Web 已保存设置仍可覆盖默认值。更新已有 `trans` 前须人工确认任务已结束，`healthy` 不代表任务空闲；健康启动最多等待 150 秒。镜像构建失败时不会执行容器更新。
+
+若构建报 `gradio ... ruff>=0.9.3` 与某个固定 Ruff 版本冲突，并同时提示 `ruff` 没有可用发行包，这不一定是版本区间不兼容：也可能是当前索引、代理或网络没有返回该版本的 wheel。Ruff 是 Gradio 的工具依赖，不参与 ASR 推理；其共享约束为 `>=0.9.3,<0.17`，允许选择可用的兼容版本，Qwen/PyTorch 等核心版本仍固定。可选 SDK 安装使用 60 秒网络超时、10 次连接重试及 10 次大包续传重试，并保留 `pip check`。若仍失败，检查完整构建日志及 WSL/Docker 构建网络，不要删掉全部约束、关闭 TLS/哈希校验或以 CPU/Whisper 回退冒充成功。修复后重新 `docker compose build trans` 即可复用已完成层，无需删除 data、模型卷或全量清理构建缓存。
+
 脚本不会执行 `apt upgrade`、给用户加入 Docker 组、递归 chown、启动付费任务或删除数据；当前用户无 Docker socket 权限时仅对 Docker 命令使用 sudo。镜像拉取/编译需联网。Web 设置页的 Key 不作为部署脚本输入；安装/启动/health/GPU 设备检查不调用远端业务或下载模型。若已有 `transcript-pipeline-app-1`，脚本**会停止执行而不会中断任务或自动删除旧容器**；先确认旧任务结束，再人工 `docker stop transcript-pipeline-app-1 && docker rm transcript-pipeline-app-1`（只移除旧容器，不带 `-v`，不要执行 `down -v`），随后重跑脚本。改名后的新容器为 `transcript-pipeline-trans-1`，保留同一 `./data` bind 和 `transcript-pipeline_model-cache` 卷；不要在两个服务上同时运行同一任务。
 
 若环境已准备好，手工部署等价于：

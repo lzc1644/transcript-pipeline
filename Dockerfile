@@ -55,9 +55,9 @@ RUN case "${ASR_BACKENDS}" in \
              funasr) ASR_REQUIREMENTS="-r requirements-asr-funasr.txt" ;; \
              all) ASR_REQUIREMENTS="-r requirements-asr-qwen.txt -r requirements-asr-funasr.txt" ;; \
            esac \
-        && /app/.venv/asr-py312/bin/python -m pip install --no-cache-dir pip==26.2.1 \
-        && /app/.venv/asr-py312/bin/python -m pip install --no-cache-dir --constraint requirements-asr-constraints.txt setuptools wheel \
-        && /app/.venv/asr-py312/bin/python -m pip install --no-cache-dir --no-build-isolation --resume-retries 10 ${ASR_REQUIREMENTS} \
+        && /app/.venv/asr-py312/bin/python -m pip install --no-cache-dir --retries 10 --timeout 60 pip==26.2.1 \
+        && /app/.venv/asr-py312/bin/python -m pip install --no-cache-dir --retries 10 --timeout 60 --constraint requirements-asr-constraints.txt setuptools wheel \
+        && /app/.venv/asr-py312/bin/python -m pip install --no-cache-dir --retries 10 --timeout 60 --no-build-isolation --resume-retries 10 ${ASR_REQUIREMENTS} \
         && /app/.venv/asr-py312/bin/python -m pip check ;; \
       *) echo "ASR_BACKENDS must be whisper, qwen, funasr or all" >&2; exit 2 ;; \
     esac

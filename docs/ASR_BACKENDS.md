@@ -68,7 +68,7 @@ uv pip check --python .venv/asr-py312/bin/python
 .venv/bin/python -m pytest
 ```
 
-`requirements-asr-constraints.txt` 是已实测 worker 环境的传递依赖版本快照，不用于基础 Web 环境；不宣称支持所有 OS、架构或 Python 版本。普通 pytest 不下载模型或运行 GPU。
+`requirements-asr-constraints.txt` 是已实测 worker 环境的传递依赖版本快照，不用于基础 Web 环境。例外：Gradio 的非推理工具依赖 Ruff 使用兼容范围 `>=0.9.3,<0.17`，避免单一补丁版本在部署索引不可用时阻塞整个 SDK 安装；Qwen、PyTorch 等推理依赖仍固定。不宣称支持所有 OS、架构或 Python 版本。普通 pytest 不下载模型或运行 GPU。
 
 配置例子：
 

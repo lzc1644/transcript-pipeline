@@ -13,7 +13,9 @@ usage() {
   --check  只读检查环境和旧容器，不安装、重启、构建或启动
   --yes    明确同意安装宿主软件、配置 daemon 并按需重启共享 Docker（供人工批准后使用）
 环境变量 ASR_BACKENDS：qwen（默认，Whisper + Qwen）、whisper、funasr 或 all。
-默认交互式确认，部署 Compose 服务 trans。只支持 WSL2 内原生 Docker Engine；不改 Windows 驱动、网络或防火墙。
+默认交互式确认，部署 Compose 服务 trans；更新前须确认任务已结束，healthy 不代表空闲。
+默认 TRANSCRIPT_PROFILE=wsl2_gpu_high_accuracy（Web 保存设置可能优先）。
+只支持 WSL2 内原生 Docker Engine；不改 Windows 驱动、网络或防火墙。
 USAGE
 }
 fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
@@ -93,6 +95,14 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     fail '先确认没有运行中任务，再由用户自行停止/移除旧 app 容器；绝不自动停止、删除或使用 --remove-orphans。之后重新运行脚本。'
   fi
 fi
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  existing="$(docker ps -a --filter 'label=com.docker.compose.project=transcript-pipeline' \
+    --filter 'label=com.docker.compose.service=trans' --format '{{.Names}} {{.Status}}')"
+  if [[ -n $existing ]]; then
+    info "已有 trans：$existing"
+    info '更新可能重建容器并中断内存中的任务；请先确认任务已结束，healthy 不代表空闲'
+  fi
+fi
 info "环境: $ID $VERSION_CODENAME / WSL2; 目标 Compose 服务: trans"
 info "ASR 依赖: $ASR_BACKENDS（所有选项均保留 Whisper；不会改变默认转录模型）"
 info '将使用可信局域网端口 8080（默认 0.0.0.0）；不提供登录或 HTTPS，不应暴露公网'
@@ -101,6 +111,7 @@ if ((CHECK_ONLY)); then
   exit 0
 fi
 
+info '请先确认已有 trans 的任务已结束；部署可能重建容器，也可能重启共享 Docker'
 if ((!ASSUME_YES)); then
   [[ -t 0 ]] || fail '非交互环境必须由操作者显式传入 --yes，不能默许重启共享 Docker'
   printf '可能安装软件、修改 /etc/docker/daemon.json 并重启共享 Docker（影响其他容器）。确认后输入 DEPLOY：'
@@ -160,6 +171,9 @@ legacy="$("${DOCKER[@]}" ps -a --filter 'label=com.docker.compose.project=transc
 [[ -z $legacy ]] || fail "旧 app 容器仍存在：$legacy。确认任务完成后由用户手动停止/移除，再重跑脚本"
 
 export APP_UID="${APP_UID:-$(id -u)}" APP_GID="${APP_GID:-$(id -g)}"
+# Match the sudo path and native Linux entrypoint: a copied .env example must
+# not silently select local_cpu for this GPU deployment.
+export TRANSCRIPT_PROFILE="${TRANSCRIPT_PROFILE:-wsl2_gpu_high_accuracy}"
 dc() {
   if ((USE_SUDO)); then
     # Only non-secret Compose knobs cross sudo; configure codex-lb in the Web UI.
@@ -203,12 +217,13 @@ info '官方 CUDA 容器 GPU 可见性测试（不下载 ASR 模型）'
 
 dc config --quiet
 info '构建镜像并后台启动 trans（不调用 codex-lb、不下载模型）'
-dc build trans
+dc build trans || fail 'trans 镜像构建失败；请检查上方 pip/软件源/网络错误。未更新现有容器，不会回退为 Whisper 或 CPU'
 dc up -d --no-build trans
 container="$(dc ps -q trans)"
 [[ -n $container ]] || fail 'trans 容器未创建；检查 docker compose ps -a'
 healthy=0
-for ((attempt=0; attempt<45; attempt++)); do
+status=unknown
+for ((attempt=0; attempt<75; attempt++)); do
   status="$("${DOCKER[@]}" inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$container")"
   if [[ $status == healthy ]]; then healthy=1; break; fi
   if [[ $status == unhealthy || $status == no-healthcheck ]]; then break; fi
