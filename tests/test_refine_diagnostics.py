@@ -38,13 +38,16 @@ def build_completed_sse(output_text: str, *, response_id: str = "resp_test_trace
     )
 
 
+@pytest.mark.parametrize("base_url", ["http://127.0.0.1:2455", "http://127.0.0.1:2455/v1/"])
 def test_codex_api_trace_persists_request_transport_sse_and_parsed_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    base_url: str,
 ) -> None:
     write_minimal_settings(tmp_path, llm_overrides={"model": "gpt-5.6-terra", "reasoning_effort": "xhigh"})
     loaded_settings = load_settings(project_root=tmp_path)
     monkeypatch.setenv("CODEX_LB_API_KEY", "test-secret-key")
+    monkeypatch.setenv("CODEX_LB_BASE_URL", base_url)
     output_payload = {
         "final_markdown": "# 可交付标题\n\n完整正文",
         "section_map": [],
@@ -66,7 +69,7 @@ def test_codex_api_trace_persists_request_transport_sse_and_parsed_output(
             return stream_text.encode("utf-8")
 
         def geturl(self) -> str:
-            return "http://127.0.0.1:2455/backend-api/codex/responses"
+            return "http://127.0.0.1:2455/v1/responses"
 
     monkeypatch.setattr("src.codex_lb_client.urlopen", lambda _request, timeout=None: FakeResponse())
     trace = RequestTrace(tmp_path / "trace")
@@ -79,6 +82,7 @@ def test_codex_api_trace_persists_request_transport_sse_and_parsed_output(
     assert request_meta["prompt_chars"] == len("阶段 6 测试 Prompt")
     assert request_meta["reasoning_effort"] == "xhigh"
     assert request_meta["endpoint"]["host"] == "127.0.0.1"
+    assert request_meta["endpoint"]["path"] == "/v1/responses"
     assert "authorization" not in json.dumps(request_meta, ensure_ascii=False).lower()
 
     transport = json.loads((trace.directory / "transport.json").read_text(encoding="utf-8"))
@@ -173,7 +177,7 @@ def test_codex_api_trace_keeps_completed_sse_when_model_output_is_not_json(
             return stream_text.encode("utf-8")
 
         def geturl(self) -> str:
-            return "http://127.0.0.1:2455/backend-api/codex/responses"
+            return "http://127.0.0.1:2455/v1/responses"
 
     monkeypatch.setattr("src.codex_lb_client.urlopen", lambda _request, timeout=None: FakeResponse())
     trace = RequestTrace(tmp_path / "trace")
@@ -266,7 +270,7 @@ def test_codex_api_trace_write_failure_does_not_change_successful_result(
             return stream_text.encode("utf-8")
 
         def geturl(self) -> str:
-            return "http://127.0.0.1:2455/backend-api/codex/responses"
+            return "http://127.0.0.1:2455/v1/responses"
 
     monkeypatch.setattr("src.codex_lb_client.urlopen", lambda _request, timeout=None: FakeResponse())
     blocked_trace_path = tmp_path / "trace-is-a-file"

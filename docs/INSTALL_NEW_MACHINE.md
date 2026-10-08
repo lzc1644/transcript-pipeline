@@ -87,18 +87,18 @@ WSL2 NAT 网络下，启动脚本会打印 Windows 管理员 PowerShell 中需�
 在 WSL shell 中配置：
 
 ```bash
-export CODEX_LB_BASE_URL="http://127.0.0.1:2455"
-export CODEX_LB_API_KEY="你的 codex-lb API key"
+export CODEX_LB_BASE_URL="http://127.0.0.1:8317/v1"
+export CODEX_LB_API_KEY="你的 CPA 客户端 API key"
 ```
 
 远程反代时：
 
 ```bash
-export CODEX_LB_BASE_URL="https://你的反代域名"
-export CODEX_LB_API_KEY="你的 codex-lb API key"
+export CODEX_LB_BASE_URL="https://你的网关域名/v1"
+export CODEX_LB_API_KEY="你的 CPA 客户端 API key"
 ```
 
-`CODEX_LB_BASE_URL` 填项目根地址，不要带 `/v1`。
+默认连接 CPA（CLIProxyAPI）的标准 `/v1/responses`；`CODEX_LB_BASE_URL` 支持服务根地址或带 `/v1` 的地址，不重复拼接。环境变量名保留以兼容旧配置。API Key 使用 CPA 的客户端 `api-keys`，不是管理密钥；模型 ID 必须与 CPA 提供的模型一致。也可在 Web「运行设置」更新地址和 key，已保存的 Web 值会覆盖环境默认。
 
 ## 4. 判断安装成功
 

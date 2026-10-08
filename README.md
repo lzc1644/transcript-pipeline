@@ -162,23 +162,27 @@ bash scripts/install_wsl2_env.sh
 
 ## Codex API 模式
 
-当前默认 AI 后端已经切到 `codex_api`。下列环境变量示例用于原有本地脚本开发；Docker 部署的 codex-lb 位于外部互联网，优先在现有 Web「运行设置」中配置 HTTPS Base URL、API Key 和直连开关，无需在本机启动 codex-lb、也无需填写 `.env`。本地脚本方式使用前请确保目标 codex-lb 服务已启动/可达，再在当前 shell 配置 API 地址和 key：
+当前默认 AI 后端为 `codex_api`，通过 CPA（CLIProxyAPI）或其他 OpenAI 兼容网关调用标准 Responses API。阶段 6 校对和 PDF OCR 默认均请求 `/v1/responses`，使用 `Authorization: Bearer <API Key>`，保留现有流式响应解析。
 
-本地 `codex-lb`：
+优先在 Web「运行设置」的「CPA / OpenAI 兼容 API 连接」中填写 Base URL 和 **CPA 客户端 API Key**（CPA 配置的 `api-keys`，不是管理面板密钥），按需开启直连。旧 `codex_lb` 配置段、Web 保存字段和 `CODEX_LB_*` 环境变量名保持不变，仅名称兼容，并不要求继续部署 codex-lb。网页保存的地址/key 会覆盖环境默认；迁移时请手动更新，程序不会覆盖已保存值。
 
-```bash
-export CODEX_LB_BASE_URL="http://127.0.0.1:2455"
-export CODEX_LB_API_KEY="你的 codex-lb API key"
-```
-
-远程反代 `codex-lb`：
+本地脚本配置示例（CPA 示例端口为 `8317`，按实际部署调整）：
 
 ```bash
-export CODEX_LB_BASE_URL="https://你的反代域名"
-export CODEX_LB_API_KEY="你的 codex-lb API key"
+export CODEX_LB_BASE_URL="http://127.0.0.1:8317/v1"
+export CODEX_LB_API_KEY="你的 CPA 客户端 API key"
 ```
 
-注意：`CODEX_LB_BASE_URL` 填项目根地址，不要带 `/v1`。程序会按配置自动拼接 `/v1/responses` 和 `/backend-api/codex/responses`。
+远程 CPA：
+
+```bash
+export CODEX_LB_BASE_URL="https://你的网关域名/v1"
+export CODEX_LB_API_KEY="你的 CPA 客户端 API key"
+```
+
+Base URL 可填服务根地址或带 `/v1` 的地址（支持尾部 `/` 和反代路径前缀），不会重复拼接成 `/v1/v1/responses`。不要填写 `/responses` 完整端点或管理页面地址。Docker 内 `127.0.0.1` 指容器自己，远端网关应填写实际可达的 HTTPS 地址。`llm.model`、`reference.codex_ocr_model` 和网页模型默认值必须匹配 CPA `/v1/models` 中的模型 ID；程序不会自动迁移旧网关的模型别名。
+
+如需旧 codex-lb 的专用校对端点，可显式将 `codex_lb.codex_responses_path` 设回 `/backend-api/codex/responses`；旧文件上传接口不属于 CPA 标准接口，当前校对/OCR 路径不使用它。
 
 阶段 3 参考原文准备会按配置默认使用 Codex API 做 PDF OCR：
 
@@ -720,7 +724,7 @@ http://127.0.0.1:5173
 
 - 默认按 `config/settings.yaml` 中的 `llm.backends` 运行后端，当前默认是 `codex_api`
 - 可用 `--backend codex_api|codex_cli|agy|both` 临时覆盖
-- `codex_api` 通过 `codex-lb` 调用，`CODEX_LB_BASE_URL` 和 `CODEX_LB_API_KEY` 必须在环境变量中可用
+- `codex_api` 通过 CPA / OpenAI 兼容网关调用；脚本可使用保留名称的 `CODEX_LB_BASE_URL` 和 `CODEX_LB_API_KEY`，Web 任务也可使用已保存的连接设置
 - 阶段 6 模型可用 `--model` 临时覆盖，reasoning 可用 `--reasoning-effort` 临时覆盖
 - `both` 保持旧语义，只展开为 `codex_cli + agy`
 - Gemini 主模型默认是 `Gemini 3.1 Pro (High)`
@@ -1047,7 +1051,7 @@ JSON 中间结果至少包含：
 PDF 支持边界：
 
 - 当前 PDF 默认优先尝试 `codex_api` OCR
-- `codex_api` OCR 先读取 PDF 总页数，再由受限工作线程按需用 `pdftoppm` 渲染当前页，并通过 codex-lb `/v1/responses` 发送一个 `input_image`；页面完成后立即释放图片数据，不会一次性把整本书的 PNG/base64 保存在内存中
+- `codex_api` OCR 先读取 PDF 总页数，再由受限工作线程按需用 `pdftoppm` 渲染当前页，并通过 CPA / OpenAI 兼容网关的 `/v1/responses` 发送一个 `input_image`；页面完成后立即释放图片数据，不会一次性把整本书的 PNG/base64 保存在内存中
 - 独立 PDF OCR 任务会把每个成功页原子写入任务目录；单页失败后继续处理其余页面并记录完整失败页码，点击“重试缺失页”只重新请求没有成功检查点的页面
 - 最终 TXT 仍只在所有页检查点齐全后按页序生成，在真实页边界插入 `----- OCR_PAGE_BREAK: 1 -> 2 -----`（页码随原 PDF 变化）；单页检查点不包含新增标记，服务或任务进程重启不会删除已成功页面
 - `codex_api` OCR 默认模型是 `gpt-6-luna`，reasoning effort 是 `high`

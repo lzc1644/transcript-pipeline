@@ -131,27 +131,30 @@ onMounted(loadSettings);
 
     <n-grid :cols="2" :x-gap="18" :y-gap="18" responsive="screen" item-responsive>
       <n-grid-item span="2 m:1">
-        <n-card title="codex-lb 连接" class="view-card settings-card">
+        <n-card title="CPA / OpenAI 兼容 API 连接" class="view-card settings-card">
           <n-form label-placement="top">
             <n-form-item label="Base URL">
               <n-input
                 v-model:value="form.codex_lb_base_url"
-                placeholder="http://127.0.0.1:2455 或 https://你的反代域名"
+                placeholder="http://127.0.0.1:8317/v1 或 https://你的网关域名/v1"
               />
             </n-form-item>
+            <p style="font-size: 12px; color: var(--n-text-color-3, #8c8c8c); line-height: 1.5;">
+              支持网关根地址或带 /v1 的地址；校对与 OCR 均调用 /v1/responses。模型名称须与 CPA 提供的一致。
+            </p>
             <n-form-item label="API Key">
               <n-input
                 v-model:value="form.codex_lb_api_key"
                 type="password"
                 show-password-on="click"
-                placeholder="留空则保持现有 key"
+                placeholder="填写 CPA 客户端 API Key；留空则保持现有 key"
               />
             </n-form-item>
             <n-form-item label="API 直连（绕过代理）">
               <n-space vertical :size="4" style="width: 100%;">
                 <n-switch v-model:value="form.codex_lb_bypass_proxy" />
                 <div style="font-size: 12px; color: var(--n-text-color-3, #8c8c8c); line-height: 1.5;">
-                  开启后仅 Codex API 地址绕过系统代理；其他网站仍使用原代理。保存后对新任务生效。
+                  开启后仅 API 网关地址绕过系统代理；其他网站仍使用原代理。保存后对新任务生效。
                 </div>
               </n-space>
             </n-form-item>

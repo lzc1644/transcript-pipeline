@@ -155,7 +155,7 @@ def write_minimal_settings(
             "base_url_env": "CODEX_LB_BASE_URL",
             "api_key_env": "CODEX_LB_API_KEY",
             "responses_path": "/v1/responses",
-            "codex_responses_path": "/backend-api/codex/responses",
+            "codex_responses_path": "/v1/responses",
             "files_create_path": "/backend-api/files",
             "files_finalize_path_template": "/backend-api/files/{file_id}/uploaded",
         },

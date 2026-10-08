@@ -202,12 +202,13 @@ llm:
   safe_replace_max_extra_content_ratio: 0.12
   safe_replace_min_run_length: 2
 
+# 名称保留以兼容旧设置；连接 CPA（CLIProxyAPI）的标准 Responses API。
 codex_lb:
-  base_url: "http://127.0.0.1:2455"
+  base_url: "http://127.0.0.1:8317"
   base_url_env: "CODEX_LB_BASE_URL"
   api_key_env: "CODEX_LB_API_KEY"
   responses_path: "/v1/responses"
-  codex_responses_path: "/backend-api/codex/responses"
+  codex_responses_path: "/v1/responses"
   files_create_path: "/backend-api/files"
   files_finalize_path_template: "/backend-api/files/{file_id}/uploaded"
 

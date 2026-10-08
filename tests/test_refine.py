@@ -730,9 +730,11 @@ def test_run_codex_cli_uses_configured_model_and_reasoning_effort(
     assert seen["timeout_seconds"] == 1800
 
 
+@pytest.mark.parametrize("base_url", ["http://127.0.0.1:2455", "http://127.0.0.1:2455/v1/"])
 def test_run_codex_api_uses_responses_api_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    base_url: str,
 ) -> None:
     write_minimal_settings(
         tmp_path,
@@ -746,6 +748,7 @@ def test_run_codex_api_uses_responses_api_payload(
     )
     loaded_settings = load_settings(project_root=tmp_path)
     monkeypatch.setenv("CODEX_LB_API_KEY", "test-key")
+    monkeypatch.setenv("CODEX_LB_BASE_URL", base_url)
     seen: dict[str, object] = {}
 
     class FakeResponse:
@@ -789,7 +792,7 @@ def test_run_codex_api_uses_responses_api_payload(
     assert result.backend == BACKEND_CODEX_API
     assert result.model_name == "gpt-5.6-sol"
     assert "完整精修文本" in result.final_markdown
-    assert seen["url"] == "http://127.0.0.1:2455/backend-api/codex/responses"
+    assert seen["url"] == "http://127.0.0.1:2455/v1/responses"
     assert seen["method"] == "POST"
     assert seen["headers"]["Authorization"] == "Bearer test-key"
     assert seen["timeout"] == 1800
@@ -817,7 +820,7 @@ def test_run_codex_api_retries_with_curl_on_cloudflare_block(
 
     def fake_urlopen(_request, timeout=None):
         raise HTTPError(
-            "https://api.redworker.org/backend-api/codex/responses",
+            "https://api.redworker.org/v1/responses",
             403,
             "Forbidden",
             {},

@@ -399,9 +399,11 @@ def test_render_pdf_page_as_png_data_url_rejects_page_out_of_range(
         render_pdf_page_as_png_data_url(source, 11, 10)
 
 
+@pytest.mark.parametrize("base_url", ["http://127.0.0.1:2455", "http://127.0.0.1:2455/v1/"])
 def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    base_url: str,
 ) -> None:
     write_minimal_settings(
         tmp_path,
@@ -414,6 +416,7 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
     )
     loaded_settings = load_settings(project_root=tmp_path)
     monkeypatch.setenv("CODEX_LB_API_KEY", "test-key")
+    monkeypatch.setenv("CODEX_LB_BASE_URL", base_url)
 
     source = tmp_path / "external" / "scan.pdf"
     source.parent.mkdir(parents=True, exist_ok=True)

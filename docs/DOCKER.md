@@ -86,11 +86,11 @@ services:
 
 先 `export CUSTOM_SETTINGS_FILE=/absolute/path/outside/repository/settings.yaml`；对应文件必须事先存在且容器用户可读，不放入 Docker 构建上下文。切勿把整个宿主项目挂到 `/app` 覆盖镜像。历史 `data/jobs` 中保存的宿主绝对路径在容器内通常不可重用；使用隔离验收目录新建任务，不改写旧状态/上游产物。
 
-## 互联网 codex-lb 与局域网访问
+## 互联网 CPA / API 网关与局域网访问
 
-**codex-lb 在外部互联网，本机不部署它。** 浏览器只请求同源 `/api`，后端经普通 bridge 出站 HTTPS。打开现有网页「运行设置」填写远端 **HTTPS Base URL（服务根地址，不附加 `/v1`）**、API Key，按需切换已有「API 直连（绕过代理）」开关并保存；数据位于 `/app/data/jobs/frontend-settings.json`。不必填 `.env`。可选使用宿主传入的 `CODEX_LB_BASE_URL`/`CODEX_LB_API_KEY` 环境变量，但避免 shell 历史、Compose 展开输出和日志暴露密钥；网页保存的值会覆盖环境默认。旧配置里 `http://127.0.0.1:2455` 在容器中指向容器自己，不能用于远端服务；可选 `codex_cli`、`agy` 等依赖额外 CLI 登录的后端未默认打包，默认远端路径是 `codex_api`。不加 host 网络、`host.docker.internal`、codex-lb 端口映射或默认宿主代理。
+**CPA / API 网关部署在外部，本机不随此项目部署它。** 浏览器只请求同源 `/api`，后端经普通 bridge 出站 HTTPS。打开现有网页「运行设置」填写远端 **HTTPS Base URL（服务根地址或带 `/v1` 的地址）**、CPA 客户端 API Key（不是管理密钥），按需切换已有「API 直连（绕过代理）」开关并保存；数据位于 `/app/data/jobs/frontend-settings.json`。不必填 `.env`。阶段 6 和 OCR 默认均使用标准 `/v1/responses`，模型 ID 须匹配 CPA 提供的模型；配置段和 Web 字段保留旧名，迁移时手动更新已保存的连接和模型。可选使用宿主传入的 `CODEX_LB_BASE_URL`/`CODEX_LB_API_KEY` 环境变量（名称保留以兼容旧部署），但避免 shell 历史、Compose 展开输出和日志暴露密钥；网页保存的值会覆盖环境默认。本地地址（包括默认示例 `http://127.0.0.1:8317` 和旧地址 `http://127.0.0.1:2455`）在容器中指向容器自己，不能用于远端服务；可选 `codex_cli`、`agy` 等依赖额外 CLI 登录的后端未默认打包，默认远端路径是 `codex_api`。不加 host 网络、`host.docker.internal`、codex-lb 端口映射或默认宿主代理。
 
-检查实际容器环境中是否**意外**存在 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`（仅显示变量名，勿打印密钥），以及 DNS、TLS 证书、出站策略。确需代理才单独显式配置；直连开关只对 codex-lb host 临时追加 NO_PROXY，不是关闭所有代理。不要用 `curl -k` 或关闭 TLS 验证。缺 Key 或远端不可达时页面及 `/api/health` 仍应正常，相关任务应报错；认证用实际获批业务请求验证，HTTP 401 不是认证成功、首页 200 不是 API 成功。**真实付费请求必须先取得许可，构建/启动/健康检查都不会调用远端。**
+检查实际容器环境中是否**意外**存在 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY`（仅显示变量名，勿打印密钥），以及 DNS、TLS 证书、出站策略。确需代理才单独显式配置；直连开关只对 API 网关 host 临时追加 NO_PROXY，不是关闭所有代理。不要用 `curl -k` 或关闭 TLS 验证。缺 Key 或远端不可达时页面及 `/api/health` 仍应正常，相关任务应报错；认证用实际获批业务请求验证，HTTP 401 不是认证成功、首页 200 不是 API 成功。**真实付费请求必须先取得许可，构建/启动/健康检查都不会调用远端。**
 
 局域网 HTTP 输入的 Key 在传输中未加密，仅用于可信局域网；响应仍脱敏，但仓库 `data/jobs/frontend-settings.json` 存明文 Key，限制权限并勿提交到 Git。无公网部署、无内建认证或 TLS。Compose 默认将宿主端口发布到 `0.0.0.0`，**这不意味着另一台设备已能访问**：
 

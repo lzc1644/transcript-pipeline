@@ -185,11 +185,12 @@ class LLMSettings(AppBaseModel):
 
 
 class CodexLBSettings(AppBaseModel):
-    base_url: str = "http://127.0.0.1:2455"
+    # 保留旧配置名称；CPA / OpenAI 兼容网关默认统一走标准 Responses API。
+    base_url: str = "http://127.0.0.1:8317"
     base_url_env: str = "CODEX_LB_BASE_URL"
     api_key_env: str = "CODEX_LB_API_KEY"
     responses_path: str = "/v1/responses"
-    codex_responses_path: str = "/backend-api/codex/responses"
+    codex_responses_path: str = "/v1/responses"
     files_create_path: str = "/backend-api/files"
     files_finalize_path_template: str = "/backend-api/files/{file_id}/uploaded"
 

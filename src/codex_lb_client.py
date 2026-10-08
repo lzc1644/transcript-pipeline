@@ -19,7 +19,7 @@ from src.schemas import CodexLBSettings
 
 
 class CodexLBClientError(RuntimeError):
-    """codex-lb API 调用失败。"""
+    """CPA / OpenAI 兼容网关 API 调用失败（保留类名以兼容旧调用）。"""
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ class CodexLBClient:
         env_value = os.environ.get(env_name, "").strip() if env_name else ""
         base_url = env_value or self.settings.base_url.strip()
         if not base_url:
-            raise CodexLBClientError("codex-lb base_url 为空，请检查 codex_lb.base_url 或 CODEX_LB_BASE_URL。")
+            raise CodexLBClientError("API 网关 base_url 为空，请检查 codex_lb.base_url 或配置的地址环境变量。")
         return base_url.rstrip("/")
 
     @property
@@ -41,7 +41,7 @@ class CodexLBClient:
         env_name = self.settings.api_key_env.strip()
         api_key = os.environ.get(env_name, "").strip() if env_name else ""
         if not api_key:
-            raise CodexLBClientError(f"缺少 codex-lb API Key 环境变量: {env_name or 'CODEX_LB_API_KEY'}")
+            raise CodexLBClientError(f"缺少 API 网关 API Key 环境变量: {env_name or 'CODEX_LB_API_KEY'}")
         return api_key
 
     def responses_text(self, payload: dict[str, Any]) -> str:
@@ -70,7 +70,7 @@ class CodexLBClient:
         return self.post_event_stream(
             self.settings.codex_responses_path,
             payload,
-            label="Codex Responses API",
+            label="Responses API",
             request_trace=request_trace,
         )
 
@@ -187,7 +187,12 @@ class CodexLBClient:
 def endpoint_url(base_url: str, path: str) -> str:
     if path.startswith(("http://", "https://")):
         return path
-    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+    base_url = base_url.rstrip("/")
+    path = "/" + path.lstrip("/")
+    # CPA 常见 Base URL 带 /v1；根地址也继续可用，反代路径前缀不变。
+    if urlparse(base_url).path.endswith("/v1") and path.startswith("/v1/"):
+        path = path[len("/v1"):]
+    return f"{base_url}{path}"
 
 
 def read_http_response(
