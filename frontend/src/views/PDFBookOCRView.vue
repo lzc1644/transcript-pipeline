@@ -48,6 +48,7 @@ const activeTaskId = ref("");
 const submitting = ref(false);
 const retrying = ref(false);
 const historyLoading = ref(false);
+const historyError = ref("");
 const taskHistory = ref<PDFBookOCRTask[]>([]);
 const pollingHandle = ref<number | null>(null);
 const pdfExtensions = [".pdf"];
@@ -160,6 +161,7 @@ async function refreshTask() {
 
 async function loadTaskHistory() {
   historyLoading.value = true;
+  historyError.value = "";
   try {
     const tasks = (await listPDFBookOCRTasks()).items;
     taskHistory.value = tasks;
@@ -171,6 +173,7 @@ async function loadTaskHistory() {
       }
     }
   } catch (caught) {
+    historyError.value = caught instanceof Error ? caught.message : "加载 PDF OCR 任务历史失败";
     message.error(caught instanceof Error ? caught.message : "加载 PDF OCR 任务历史失败");
   } finally {
     historyLoading.value = false;
@@ -361,31 +364,20 @@ onBeforeUnmount(stopPolling);
 </script>
 
 <template>
-  <n-space vertical :size="24" class="pdf-book-ocr-view">
-    <section class="view-hero pdf-book-ocr-view__hero">
-      <div>
-        <p class="view-hero__eyebrow">独立工具</p>
-        <h2 class="view-hero__title">PDF 书籍 OCR</h2>
-        <p class="view-hero__copy">上传一本书或整套 PDF，逐页识别后下载 TXT，多本书可一键打包。</p>
-      </div>
-      <div class="pdf-book-ocr-view__hero-mark" aria-hidden="true">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-          <path d="M14 2v6h6M8 13h8M8 17h5" />
-        </svg>
-      </div>
+  <div class="workbench-page pdf-book-ocr-view">
+    <section class="page-heading">
+      <div><h2>PDF 书籍 OCR</h2><p>上传 PDF 或整套书籍目录，查看逐页状态并下载完整 TXT。</p></div>
     </section>
 
     <n-alert type="info" :bordered="false" class="pdf-book-ocr-view__notice">
       本页只接收 PDF。目录上传会保留原有子目录层级；每本书的 TXT 仅在全部页面成功后才会出现。TXT 保留页内段落，真实换页处添加 OCR_PAGE_BREAK 横线标记（含原页码），便于后续校对识别跨页硬换行。
     </n-alert>
 
-    <n-grid :cols="2" :x-gap="20" :y-gap="20" responsive="screen" item-responsive>
-      <n-grid-item span="2 m:1">
+    <div class="workbench-columns">
+      <div class="workspace-primary">
         <n-card class="view-card pdf-book-ocr-panel pdf-book-ocr-panel--input" :bordered="false">
           <template #header>
             <n-flex align="center" :size="10">
-              <span class="pdf-book-ocr-panel__index">01</span>
               <span>选择来源与运行设置</span>
             </n-flex>
           </template>
@@ -430,6 +422,8 @@ onBeforeUnmount(stopPolling);
               <n-input v-model:value="form.ocr_model" placeholder="留空则沿用运行设置" clearable />
             </n-form-item>
 
+            <details class="advanced-options">
+              <summary>高级参数 · 请求投递与并发</summary>
             <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
               <n-grid-item span="2 s:1">
                 <n-form-item label="图片投递间隔（秒）" required>
@@ -455,6 +449,7 @@ onBeforeUnmount(stopPolling);
                 </n-form-item>
               </n-grid-item>
             </n-grid>
+            </details>
 
             <div class="pdf-book-ocr-panel__action">
               <n-button type="primary" size="large" :loading="submitting" :disabled="!form.input_path" @click="submit">
@@ -464,14 +459,12 @@ onBeforeUnmount(stopPolling);
             </div>
           </n-form>
         </n-card>
-      </n-grid-item>
-
-      <n-grid-item span="2 m:1">
+      </div>
+      <aside class="workspace-inspector" aria-label="OCR 识别结果">
         <n-card class="view-card pdf-book-ocr-panel pdf-book-ocr-panel--result" :bordered="false">
           <template #header>
             <n-flex align="center" justify="space-between" :size="10">
               <n-flex align="center" :size="10">
-                <span class="pdf-book-ocr-panel__index">02</span>
                 <span>识别结果</span>
               </n-flex>
               <n-tag :type="taskStatusType" :bordered="false">{{ taskStatusLabel }}</n-tag>
@@ -564,9 +557,8 @@ onBeforeUnmount(stopPolling);
             </div>
           </template>
         </n-card>
-      </n-grid-item>
-
-      <n-grid-item span="2">
+      </aside>
+    </div>
         <n-card class="view-card pdf-book-ocr-history" :bordered="false">
           <template #header>
             <n-flex align="center" justify="space-between" :size="12" wrap>
@@ -578,8 +570,10 @@ onBeforeUnmount(stopPolling);
             </n-flex>
           </template>
 
-          <n-empty v-if="!historyLoading && taskHistory.length === 0" description="还没有 PDF OCR 任务记录。" />
-          <div v-else class="pdf-book-ocr-history__list">
+          <n-alert v-if="historyError" type="error" title="无法读取任务历史" :bordered="false">{{ historyError }}。请刷新重试。</n-alert>
+          <p v-if="historyLoading" role="status" class="prompt-hint">正在读取任务历史…</p>
+          <n-empty v-if="!historyLoading && !historyError && taskHistory.length === 0" description="还没有 PDF OCR 任务记录。" />
+          <div v-if="taskHistory.length" class="pdf-book-ocr-history__list">
             <div
               v-for="task in taskHistory"
               :key="task.id"
@@ -589,6 +583,7 @@ onBeforeUnmount(stopPolling);
                 type="button"
                 class="pdf-book-ocr-history-item"
                 :class="{ 'is-selected': currentTask?.id === task.id }"
+                :aria-pressed="currentTask?.id === task.id"
                 @click="loadTask(task.id)"
               >
                 <div class="pdf-book-ocr-history-item__main">
@@ -614,331 +609,41 @@ onBeforeUnmount(stopPolling);
             </div>
           </div>
         </n-card>
-      </n-grid-item>
-    </n-grid>
-  </n-space>
+  </div>
 </template>
 
 <style scoped>
-.pdf-book-ocr-view__hero-mark {
-  display: grid;
-  width: 58px;
-  height: 58px;
-  margin-bottom: 4px;
-  color: var(--primary);
-  place-items: center;
-  border: 1px solid var(--primary-alpha-20);
-  border-radius: 18px;
-  background: var(--primary-alpha-10);
-  animation: hero-mark-in 480ms ease-out both;
-}
-
-.pdf-book-ocr-view__hero-mark svg {
-  width: 30px;
-  height: 30px;
-}
-
-.pdf-book-ocr-view__notice {
-  animation: panel-enter 360ms 60ms ease-out both;
-}
-
-.pdf-book-ocr-panel {
-  min-height: 100%;
-  animation: panel-enter 420ms ease-out both;
-}
-
-.pdf-book-ocr-panel--result {
-  animation-delay: 90ms;
-}
-
-.pdf-book-ocr-panel__index {
-  display: inline-grid;
-  width: 26px;
-  height: 26px;
-  color: var(--primary);
-  font-size: 11px;
-  font-weight: 700;
-  place-items: center;
-  border-radius: 999px;
-  background: var(--primary-alpha-10);
-}
-
-.pdf-book-ocr-panel__action {
-  display: flex;
-  gap: 14px;
-  align-items: center;
-  padding-top: 18px;
-  color: var(--text-muted);
-  font-size: 13px;
-  border-top: 1px solid rgba(148, 163, 184, 0.24);
-}
-
-.pdf-book-ocr-task {
-  display: flex;
-  gap: 18px;
-  align-items: flex-start;
-  justify-content: space-between;
-  padding-bottom: 16px;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.22);
-}
-
-.pdf-book-ocr-task.is-running {
-  animation: task-pulse 1.8s ease-in-out infinite;
-}
-
-.pdf-book-ocr-task__label,
-.pdf-book-ocr-task__id {
-  margin: 0;
-}
-
-.pdf-book-ocr-task__label {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.pdf-book-ocr-task__id {
-  max-width: 270px;
-  margin-top: 4px;
-  overflow: hidden;
-  color: var(--text-secondary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pdf-book-ocr-task__counts {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-
-.pdf-book-ocr-task__counts span + span {
-  padding-left: 10px;
-  border-left: 1px solid rgba(148, 163, 184, 0.3);
-}
-
-.pdf-book-ocr-task__actions {
-  margin-top: 14px;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.pdf-book-ocr-task__error {
-  margin-top: 14px;
-}
-
-.pdf-book-ocr-task__retry {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  margin-top: 12px;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.pdf-book-ocr-results {
-  display: grid;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.pdf-book-ocr-history__copy {
-  margin: 4px 0 0;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.pdf-book-ocr-history__list {
-  display: grid;
-  gap: 8px;
-}
-
-.pdf-book-ocr-history-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.pdf-book-ocr-history-item {
-  min-width: 0;
-  display: flex;
-  width: 100%;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 14px;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 10px;
-  background: transparent;
-  transition: border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
-}
-
-.pdf-book-ocr-history-item:hover,
-.pdf-book-ocr-history-item.is-selected {
-  border-color: var(--primary-alpha-20);
-  background: var(--primary-alpha-10);
-}
-
-.pdf-book-ocr-history-item:hover {
-  transform: translateY(-1px);
-}
-
-.pdf-book-ocr-history-item__main,
-.pdf-book-ocr-history-item__meta {
-  display: grid;
-  min-width: 0;
-  gap: 3px;
-}
-
-.pdf-book-ocr-history-item__main strong,
-.pdf-book-ocr-history-item__main span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pdf-book-ocr-history-item__main span,
-.pdf-book-ocr-history-item__meta span {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.pdf-book-ocr-history-item__meta {
-  justify-items: end;
-  flex: 0 0 auto;
-}
-
-.pdf-book-ocr-result-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px 12px;
-  align-items: center;
-  padding: 12px 0;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-  transition: transform 180ms ease, background-color 180ms ease;
-}
-
-.pdf-book-ocr-result-item:hover {
-  transform: translateX(3px);
-  background: var(--primary-alpha-10);
-}
-
-.pdf-book-ocr-result-item__main {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  min-width: 0;
-}
-
-.pdf-book-ocr-result-item__main strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pdf-book-ocr-result-item__meta {
-  margin-left: auto;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.pdf-book-ocr-result-item__actions {
-  justify-content: flex-end;
-}
-
-.pdf-book-ocr-result-item__error {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: var(--color-error);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.pdf-book-ocr-result-item__pages,
-.pdf-book-ocr-result-item__details {
-  grid-column: 1 / -1;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.pdf-book-ocr-result-item__pages {
-  display: flex;
-  gap: 4px;
-  align-items: baseline;
-}
-
-.pdf-book-ocr-result-item__details summary {
-  width: fit-content;
-  color: var(--primary);
-  cursor: pointer;
-}
-
-.pdf-book-ocr-result-item__details ul {
-  display: grid;
-  gap: 6px;
-  margin: 8px 0 0;
-  padding-left: 20px;
-}
-
-@keyframes panel-enter {
-  from {
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes hero-mark-in {
-  from {
-    opacity: 0;
-    transform: scale(0.88) rotate(-8deg);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) rotate(0deg);
-  }
-}
-
-@keyframes task-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.64;
-  }
-}
-
-@media (max-width: 640px) {
-  .pdf-book-ocr-view__hero-mark {
-    display: none;
-  }
-
-  .pdf-book-ocr-panel__action,
-  .pdf-book-ocr-task,
-  .pdf-book-ocr-task__retry,
-  .pdf-book-ocr-history-item {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .pdf-book-ocr-task__counts {
-    justify-content: flex-start;
-  }
-
-  .pdf-book-ocr-history-item__meta {
-    justify-items: start;
-  }
+.pdf-book-ocr-panel__action { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding-top: 20px; color: var(--text-muted); font-size: 12px; }
+.pdf-book-ocr-panel__action span { flex: 1 1 220px; }
+.pdf-book-ocr-task { display: grid; gap: 12px; padding-bottom: 16px; border-bottom: 1px solid var(--border-subtle); }
+.pdf-book-ocr-task__label, .pdf-book-ocr-task__id { margin: 0; font-size: 12px; }
+.pdf-book-ocr-task__label { color: var(--text-muted); }
+.pdf-book-ocr-task__id { color: var(--text-primary); font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+.pdf-book-ocr-task__counts { display: flex; flex-wrap: wrap; gap: 8px 16px; color: var(--text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
+.pdf-book-ocr-task__actions, .pdf-book-ocr-task__retry { margin-top: 16px; color: var(--text-muted); font-size: 12px; }
+.pdf-book-ocr-task__retry { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.pdf-book-ocr-task__error { margin-top: 16px; }
+.pdf-book-ocr-results { display: grid; margin-top: 16px; }
+.pdf-book-ocr-result-item { display: grid; gap: 8px; padding: 16px 0; border-bottom: 1px solid var(--border-subtle); min-width: 0; }
+.pdf-book-ocr-result-item__main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.pdf-book-ocr-result-item__main strong { font-size: 13px; overflow-wrap: anywhere; min-width: 0; }
+.pdf-book-ocr-result-item__meta { color: var(--text-muted); font-size: 12px; }
+.pdf-book-ocr-result-item__error { margin: 0; color: var(--color-error); font-size: 12px; overflow-wrap: anywhere; }
+.pdf-book-ocr-result-item__pages, .pdf-book-ocr-result-item__details { color: var(--text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.pdf-book-ocr-result-item__details summary { color: var(--primary); cursor: pointer; padding: 4px 0; }
+.pdf-book-ocr-result-item__details ul { display: grid; gap: 8px; padding-left: 20px; }
+.pdf-book-ocr-history { padding-top: 24px; border-top: 1px solid var(--border-subtle); }
+.pdf-book-ocr-history__copy { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; font-weight: 400; }
+.pdf-book-ocr-history__list { display: grid; gap: 4px; }
+.pdf-book-ocr-history-row { display: flex; align-items: center; gap: 8px; }
+.pdf-book-ocr-history-item { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-canvas); color: var(--text-primary); text-align: left; cursor: pointer; transition: background-color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out); }
+.pdf-book-ocr-history-item:hover, .pdf-book-ocr-history-item.is-selected { border-color: var(--primary); background: var(--primary-alpha-10); }
+.pdf-book-ocr-history-item__main, .pdf-book-ocr-history-item__meta { display: grid; min-width: 0; gap: 4px; }
+.pdf-book-ocr-history-item__main strong, .pdf-book-ocr-history-item__main span { overflow-wrap: anywhere; }
+.pdf-book-ocr-history-item__main span, .pdf-book-ocr-history-item__meta span { font-size: 12px; color: var(--text-muted); }
+.pdf-book-ocr-history-item__meta { justify-items: end; flex-shrink: 0; }
+@media (max-width: 600px) {
+  .pdf-book-ocr-history-item { align-items: flex-start; flex-direction: column; gap: 8px; }
+  .pdf-book-ocr-history-item__meta { justify-items: start; }
 }
 </style>

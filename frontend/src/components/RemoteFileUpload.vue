@@ -78,9 +78,6 @@ async function handleFileChange(event: Event) {
   border-radius: 8px;
 }
 
-.remote-upload__tag {
-  max-width: min(360px, 100%);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.remote-upload__tag { max-width: 100%; height: auto; padding-block: 4px; }
+.remote-upload__tag :deep(.n-tag__content) { white-space: normal; overflow-wrap: anywhere; }
 </style>

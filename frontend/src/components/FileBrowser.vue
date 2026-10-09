@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  NAlert,
   NButton,
   NCard,
   NCheckbox,
@@ -29,6 +30,7 @@ const emit = defineEmits<{
 const message = useMessage();
 const visible = ref(false);
 const loading = ref(false);
+const loadError = ref("");
 const currentPath = ref("");
 const parentPath = ref<string | null>(null);
 const selectedPath = ref("");
@@ -73,12 +75,14 @@ const confirmDisabled = computed(() => {
 
 async function loadEntries(targetPath: string | null) {
   loading.value = true;
+  loadError.value = "";
   try {
     const response = await listFs(targetPath, "all", showHidden.value);
     currentPath.value = response.current_path;
     parentPath.value = response.parent_path;
     items.value = response.items;
   } catch (caught) {
+    loadError.value = caught instanceof Error ? caught.message : "目录读取失败";
     message.error(caught instanceof Error ? caught.message : "目录读取失败");
   } finally {
     loading.value = false;
@@ -182,9 +186,9 @@ watch(showHidden, () => {
             <div class="breadcrumb-trail">
               <template v-for="(segment, idx) in segments" :key="segment.path">
                 <span v-if="idx > 0" class="breadcrumb-separator">/</span>
-                <span class="breadcrumb-item-text" @click="loadEntries(segment.path)">
+                <button type="button" class="breadcrumb-item-text" @click="loadEntries(segment.path)">
                   {{ segment.label }}
-                </span>
+                </button>
               </template>
             </div>
           </n-flex>
@@ -193,15 +197,19 @@ watch(showHidden, () => {
 
         <n-input :value="currentPath" readonly size="small" class="current-path-display" />
 
+        <n-alert v-if="loadError" type="error" title="无法读取服务器目录" :bordered="false">{{ loadError }}<n-button text @click="loadEntries(currentPath || null)">重试</n-button></n-alert>
         <n-spin :show="loading">
           <div class="file-browser__list">
-            <n-empty v-if="items.length === 0" description="当前目录为空" />
+            <n-empty v-if="!loading && !loadError && items.length === 0" description="当前目录为空" />
             <button
               v-for="item in items"
               :key="item.path"
               type="button"
               class="file-browser__item"
               :class="{ 'is-selected': selectedPath === item.path, 'is-disabled': mode === 'dir' && !item.is_dir }"
+              :aria-pressed="selectedPath === item.path"
+              :disabled="mode === 'dir' && !item.is_dir"
+              @keydown.enter.prevent="activateItem(item)"
               @click="selectItem(item)"
               @dblclick="activateItem(item)"
             >
@@ -243,134 +251,24 @@ watch(showHidden, () => {
 </template>
 
 <style scoped>
-.modal-card {
-  background: var(--surface-overlay);
-  backdrop-filter: blur(24px);
-}
-
-.browser-toolbar {
-  background: var(--surface-subtle);
-  padding: 10px 14px;
-  border-radius: 10px;
-  border: 1px solid var(--border-subtle);
-}
-
-.breadcrumbs-container {
-  flex: 1;
-}
-
-.breadcrumb-trail {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-left: 12px;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.breadcrumb-separator {
-  color: #94a3b8;
-  font-weight: 400;
-}
-
-.breadcrumb-item-text {
-  color: var(--primary);
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-  transition: all 0.2s;
-}
-
-.breadcrumb-item-text:hover {
-  background: var(--primary-alpha-10);
-  text-decoration: underline;
-}
-
-.current-path-display {
-  font-family: monospace;
-  background: var(--surface-subtle);
-  color: var(--text-secondary);
-}
-
-.item-icon-wrapper {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  transition: all 0.2s ease;
-}
-
-.item-icon-wrapper.is-dir {
-  background: rgba(59, 130, 246, 0.08);
-  color: #3b82f6;
-}
-
-.item-icon-wrapper.is-file {
-  background: var(--primary-alpha-10);
-  color: var(--text-muted);
-}
-
-.file-browser__item:hover .item-icon-wrapper.is-dir {
-  background: #3b82f6;
-  color: #ffffff;
-}
-
-.file-browser__item:hover .item-icon-wrapper.is-file {
-  background: #64748b;
-  color: #ffffff;
-}
-
-.file-svg {
-  width: 18px;
-  height: 18px;
-}
-
-.item-name {
-  font-size: 14px;
-  color: var(--text-primary);
-}
-
-.item-tag {
-  font-weight: 600;
-  font-size: 11px;
-}
-
-.browser-footer {
-  margin-top: 6px;
-}
-
-.footer-btn {
-  font-weight: 600;
-  border-radius: 8px;
-}
-
+.modal-card { background: var(--surface-overlay); }
+.browser-toolbar { background: var(--surface-subtle); padding: 12px; border-radius: 8px; }
+.breadcrumbs-container { flex: 1; min-width: 0; }
+.breadcrumb-trail { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font-size: 13px; }
+.breadcrumb-separator { color: var(--text-muted); }
+.breadcrumb-item-text { color: var(--primary); cursor: pointer; padding: 4px; border: 0; background: transparent; border-radius: 4px; overflow-wrap: anywhere; }
+.breadcrumb-item-text:hover { background: var(--primary-alpha-10); }
+.current-path-display { font-family: ui-monospace, monospace; }
+.item-icon-wrapper { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: none; color: var(--text-muted); }
+.item-icon-wrapper.is-dir { color: var(--primary); }
+.file-svg { width: 18px; height: 18px; }
+.file-browser__item > .n-flex { flex: 1; min-width: 0; }
+.item-name { font-size: 13px; overflow-wrap: anywhere; }
+.item-tag { flex: none; font-size: 11px; }
+.browser-footer { margin-top: 8px; }
 @media (max-width: 640px) {
-  .file-browser-field__input,
-  .file-browser-field__button {
-    width: 100%;
-    border-radius: 10px !important;
-  }
-
-  .browser-footer {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .browser-footer :deep(.n-flex) {
-    width: 100%;
-  }
-
-  .browser-footer :deep(.n-button) {
-    flex: 1 1 0;
-  }
-
-  .file-browser__item {
-    align-items: flex-start;
-    gap: 10px;
-    padding: 10px 12px;
-  }
+  .file-browser-field { grid-template-columns: minmax(0, 1fr); }
+  .browser-footer { align-items: stretch; flex-direction: column; }
+  .file-browser__item { align-items: flex-start; }
 }
 </style>

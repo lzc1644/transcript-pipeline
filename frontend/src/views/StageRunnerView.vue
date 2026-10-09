@@ -56,6 +56,7 @@ const {
 const stageState = ref<JobState | null>(null);
 const submitting = ref(false);
 const historyLoading = ref(false);
+const historyError = ref("");
 const stageRuns = ref<JobState[]>([]);
 const pollHandle = ref<number | null>(null);
 const runMode = ref<"file" | "directory">("file");
@@ -189,9 +190,11 @@ function stageRunStatusType(status: string): "success" | "error" | "warning" {
 
 async function loadStageRuns() {
   historyLoading.value = true;
+  historyError.value = "";
   try {
     stageRuns.value = (await listStageRuns()).items;
   } catch (caught) {
+    historyError.value = caught instanceof Error ? caught.message : "加载单阶段运行历史失败";
     message.error(caught instanceof Error ? caught.message : "加载单阶段运行历史失败");
   } finally {
     historyLoading.value = false;
@@ -392,16 +395,9 @@ onBeforeUnmount(stopPolling);
 </script>
 
 <template>
-  <n-space vertical :size="24">
-    <!-- Premium Title Banner -->
-    <section class="view-hero">
-      <div>
-        <p class="view-hero__eyebrow">任务控制台</p>
-        <h2 class="view-hero__title">单阶段手动触发</h2>
-        <p class="view-hero__copy">
-          适合高级调试、流程中断恢复或人工干预场景。允许手动指定运行特定的流水线单个节点任务，例如在已提取音频后仅手动触发语音转写。
-        </p>
-      </div>
+  <div class="workbench-page stage-runner-view">
+    <section class="page-heading">
+      <div><h2>单阶段运行</h2><p>选择一个处理阶段，测试本机文件或处理当前配置目录。运行参数只对本次生效。</p></div>
     </section>
 
     <n-alert v-if="isFileMode" type="info" title="本机文件测试模式" :bordered="false" class="file-mode-alert">
@@ -412,15 +408,9 @@ onBeforeUnmount(stopPolling);
     </n-alert>
     <n-alert v-if="configError" type="error" :title="configError" :bordered="false" class="warn-alert" />
 
+    <div class="workbench-columns">
+    <div class="workspace-primary">
     <n-card class="view-card form-panel" :bordered="false">
-      <template #header>
-        <n-flex align="center" :size="10">
-          <div class="panel-header-icon is-stage">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><polygon points="6 2 18 2 18 6 6 6 6 2"/><rect x="3" y="6" width="18" height="16" rx="2"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
-          </div>
-          <span>触发单阶段处理</span>
-        </n-flex>
-      </template>
 
       <n-form label-placement="top">
         <n-space vertical :size="14">
@@ -502,7 +492,8 @@ onBeforeUnmount(stopPolling);
             </n-grid>
           </section>
 
-          <section class="override-panel">
+          <details class="advanced-options override-panel">
+            <summary>高级参数 · 本次运行覆盖</summary>
             <div class="override-panel__heading">
               <div>
                 <h3>本次运行覆盖</h3>
@@ -604,7 +595,7 @@ onBeforeUnmount(stopPolling);
                 </n-grid-item>
               </template>
             </n-grid>
-          </section>
+          </details>
 
           <n-flex justify="end" class="form-action-area">
             <n-button type="primary" size="large" :loading="submitting" @click="submit" class="submit-btn is-stage-btn">
@@ -617,6 +608,20 @@ onBeforeUnmount(stopPolling);
         </n-space>
       </n-form>
     </n-card>
+    </div>
+    <aside class="workspace-inspector" aria-label="阶段运行状态与结果">
+      <section v-if="stageState?.run_mode === 'file' && stageState.status === 'success' && stageState.download_name" class="file-result-panel">
+        <h3>文件结果已就绪</h3>
+        <p>{{ stageState.download_name }} 已在本次隔离工作区生成。</p>
+        <n-button type="primary" @click="downloadStageFileResult">下载结果 ZIP</n-button>
+      </section>
+      <JobStatusCard v-if="stageState" title="当前阶段状态" :state="stageState" default-expanded @rerun="handleStageRunRetry" />
+      <section v-else class="inspector-empty">
+        <h3>运行状态与结果</h3><p>提交后查看当前阶段进度，或从下方历史记录中恢复查看。</p>
+        <p>本机文件模式生成独立 ZIP；目录模式的产物保留在配置目录。</p>
+      </section>
+    </aside>
+    </div>
 
     <n-card class="view-card history-panel" :bordered="false">
       <template #header>
@@ -629,14 +634,17 @@ onBeforeUnmount(stopPolling);
         </n-flex>
       </template>
 
-      <n-empty v-if="!historyLoading && stageRuns.length === 0" description="还没有单阶段运行记录。" />
-      <div v-else class="stage-history-list">
+      <n-alert v-if="historyError" type="error" title="无法读取运行历史" :bordered="false">{{ historyError }}。请刷新重试。</n-alert>
+      <p v-if="historyLoading" role="status" class="prompt-hint">正在读取运行历史…</p>
+      <n-empty v-if="!historyLoading && !historyError && stageRuns.length === 0" description="还没有单阶段运行记录。" />
+      <div v-if="stageRuns.length" class="stage-history-list">
         <button
           v-for="run in stageRuns"
           :key="run.id"
           type="button"
           class="stage-history-item"
           :class="{ 'is-selected': stageState?.id === run.id }"
+          :aria-pressed="stageState?.id === run.id"
           @click="loadStageRun(run.id)"
         >
           <div class="stage-history-item__main">
@@ -652,269 +660,29 @@ onBeforeUnmount(stopPolling);
       </div>
     </n-card>
 
-    <n-card
-      v-if="stageState?.run_mode === 'file' && stageState.status === 'success' && stageState.download_name"
-      class="view-card file-result-panel"
-      :bordered="false"
-    >
-      <n-flex justify="space-between" align="center" :size="12" wrap>
-        <div>
-          <h3>文件模式结果已就绪</h3>
-          <p>{{ stageState.download_name }} 已在本次隔离工作区生成。</p>
-        </div>
-        <n-button type="primary" @click="downloadStageFileResult">下载结果 ZIP</n-button>
-      </n-flex>
-    </n-card>
-
-    <!-- Visual status card for run progress -->
-    <JobStatusCard
-      v-if="stageState"
-      title="阶段任务执行状态报告"
-      :state="stageState"
-      default-expanded
-      @rerun="handleStageRunRetry"
-    />
-  </n-space>
+  </div>
 </template>
 
 <style scoped>
-.form-panel {
-  padding: 8px 12px;
-}
-
-.panel-header-icon {
-  background: var(--primary-alpha-10);
-  color: var(--primary);
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.panel-header-icon.is-stage {
-  background: rgba(45, 212, 191, 0.1);
-  color: #0d9488;
-}
-
-.form-action-area {
-  margin-top: 14px;
-  padding-top: 16px;
-  border-top: 1px solid rgba(226, 232, 240, 0.8);
-}
-
-.select-stage :deep(.n-base-selection) {
-  font-weight: 700;
-  color: var(--primary) !important;
-}
-
-.stage-guide,
-.override-panel,
-.run-mode-panel,
-.file-input-panel,
-.file-result-panel {
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  padding: 16px;
-  background: var(--surface-subtle);
-}
-
-.run-mode-panel {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.run-mode-panel h3,
-.file-input-panel h3,
-.file-result-panel h3 {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 16px;
-}
-
-.run-mode-panel p,
-.file-input-panel p,
-.file-result-panel p {
-  margin: 6px 0 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.history-panel__copy {
-  margin: 4px 0 0;
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 400;
-}
-
-.stage-history-list {
-  display: grid;
-  gap: 8px;
-}
-
-.stage-history-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  width: 100%;
-  padding: 12px 14px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 10px;
-  background: rgba(248, 250, 252, 0.72);
-  color: inherit;
-  cursor: pointer;
-  text-align: left;
-  transition: border-color 0.2s ease, background-color 0.2s ease;
-}
-
-.stage-history-item:hover,
-.stage-history-item.is-selected {
-  border-color: var(--primary);
-  background: var(--primary-alpha-10);
-}
-
-.stage-history-item__main,
-.stage-history-item__meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.stage-history-item__main strong {
-  color: var(--text-primary);
-}
-
-.stage-history-item__main span,
-.stage-history-item__meta span {
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.stage-guide__eyebrow {
-  margin: 0 0 4px;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-.stage-guide h3,
-.override-panel h3 {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 16px;
-}
-
-.stage-guide__description,
-.stage-guide__hint,
-.override-panel p {
-  margin: 10px 0 0;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.stage-guide__paths {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 14px;
-}
-
-.stage-guide__paths > div {
-  display: grid;
-  gap: 4px;
-  padding: 10px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.7);
-}
-
-.stage-guide__paths span {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.stage-guide__paths code {
-  color: var(--primary);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
-.stage-guide__hint {
-  color: #0f766e;
-}
-
-.override-panel__heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.submit-btn {
-  border-radius: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  box-shadow: 0 4px 14px 0 rgba(79, 70, 229, 0.35);
-  transition: all 0.3s ease;
-}
-
-.submit-btn.is-stage-btn {
-  box-shadow: 0 4px 14px 0 rgba(13, 148, 136, 0.3);
-  background-color: #0d9488;
-}
-.submit-btn.is-stage-btn:hover {
-  box-shadow: 0 6px 20px 0 rgba(13, 148, 136, 0.45);
-  background-color: #0f766e;
-  transform: translateY(-1px);
-}
-
-.glass-alert {
-  backdrop-filter: blur(8px);
-  background: rgba(254, 242, 242, 0.6);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  border-radius: 12px;
-}
-
-.warn-alert {
-  background: rgba(254, 243, 199, 0.6);
-  border: 1px solid rgba(245, 158, 11, 0.2);
-  border-radius: 12px;
-}
-
-.file-mode-alert {
-  background: rgba(236, 253, 245, 0.7);
-  border: 1px solid rgba(16, 185, 129, 0.2);
-  border-radius: 12px;
-}
-
-.w-full {
-  width: 100%;
-}
-
-@media (max-width: 640px) {
-  .stage-guide__paths {
-    grid-template-columns: 1fr;
-  }
-
-  .stage-history-item {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .run-mode-panel {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-}
+.run-mode-panel { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; }
+.run-mode-panel h3, .file-input-panel h3, .file-result-panel h3, .override-panel h3, .stage-guide h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.run-mode-panel p, .file-input-panel p, .file-result-panel p, .override-panel p, .stage-guide p { margin: 4px 0 12px; font-size: 12px; color: var(--text-secondary); }
+.stage-guide { padding: 16px; background: var(--surface-subtle); border-radius: 8px; }
+.stage-guide__eyebrow { color: var(--text-muted); }
+.stage-guide__paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.stage-guide__paths > div { display: grid; gap: 4px; }
+.stage-guide__paths span { color: var(--text-muted); font-size: 12px; }
+.stage-guide__paths code { color: var(--text-primary); overflow-wrap: anywhere; font-size: 12px; }
+.stage-guide .stage-guide__hint { margin: 12px 0 0; }
+.override-panel__heading { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+.file-input-panel { padding-top: 8px; }
+.file-result-panel { padding: 16px; background: var(--color-success-bg); border-radius: 8px; }
+.history-panel { padding-top: 24px; border-top: 1px solid var(--border-subtle); }
+.history-panel__copy { margin: 4px 0 0; font-size: 12px; font-weight: 400; color: var(--text-muted); }
+.stage-history-list { display: grid; gap: 4px; }
+.stage-history-item { width: 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-canvas); color: var(--text-primary); text-align: left; cursor: pointer; transition: background-color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out); }
+.stage-history-item:hover, .stage-history-item.is-selected { border-color: var(--primary); background: var(--primary-alpha-10); }
+.stage-history-item__main, .stage-history-item__meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.stage-history-item__main span, .stage-history-item__meta span { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .stage-guide__paths { grid-template-columns: minmax(0, 1fr); } }
 </style>

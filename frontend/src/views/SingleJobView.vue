@@ -256,35 +256,20 @@ onBeforeUnmount(stopPolling);
 </script>
 
 <template>
-  <n-space vertical :size="24">
-    <!-- Premium Title Banner -->
-    <section class="view-hero">
-      <div>
-        <p class="view-hero__eyebrow">任务控制台</p>
-        <h2 class="view-hero__title">单任务整理流水线</h2>
-        <p class="view-hero__copy">
-          在这里提交单个录屏视频，可选择读书会整理或无参考对谈转录，系统将生成适合人工校对的 Markdown 草稿。
-        </p>
-      </div>
+  <div class="workbench-page single-job-view">
+    <section class="page-heading">
+      <div><h2>新建单任务</h2><p>上传录屏与参考源，选择本次配置。提交后在右侧查看进度与整理结果。</p></div>
     </section>
 
     <n-alert v-if="error" type="error" :title="error" :bordered="false" class="glass-alert" />
 
+    <div class="workbench-columns">
+    <div class="workspace-primary">
     <n-card class="view-card form-panel" :bordered="false">
-      <template #header>
-        <n-flex align="center" :size="10">
-          <div class="panel-header-icon">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
-          </div>
-          <span>新建流水线任务</span>
-        </n-flex>
-      </template>
 
       <n-form label-placement="top">
-        <n-grid :cols="2" :x-gap="20" :y-gap="4" responsive="screen" item-responsive>
-          <n-grid-item span="2 m:1">
             <div class="form-section">
-              <h4 class="form-section-title">核心输入输出参数</h4>
+              <h3 class="form-section-title">输入文件</h3>
               <n-form-item label="任务类型" required>
                 <n-radio-group v-model:value="form.content_type" size="medium">
                   <n-radio-button
@@ -329,26 +314,9 @@ onBeforeUnmount(stopPolling);
                 </n-alert>
               </n-form-item>
             </div>
-          </n-grid-item>
-
-          <n-grid-item span="2 m:1">
             <div class="form-section">
-              <h4 class="form-section-title">流水线配置</h4>
+              <h3 class="form-section-title">常用配置 · 仅本次任务</h3>
               <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
-                <n-grid-item span="2">
-                  <n-form-item label="术语词表">
-                    <n-space vertical class="w-full">
-                      <RemoteFileUpload
-                        v-model="form.glossary_file"
-                        kind="glossary"
-                        label="术语词表"
-                        :accept="glossaryAccept"
-                        button-text="选择并上传本机词表"
-                      />
-                      <n-input v-model:value="form.glossary_file" readonly placeholder="可选，上传后自动生成服务器路径" />
-                    </n-space>
-                  </n-form-item>
-                </n-grid-item>
                 <n-grid-item span="2 m:1">
                   <n-form-item label="语音转文字模型">
                     <AsrCandidateSelector v-model="form.asr_candidate" :options="asrCandidates" :loading="loading" />
@@ -364,6 +332,18 @@ onBeforeUnmount(stopPolling);
                     <BackendSelector v-model="form.backend" :options="backends" :loading="loading" />
                   </n-form-item>
                 </n-grid-item>
+              </n-grid>
+              <details class="advanced-options">
+                <summary>高级参数 · OCR、术语与整理指令</summary>
+                <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
+                  <n-grid-item span="2">
+                    <n-form-item label="术语词表">
+                      <n-space vertical class="w-full">
+                        <RemoteFileUpload v-model="form.glossary_file" kind="glossary" label="术语词表" :accept="glossaryAccept" button-text="选择并上传本机词表" />
+                        <n-input v-model:value="form.glossary_file" readonly placeholder="可选，上传后自动生成服务器路径" />
+                      </n-space>
+                    </n-form-item>
+                  </n-grid-item>
                 <n-grid-item span="2 m:1">
                   <n-form-item label="PDF OCR 服务">
                     <n-select
@@ -434,111 +414,30 @@ onBeforeUnmount(stopPolling);
                   </n-form-item>
                 </n-grid-item>
               </n-grid>
+              </details>
             </div>
-          </n-grid-item>
-        </n-grid>
 
         <n-flex justify="end" class="form-action-area">
           <n-button type="primary" size="large" :loading="submitting" @click="submit" class="submit-btn">
             <template #icon>
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             </template>
-            一键开启整理流水线
+            开始整理
           </n-button>
         </n-flex>
       </n-form>
     </n-card>
 
-    <!-- Visual status result -->
-    <JobStatusCard v-if="jobState" title="流水线当前实时状态" :state="jobState" default-expanded @rerun="handleJobRerun" />
-  </n-space>
+    </div>
+    <aside class="workspace-inspector" aria-label="当前任务">
+      <JobStatusCard v-if="jobState" title="当前任务" :state="jobState" default-expanded @rerun="handleJobRerun" />
+      <section v-else class="inspector-empty">
+        <h3>当前任务</h3>
+        <p>尚未提交任务。运行进度、错误详情和结果会显示在这里。</p>
+        <ol><li>上传本机视频与参考源</li><li>确认配置并开始整理</li><li>下载草稿，进行人工校对</li></ol>
+        <router-link to="/jobs">查看已有任务 →</router-link>
+      </section>
+    </aside>
+    </div>
+  </div>
 </template>
-
-<style scoped>
-.form-panel {
-  padding: 8px 12px;
-}
-
-.panel-header-icon {
-  background: var(--primary-alpha-10);
-  color: var(--primary);
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.form-section {
-  background: rgba(248, 250, 252, 0.4);
-  padding: 16px 20px;
-  border-radius: 12px;
-  border: 1px solid rgba(226, 232, 240, 0.6);
-  height: 100%;
-}
-
-.form-section-title {
-  margin: 0 0 16px;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-primary);
-  border-left: 3px solid var(--primary);
-  padding-left: 8px;
-}
-
-.server-output-note {
-  width: 100%;
-  border-radius: 8px;
-}
-
-.server-output-note__body {
-  display: grid;
-  gap: 6px;
-}
-
-.server-output-note__body span {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.server-output-note__body small {
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-
-.form-action-area {
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid rgba(226, 232, 240, 0.8);
-}
-
-.submit-btn {
-  border-radius: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  box-shadow: 0 4px 14px 0 rgba(79, 70, 229, 0.35);
-  transition: all 0.3s ease;
-}
-.submit-btn:hover {
-  box-shadow: 0 6px 20px 0 rgba(79, 70, 229, 0.45);
-  transform: translateY(-1px);
-}
-
-.glass-alert {
-  backdrop-filter: blur(8px);
-  background: rgba(254, 242, 242, 0.6);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  border-radius: 12px;
-}
-
-.w-full {
-  width: 100%;
-}
-
-.prompt-hint {
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-</style>

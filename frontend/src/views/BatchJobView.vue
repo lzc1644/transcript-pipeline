@@ -489,36 +489,22 @@ onBeforeUnmount(stopPolling);
 </script>
 
 <template>
-  <n-space vertical :size="24">
-    <!-- Premium Title Banner -->
-    <section class="view-hero">
-      <div>
-        <p class="view-hero__eyebrow">任务控制台</p>
-        <h2 class="view-hero__title">批量整理流水线</h2>
-        <p class="view-hero__copy">
-          支持 Manifest 清单配置、目录智能配对、以及共享单一参考源三种批量模式，为多视频整理提供高效、高并发的一键式流水线处理。
-        </p>
-      </div>
+  <div class="workbench-page batch-job-view">
+    <section class="page-heading">
+      <div><h2>批量任务</h2><p>选择清单或上传目录，预检输入后统一提交。每个视频的处理结果独立保留。</p></div>
+      <a v-if="batchState" href="#batch-results">查看当前批次 ↓</a>
     </section>
 
     <n-alert v-if="error" type="error" :title="error" :bordered="false" class="glass-alert" />
 
     <n-card class="view-card form-panel" :bordered="false">
-      <template #header>
-        <n-flex align="center" :size="10">
-          <div class="panel-header-icon is-batch">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
-          </div>
-          <span>创建批量处理任务</span>
-        </n-flex>
-      </template>
 
       <n-form label-placement="top">
         <n-space vertical :size="20">
           <!-- Mode Toggle Selection -->
           <div class="mode-selector-wrapper">
-            <span class="mode-label">批量输入模式:</span>
-            <n-radio-group v-model:value="form.mode" size="large" class="mode-radio-group">
+            <span class="mode-label">输入模式</span>
+            <n-radio-group v-model:value="form.mode" size="medium" class="mode-radio-group">
               <n-radio-button value="manifest" class="mode-radio-btn">Manifest 配置清单</n-radio-button>
               <n-radio-button value="paired-dir" class="mode-radio-btn">目录自动配对</n-radio-button>
               <n-radio-button value="shared-reference" class="mode-radio-btn">目录共享参考</n-radio-button>
@@ -533,7 +519,7 @@ onBeforeUnmount(stopPolling);
             <!-- Left Fields -->
             <n-grid-item span="2 m:1">
               <div class="form-section">
-                <h4 class="form-section-title">批量输入输出参数</h4>
+                <h3 class="form-section-title">输入文件与目录</h3>
                 
                 <n-form-item v-if="form.mode === 'manifest'" label="Manifest 清单文件" required>
                   <n-space vertical class="w-full">
@@ -613,22 +599,8 @@ onBeforeUnmount(stopPolling);
 
             <n-grid-item span="2 m:1">
               <div class="form-section">
-                <h4 class="form-section-title">流水线配置</h4>
+                <h3 class="form-section-title">常用配置 · 仅本次批量任务</h3>
                 <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
-                  <n-grid-item span="2">
-                    <n-form-item label="术语词表">
-                      <n-space vertical class="w-full">
-                        <RemoteFileUpload
-                          v-model="form.glossary_file"
-                          kind="glossary"
-                          label="术语词表"
-                          :accept="glossaryAccept"
-                          button-text="选择并上传本机词表"
-                        />
-                        <n-input v-model:value="form.glossary_file" readonly placeholder="可选，上传后自动生成服务器路径" />
-                      </n-space>
-                    </n-form-item>
-                  </n-grid-item>
                   <n-grid-item span="2 m:1">
                     <n-form-item label="语音转文字模型">
                       <AsrCandidateSelector v-model="form.asr_candidate" :options="asrCandidates" :loading="loading" />
@@ -644,6 +616,18 @@ onBeforeUnmount(stopPolling);
                       <BackendSelector v-model="form.backend" :options="backends" :loading="loading" />
                     </n-form-item>
                   </n-grid-item>
+                </n-grid>
+                <details class="advanced-options">
+                  <summary>高级参数 · 并发、OCR 与整理指令</summary>
+                  <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
+                    <n-grid-item span="2">
+                      <n-form-item label="术语词表">
+                        <n-space vertical class="w-full">
+                          <RemoteFileUpload v-model="form.glossary_file" kind="glossary" label="术语词表" :accept="glossaryAccept" button-text="选择并上传本机词表" />
+                          <n-input v-model:value="form.glossary_file" readonly placeholder="可选，上传后自动生成服务器路径" />
+                        </n-space>
+                      </n-form-item>
+                    </n-grid-item>
                   <n-grid-item span="2 m:1">
                     <n-form-item label="PDF OCR 服务">
                       <n-select
@@ -719,6 +703,7 @@ onBeforeUnmount(stopPolling);
                     </n-form-item>
                   </n-grid-item>
                 </n-grid>
+                </details>
               </div>
             </n-grid-item>
           </n-grid>
@@ -730,7 +715,7 @@ onBeforeUnmount(stopPolling);
                 <template #icon>
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 </template>
-                智能扫描并预检输入目录
+                预检输入目录
               </n-button>
               <span class="batch-preview__hint">
                 允许视频：<span class="ext-tag">{{ videoExtensions.join("、") || "-" }}</span>
@@ -780,7 +765,7 @@ onBeforeUnmount(stopPolling);
               <template #icon>
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px;height:18px"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
               </template>
-              开启批量流水线任务
+              提交批量任务
             </n-button>
           </n-flex>
         </n-space>
@@ -788,7 +773,7 @@ onBeforeUnmount(stopPolling);
     </n-card>
 
     <!-- Batch Job Running Status Details -->
-    <n-card v-slot:default v-if="batchState" title="批量流水线实时运行状态" class="view-card">
+    <n-card id="batch-results" v-slot:default v-if="batchState" title="当前批次" class="view-card batch-results">
       <n-space vertical :size="16">
         <div class="batch-summary-glow">
           <div class="summary-top">
@@ -818,7 +803,7 @@ onBeforeUnmount(stopPolling);
           </div>
           
           <div v-if="batchState.output_path" class="summary-path-box">
-            <span class="p-title">合并成果汇总结案路径:</span>
+            <span class="p-title">汇总输出路径：</span>
             <span class="p-content">{{ batchState.output_path }}</span>
           </div>
         </div>
@@ -827,7 +812,7 @@ onBeforeUnmount(stopPolling);
         
         <!-- Batch Sub-jobs List -->
         <div v-if="batchItems.length" class="sub-jobs-section">
-          <h4 class="sub-jobs-title">子视频流水线详情 (Sub-jobs List)</h4>
+          <h3 class="sub-jobs-title">子任务详情</h3>
           <div class="batch-items">
             <div
               v-for="(item, index) in batchItems"
@@ -859,367 +844,37 @@ onBeforeUnmount(stopPolling);
         </div>
       </n-space>
     </n-card>
-  </n-space>
+  </div>
 </template>
 
 <style scoped>
-.form-panel {
-  padding: 8px 12px;
-}
-
-.panel-header-icon {
-  background: var(--primary-alpha-10);
-  color: var(--primary);
-  width: 36px;
-  height: 36px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.panel-header-icon.is-batch {
-  background: rgba(168, 85, 247, 0.1);
-  color: #a855f7;
-}
-
-.mode-selector-wrapper {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  background: rgba(241, 245, 249, 0.5);
-  padding: 10px 18px;
-  border-radius: 12px;
-  border: 1px solid rgba(226, 232, 240, 0.6);
-  flex-wrap: wrap;
-}
-
-.mode-label {
-  font-weight: 700;
-  color: var(--text-primary);
-  font-size: 14px;
-}
-
-.mode-radio-group {
-  display: flex;
-  gap: 8px;
-}
-
-.mode-radio-btn {
-  border-radius: 8px !important;
-  font-weight: 600;
-}
-
-.form-section {
-  background: rgba(248, 250, 252, 0.4);
-  padding: 16px 20px;
-  border-radius: 12px;
-  border: 1px solid rgba(226, 232, 240, 0.6);
-  height: 100%;
-}
-
-.form-section-title {
-  margin: 0 0 16px;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-primary);
-  border-left: 3px solid var(--primary);
-  padding-left: 8px;
-}
-
-.server-output-note {
-  width: 100%;
-  border-radius: 8px;
-}
-
-.server-output-note__body {
-  display: grid;
-  gap: 6px;
-}
-
-.server-output-note__body span {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.server-output-note__body small {
-  color: var(--text-muted);
-  overflow-wrap: anywhere;
-}
-
-.form-action-area {
-  margin-top: 24px;
-  padding-top: 16px;
-  border-top: 1px solid rgba(226, 232, 240, 0.8);
-}
-
-.inspect-btn {
-  border-radius: 8px;
-  font-weight: 600;
-}
-
-.ext-tag {
-  background: #f1f5f9;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: monospace;
-  font-size: 11px;
-  font-weight: 600;
-  color: #475569;
-}
-
-.preview-stats-grid {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 14px;
-}
-
-.stat-bubble {
-  flex: 1;
-  min-width: 120px;
-  background: #ffffff;
-  border-radius: 10px;
-  padding: 12px;
-  border: 1px solid rgba(226, 232, 240, 0.8);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.01);
-}
-
-.stat-bubble.is-success {
-  border-left: 4px solid #10b981;
-}
-
-.stat-bubble.is-info {
-  border-left: 4px solid #3b82f6;
-}
-
-.stat-bubble.is-muted {
-  border-left: 4px solid #94a3b8;
-}
-
-.stat-num {
-  font-size: 20px;
-  font-weight: 800;
-  color: var(--text-primary);
-}
-
-.stat-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  margin-top: 2px;
-}
-
-.alert-stats-box {
-  width: 100%;
-  padding: 10px 14px;
-  border-radius: 8px;
-  background: #fffbeb;
-  border: 1px solid #fef3c7;
-  font-size: 13px;
-  font-weight: 600;
-  color: #b45309;
-}
-
-.prompt-hint {
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.submit-btn {
-  border-radius: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  box-shadow: 0 4px 14px 0 rgba(79, 70, 229, 0.35);
-  transition: all 0.3s ease;
-}
-.submit-btn:hover {
-  box-shadow: 0 6px 20px 0 rgba(79, 70, 229, 0.45);
-  transform: translateY(-1px);
-}
-
-.batch-summary-glow {
-  background: radial-gradient(circle at top right, rgba(99, 102, 241, 0.05) 0%, transparent 60%), #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.8);
-  border-radius: 14px;
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.summary-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.batch-id-text {
-  font-size: 18px;
-  font-family: monospace;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.summary-status-badge {
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.summary-counters {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 12px;
-  background: #f8fafc;
-  padding: 12px 18px;
-  border-radius: 10px;
-  border: 1px solid rgba(226, 232, 240, 0.5);
-}
-
-.counter-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.c-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-
-.c-val {
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.summary-path-box {
-  background: #f1f5f9;
-  padding: 8px 12px;
-  border-radius: 8px;
-  font-size: 12px;
-}
-
-.p-title {
-  font-weight: 700;
-  color: var(--text-secondary);
-  margin-right: 6px;
-}
-
-.p-content {
-  font-family: monospace;
-  color: #334155;
-  word-break: break-all;
-}
-
-.sub-jobs-section {
-  margin-top: 18px;
-}
-
-.sub-jobs-title {
-  margin: 0 0 12px;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-secondary);
-  border-left: 3px solid #cbd5e1;
-  padding-left: 8px;
-}
-
-.batch-item-modern {
-  background: #ffffff;
-  border: 1px solid rgba(226, 232, 240, 0.8);
-  border-radius: 12px;
-  padding: 14px 18px;
-  transition: all 0.2s ease;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.batch-item-modern:hover {
-  transform: translateY(-1px);
-  border-color: rgba(99, 102, 241, 0.3);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.02);
-}
-
-.item-name-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.sub-index {
-  font-size: 11px;
-  font-weight: 700;
-  background: #f1f5f9;
-  color: #475569;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-
-.sub-id {
-  font-size: 14px;
-  font-family: monospace;
-}
-
-.sub-badge {
-  font-weight: 700;
-}
-
-.batch-item-grid-modern {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 6px 16px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.span-all {
-  grid-column: 1 / -1;
-}
-
-.cell-label {
-  font-weight: 700;
-  color: var(--text-muted);
-  margin-right: 4px;
-}
-
-.mono-path {
-  font-family: monospace;
-  font-size: 11px;
-  background: #f8fafc;
-  padding: 2px 6px;
-  border-radius: 4px;
-  word-break: break-all;
-  display: inline-block;
-}
-
-.mono-path.is-out {
-  background: #f0fdf4;
-  color: #166534;
-}
-
-.err-cell {
-  background: #fef2f2;
-  color: #991b1b;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-family: monospace;
-}
-
-.glass-alert {
-  backdrop-filter: blur(8px);
-  background: rgba(254, 242, 242, 0.6);
-  border: 1px solid rgba(239, 68, 68, 0.2);
-  border-radius: 12px;
-}
-
-.w-full {
-  width: 100%;
-}
+.mode-selector-wrapper { display: grid; gap: 12px; }
+.mode-label { font-weight: 600; }
+.mode-radio-group { display: flex; flex-wrap: wrap; gap: 8px; }
+.mode-radio-btn { border-radius: 8px; }
+.batch-results { padding-top: 24px; border-top: 1px solid var(--border-subtle); }
+.batch-preview__hint { font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+.ext-tag, .sub-index { color: var(--text-secondary); font-size: 12px; }
+.preview-stats-grid { display: flex; gap: 24px; flex-wrap: wrap; }
+.stat-bubble { display: grid; gap: 4px; }
+.stat-num { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat-label { font-size: 12px; color: var(--text-muted); }
+.alert-stats-box { width: 100%; padding: 12px; border-radius: 8px; background: var(--color-warning-bg); color: var(--color-warning); overflow-wrap: anywhere; }
+.batch-summary-glow { display: grid; gap: 16px; }
+.summary-top { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: center; }
+.batch-id-text, .sub-id { font-family: ui-monospace, monospace; font-size: 13px; overflow-wrap: anywhere; }
+.summary-counters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; padding: 16px 0; border-block: 1px solid var(--border-subtle); }
+.counter-item { display: grid; gap: 4px; }
+.c-label { font-size: 12px; color: var(--text-muted); }
+.c-val { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.summary-path-box { font-size: 12px; overflow-wrap: anywhere; }
+.p-title, .cell-label { color: var(--text-muted); margin-right: 8px; }
+.p-content, .mono-path { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+.sub-jobs-title { margin: 16px 0 0; font-size: 14px; }
+.batch-item-modern { display: grid; gap: 12px; padding: 16px 0; border-top: 1px solid var(--border-subtle); }
+.item-name-box { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.batch-item-grid-modern { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 8px 16px; font-size: 12px; color: var(--text-secondary); }
+.span-all { grid-column: 1 / -1; }
+.err-cell { padding: 8px 12px; background: var(--color-error-bg); color: var(--color-error); overflow-wrap: anywhere; }
+@media (max-width: 600px) { .summary-counters { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 </style>

@@ -76,9 +76,7 @@ async function handleFileChange(event: Event) {
   display: none;
 }
 
-.stage-file-upload__name {
-  max-width: min(360px, 100%);
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.stage-file-upload { min-width: 0; width: 100%; }
+.stage-file-upload__name { max-width: 100%; height: auto; padding-block: 4px; }
+.stage-file-upload__name :deep(.n-tag__content) { white-space: normal; overflow-wrap: anywhere; }
 </style>

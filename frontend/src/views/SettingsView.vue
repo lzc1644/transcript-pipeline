@@ -25,6 +25,7 @@ const message = useMessage();
 const loading = ref(false);
 const saving = ref(false);
 const loadedSettings = ref<FrontendSettings | null>(null);
+const loadError = ref("");
 
 const form = reactive({
   codex_lb_base_url: "",
@@ -79,9 +80,11 @@ function applySettings(settings: FrontendSettings) {
 
 async function loadSettings() {
   loading.value = true;
+  loadError.value = "";
   try {
     applySettings(await getFrontendSettings());
   } catch (caught) {
+    loadError.value = caught instanceof Error ? caught.message : "加载设置失败";
     message.error(caught instanceof Error ? caught.message : "加载设置失败");
   } finally {
     loading.value = false;
@@ -115,21 +118,19 @@ onMounted(loadSettings);
 </script>
 
 <template>
-  <n-space vertical :size="20" class="settings-view">
-    <section class="view-hero">
-      <div>
-        <p class="view-hero__eyebrow">运行设置</p>
-        <h2 class="view-hero__title">连接与模型默认值</h2>
-        <p class="view-hero__copy">这里维护全局连接和模型默认值；每次任务的配置方案、推理服务和 OCR 服务在任务页选择。</p>
-      </div>
+  <div class="workbench-page settings-view">
+    <section class="page-heading">
+      <div><h2>连接与模型默认值</h2><p>全局设置用于后续任务；任务页中的参数覆盖不会回写到这里。</p></div>
       <n-button type="primary" ghost :loading="loading" @click="loadSettings">刷新</n-button>
     </section>
 
+    <n-alert v-if="loadError" type="error" title="无法读取设置" :bordered="false">{{ loadError }}。请刷新后重试。</n-alert>
+    <p v-if="loading" role="status" class="prompt-hint">正在读取已保存的设置…</p>
     <n-alert type="info" title="API key 存储位置">
       API key 会保存到 {{ loadedSettings?.settings_path || "data/jobs/frontend-settings.json" }}。该目录已被 .gitignore 忽略。
     </n-alert>
 
-    <n-grid :cols="2" :x-gap="18" :y-gap="18" responsive="screen" item-responsive>
+    <n-grid :cols="2" :x-gap="40" :y-gap="32" responsive="screen" item-responsive>
       <n-grid-item span="2 m:1">
         <n-card title="CPA / OpenAI 兼容 API 连接" class="view-card settings-card">
           <n-form label-placement="top">
@@ -139,7 +140,7 @@ onMounted(loadSettings);
                 placeholder="http://127.0.0.1:8317/v1 或 https://你的网关域名/v1"
               />
             </n-form-item>
-            <p style="font-size: 12px; color: var(--n-text-color-3, #8c8c8c); line-height: 1.5;">
+            <p class="prompt-hint">
               支持网关根地址或带 /v1 的地址；校对与 OCR 均调用 /v1/responses。模型名称须与 CPA 提供的一致。
             </p>
             <n-form-item label="API Key">
@@ -150,10 +151,12 @@ onMounted(loadSettings);
                 placeholder="填写 CPA 客户端 API Key；留空则保持现有 key"
               />
             </n-form-item>
+            <details class="advanced-options">
+              <summary>连接选项与密钥管理</summary>
             <n-form-item label="API 直连（绕过代理）">
               <n-space vertical :size="4" style="width: 100%;">
                 <n-switch v-model:value="form.codex_lb_bypass_proxy" />
-                <div style="font-size: 12px; color: var(--n-text-color-3, #8c8c8c); line-height: 1.5;">
+                <div class="prompt-hint">
                   开启后仅 API 网关地址绕过系统代理；其他网站仍使用原代理。保存后对新任务生效。
                 </div>
               </n-space>
@@ -166,6 +169,7 @@ onMounted(loadSettings);
                 {{ form.clear_codex_lb_api_key ? "取消清除" : "清除已保存 key" }}
               </n-button>
             </div>
+            </details>
           </n-form>
         </n-card>
       </n-grid-item>
@@ -194,7 +198,8 @@ onMounted(loadSettings);
     </n-grid>
 
     <div class="settings-actions">
-      <n-button type="primary" size="large" :loading="saving" @click="saveSettings">保存设置</n-button>
+      <n-button type="primary" size="large" :loading="saving" :disabled="loading || !!loadError" @click="saveSettings">保存设置</n-button>
+      <p>保存后供新任务使用，不更改已提交的任务。</p>
     </div>
-  </n-space>
+  </div>
 </template>

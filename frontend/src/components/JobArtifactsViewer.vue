@@ -160,7 +160,7 @@ watch(selectedArtifactId, loadSelectedArtifact);
     </template>
 
     <template v-else-if="artifacts.length === 0 || existingArtifacts.length === 0">
-      <n-empty description="当前任务还没有可查看的文字产物。" />
+      <n-empty v-if="!errorText" description="当前任务还没有可查看的文字产物。" />
     </template>
 
     <template v-else>
@@ -189,87 +189,13 @@ watch(selectedArtifactId, loadSelectedArtifact);
 </template>
 
 <style scoped>
-.artifacts-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 16px 18px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 10px;
-  background: rgba(248, 250, 252, 0.7);
-}
-
-.artifacts-title {
-  margin: 0 0 4px;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.artifacts-copy {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-secondary);
-}
-
-.artifacts-alert {
-  border-radius: 8px;
-}
-
-.artifact-toolbar {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-}
-
-.artifact-select {
-  flex: 1;
-  min-width: 260px;
-}
-
-.artifact-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.artifact-path {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.artifact-preview {
-  max-height: 420px;
-  overflow: auto;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 8px;
-  background: #ffffff;
-}
-
-.artifact-preview pre {
-  margin: 0;
-  padding: 14px 16px;
-  color: #1f2937;
-  font-family: "JetBrains Mono", "Noto Sans Mono", Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-@media (max-width: 760px) {
-  .artifact-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .artifact-select {
-    min-width: 100%;
-  }
-}
+.artifacts-panel { display: grid; gap: 16px; min-width: 0; padding-top: 20px; border-top: 1px solid var(--border-subtle); }
+.artifacts-title { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+.artifacts-copy { margin: 0; font-size: 12px; color: var(--text-secondary); }
+.artifact-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; min-width: 0; }
+.artifact-select { flex: 1 1 220px; min-width: 0; }
+.artifact-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; color: var(--text-muted); font-size: 12px; }
+.artifact-path { width: 100%; overflow-wrap: anywhere; }
+.artifact-preview { max-height: 420px; min-width: 0; overflow: auto; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-subtle); }
+.artifact-preview pre { margin: 0; padding: 16px; color: var(--text-primary); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>
