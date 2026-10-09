@@ -578,11 +578,11 @@ onBeforeUnmount(stopPolling);
               v-for="task in taskHistory"
               :key="task.id"
               class="pdf-book-ocr-history-row"
+              :class="{ 'is-selected': currentTask?.id === task.id }"
             >
               <button
                 type="button"
                 class="pdf-book-ocr-history-item"
-                :class="{ 'is-selected': currentTask?.id === task.id }"
                 :aria-pressed="currentTask?.id === task.id"
                 @click="loadTask(task.id)"
               >
@@ -635,9 +635,11 @@ onBeforeUnmount(stopPolling);
 .pdf-book-ocr-history { padding-top: 24px; border-top: 1px solid var(--border-subtle); }
 .pdf-book-ocr-history__copy { margin: 4px 0 0; color: var(--text-muted); font-size: 12px; font-weight: 400; }
 .pdf-book-ocr-history__list { display: grid; gap: 4px; }
-.pdf-book-ocr-history-row { display: flex; align-items: center; gap: 8px; }
-.pdf-book-ocr-history-item { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; gap: 16px; padding: 12px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-canvas); color: var(--text-primary); text-align: left; cursor: pointer; transition: background-color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out); }
-.pdf-book-ocr-history-item:hover, .pdf-book-ocr-history-item.is-selected { border-color: var(--primary); background: var(--primary-alpha-10); }
+.pdf-book-ocr-history-row { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-raised); transition: background-color var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out); }
+.pdf-book-ocr-history-item { display: flex; flex: 1; min-width: 0; align-items: center; justify-content: space-between; gap: 16px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-primary); text-align: left; cursor: pointer; }
+.pdf-book-ocr-history-row:hover, .pdf-book-ocr-history-row:focus-within, .pdf-book-ocr-history-row.is-selected { border-color: var(--primary); }
+.pdf-book-ocr-history-row.is-selected { background: var(--primary-alpha-10); }
+.pdf-book-ocr-history-row > .n-button { flex-shrink: 0; }
 .pdf-book-ocr-history-item__main, .pdf-book-ocr-history-item__meta { display: grid; min-width: 0; gap: 4px; }
 .pdf-book-ocr-history-item__main strong, .pdf-book-ocr-history-item__main span { overflow-wrap: anywhere; }
 .pdf-book-ocr-history-item__main span, .pdf-book-ocr-history-item__meta span { font-size: 12px; color: var(--text-muted); }

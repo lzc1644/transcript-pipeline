@@ -150,6 +150,9 @@ onUnmounted(stopPolling);
 <style scoped>
 .jobs-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; padding-bottom: 16px; border-bottom: 1px solid var(--border-subtle); }
 .jobs-toolbar span { color: var(--text-muted); font-size: 12px; }
-.job-list-view :deep(.status-card) { border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 0; }
-.job-list-view :deep(.status-card > .n-card__content) { padding: 16px 0; }
+.job-list-view :deep(.status-card) { border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-raised); }
+.job-list-view :deep(.status-card > .n-card__content), .job-list-view :deep(.status-card > .n-card-content) { padding: 20px; }
+@media (max-width: 600px) {
+  .job-list-view :deep(.status-card > .n-card__content), .job-list-view :deep(.status-card > .n-card-content) { padding: 16px; }
+}
 </style>
