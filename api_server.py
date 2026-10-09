@@ -132,6 +132,11 @@ def enrich_state_input_summary(project_root: Path, state: dict[str, Any]) -> dic
     if state.get("kind") == "job" and identifier not in {"", ".", ".."} and "/" not in identifier and "\\" not in identifier:
         state = dict(state)
         job_root = project_root / "data/jobs" / identifier
+        if (job_root / "manifest.json").exists():
+            try:
+                state["secondary_asr_candidate"] = read_json_file(job_root / "manifest.json").get("secondary_asr_candidate", "")
+            except (HTTPException, OSError, ValueError, AttributeError):
+                pass
         asr_files = sorted((job_root / "intermediate/asr").glob("*.json"))
         if asr_files:
             try:

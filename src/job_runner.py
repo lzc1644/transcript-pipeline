@@ -884,6 +884,7 @@ def write_job_manifest(
     }
     snapshot = load_settings(settings_path=job_paths.settings_path, project_root=loaded_settings.project_root)
     payload["asr_candidate"] = snapshot.settings.asr.candidate or "whisper-existing"
+    payload["secondary_asr_candidate"] = snapshot.settings.asr.secondary_candidate or ""
     job_paths.manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -1335,6 +1336,7 @@ def run_single_job(
     profile: str | None = None,
     backend: str | None = None,
     asr_candidate: str | None = None,
+    secondary_asr_candidate: str | None = None,
     model: str | None = None,
     reasoning_effort: str | None = None,
     ocr_model: str | None = None,
@@ -1370,6 +1372,7 @@ def run_single_job(
         chapter=chapter,
         model_overrides=ModelOverrides(
             asr_candidate=asr_candidate,
+            secondary_asr_candidate=secondary_asr_candidate,
             llm_model=model,
             llm_reasoning_effort=reasoning_effort,
             ocr_model=ocr_model,

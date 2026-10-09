@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
     parser.add_argument("--asr-candidate", help="ASR 候选 ID；省略时使用任务配置或旧 Whisper 行为")
+    parser.add_argument("--secondary-asr-candidate", help="第二 ASR 候选；空字符串关闭，省略继承配置")
     return parser
 
 
@@ -31,7 +32,8 @@ def main() -> int:
             profile_name=args.profile,
             project_root=PROJECT_ROOT,
         )
-        apply_model_overrides(loaded_settings, ModelOverrides(asr_candidate=args.asr_candidate))
+        apply_model_overrides(loaded_settings, ModelOverrides(asr_candidate=args.asr_candidate,
+                              secondary_asr_candidate=args.secondary_asr_candidate))
     except (ConfigLoadError, SettingsOverrideError) as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         return 1

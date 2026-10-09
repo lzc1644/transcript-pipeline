@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AppBaseModel(BaseModel):
@@ -101,6 +101,7 @@ AsrCandidateName = Literal["whisper-existing", "qwen3-asr-1.7b", "qwen3-asr-0.6b
 
 class AsrSettings(AppBaseModel):
     candidate: AsrCandidateName | None = None
+    secondary_candidate: AsrCandidateName | None = None
     worker_python: str = ""
     backend_cache_subdir: str = "asr-models"
     max_new_tokens: int = Field(default=2048, ge=1, le=8192)
@@ -114,6 +115,12 @@ class AsrSettings(AppBaseModel):
     word_timestamps: bool = False
     initial_prompt: str = ""
     model_cache_subdir: str = "faster-whisper"
+
+    @model_validator(mode="after")
+    def distinct_candidates(self) -> "AsrSettings":
+        if self.secondary_candidate == (self.candidate or "whisper-existing"):
+            raise ValueError("第二 ASR 候选必须与主候选不同")
+        return self
 
 
 class SegmentationSettings(AppBaseModel):

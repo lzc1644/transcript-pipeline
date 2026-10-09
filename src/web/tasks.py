@@ -70,11 +70,18 @@ def first_text(*values: str | None) -> str | None:
     return None
 
 
+def secondary_asr_override(request, frontend_settings) -> str | None:
+    # 空字符串是显式关闭，不能用 or 吞掉并重新启用全局默认。
+    value = request.secondary_asr_candidate
+    return value if value is not None else frontend_settings.secondary_asr_candidate
+
+
 def request_payload_with_effective_ocr_settings(request, loaded_settings, *, freeze_asr: bool = False) -> dict[str, object]:
     payload = request.model_dump()
     reference_settings = loaded_settings.settings.reference
     if hasattr(request, "asr_candidate"):
         payload["asr_candidate"] = loaded_settings.settings.asr.candidate or "whisper-existing"
+        payload["secondary_asr_candidate"] = loaded_settings.settings.asr.secondary_candidate or ""
     if freeze_asr:
         payload["profile"] = loaded_settings.active_profile_name
         payload["config"] = str(loaded_settings.settings_path)
@@ -309,12 +316,15 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
         saved_candidate = loaded_settings.settings.asr.candidate or "whisper-existing"
         if request.asr_candidate is not None and request.asr_candidate != saved_candidate:
             raise JobRunnerError("切换 ASR 候选请新建任务或独立阶段文件运行；历史任务仅允许同候选重试")
+        if request.secondary_asr_candidate is not None and (request.secondary_asr_candidate or None) != loaded_settings.settings.asr.secondary_candidate:
+            raise JobRunnerError("切换第二 ASR 候选请新建任务；历史重跑沿用原双 ASR 快照")
         apply_model_overrides(
             loaded_settings,
             ModelOverrides(
                 llm_model=request.model or frontend_settings.model or None,
                 llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
                 asr_candidate=request.asr_candidate,
+                secondary_asr_candidate=request.secondary_asr_candidate,
                 # job 的生成配置已经固化首次运行的 OCR 身份；重跑未显式覆盖时必须沿用原值。
                 ocr_backend=request.ocr_backend,
                 ocr_model=request.ocr_model,
@@ -427,6 +437,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
         effective_refine_prompt = first_text(request.refine_prompt)
         model_overrides = ModelOverrides(
             asr_candidate=request.asr_candidate or frontend_settings.asr_candidate or None,
+            secondary_asr_candidate=secondary_asr_override(request, frontend_settings),
             llm_model=request.model or frontend_settings.model or None,
             llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
             ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
@@ -483,7 +494,8 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             project_root=root,
         )
         logger = setup_logging(job_loaded_settings.settings.runtime.log_level)
-        app.state.update_state(state_path, asr_candidate=job_loaded_settings.settings.asr.candidate or "whisper-existing")
+        app.state.update_state(state_path, asr_candidate=job_loaded_settings.settings.asr.candidate or "whisper-existing",
+                               secondary_asr_candidate=job_loaded_settings.settings.asr.secondary_candidate or "")
         stages = [normalize_stage_name(stage_name) for stage_name in job_loaded_settings.settings.pipeline.stages]
         progress_items: dict[str, dict[str, object]] = {}
 
@@ -696,6 +708,7 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
         effective_remote_concurrency = request.remote_concurrency or frontend_settings.remote_concurrency
         model_overrides = ModelOverrides(
             asr_candidate=request.asr_candidate or frontend_settings.asr_candidate or None,
+            secondary_asr_candidate=secondary_asr_override(request, frontend_settings),
             llm_model=request.model or frontend_settings.model or None,
             llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
             ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
@@ -861,6 +874,7 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
             loaded_settings,
             ModelOverrides(
                 asr_candidate=request.asr_candidate or frontend_settings.asr_candidate or None,
+                secondary_asr_candidate=secondary_asr_override(request, frontend_settings),
                 llm_model=request.model or frontend_settings.model or None,
                 llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
                 ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,
@@ -943,6 +957,8 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
     app.state.active_jobs.add(run_id)
     try:
         request = StageFileRunRequest.model_validate(payload)
+        if normalize_stage_name(stage_name) == "refine" and request.secondary_asr_candidate:
+            raise StageFileRunError("单 TXT 校对文件模式不支持双 ASR；联合校对请使用完整任务或已完成配对的 CLI 工作区")
         frontend_settings = load_frontend_settings(root)
         normalized_stage_name = normalize_stage_name(stage_name)
         effective_profile = first_text(request.profile, frontend_settings.profile)
@@ -967,6 +983,8 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
             profile_name=base_loaded_settings.active_profile_name,
             model_overrides=ModelOverrides(
                 asr_candidate=request.asr_candidate or frontend_settings.asr_candidate or None,
+                # 文件槽仅接收单份 TXT；明确关闭配置/全局继承，不在联合读取层绕过配对校验。
+                secondary_asr_candidate="" if normalized_stage_name == "refine" else secondary_asr_override(request, frontend_settings),
                 llm_model=request.model or frontend_settings.model or None,
                 llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
                 ocr_backend=request.ocr_backend or frontend_settings.ocr_backend or None,

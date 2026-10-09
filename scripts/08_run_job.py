@@ -26,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
     parser.add_argument("--asr-candidate", help="ASR 候选 ID，写入任务配置快照")
+    parser.add_argument("--secondary-asr-candidate", help="第二 ASR 候选，串行运行并联合校对；空字符串关闭")
     parser.add_argument("--backend", choices=["codex_api", "agy", "codex_cli", "both"], help="覆盖阶段 6 使用的后端")
     parser.add_argument("--model", help="覆盖阶段 6 使用的模型，例如 gpt-6.1-sol")
     parser.add_argument("--reasoning-effort", help="覆盖阶段 6 reasoning effort，例如 low / medium / high")
@@ -68,6 +69,7 @@ def main() -> int:
             content_type=args.content_type,
             profile=args.profile,
             asr_candidate=args.asr_candidate,
+            secondary_asr_candidate=args.secondary_asr_candidate,
             backend=args.backend,
             model=args.model,
             reasoning_effort=args.reasoning_effort,

@@ -151,15 +151,35 @@ def _ocr_artifacts(job_root: Path) -> list[ArtifactEntry]:
     return entries
 
 
+def _secondary_asr_artifacts(job_root: Path) -> list[ArtifactEntry]:
+    entries = []
+    asr_dir = job_root / "intermediate/asr"
+    for path in sorted((asr_dir / "secondary").glob("*/source.*")):
+        if path.suffix not in {".json", ".txt"}:
+            continue
+        candidate = path.parent.name
+        kind = "json" if path.suffix == ".json" else "text"
+        entries.append(ArtifactEntry(
+            id=f"transcribe-secondary-{candidate}-{kind}", stage="transcribe",
+            label=f"第二 ASR {candidate} {'JSON' if kind == 'json' else '文本'}",
+            path=path, kind="file", content_type=kind,
+        ))
+    manifest = asr_dir / ".pairs/source.json"
+    if manifest.exists():
+        entries.append(ArtifactEntry(id="transcribe-pair", stage="transcribe", label="双 ASR 配对状态",
+                                     path=manifest, kind="file", content_type="json"))
+    return entries
+
+
 def collect_job_artifacts(project_root: Path, job_id: str) -> list[dict[str, object]]:
     job_root = project_root / "data/jobs" / job_id
-    entries = _main_artifacts(job_root) + _ocr_artifacts(job_root)
+    entries = _main_artifacts(job_root) + _ocr_artifacts(job_root) + _secondary_asr_artifacts(job_root)
     return [_artifact_payload(entry) for entry in entries]
 
 
 def _find_artifact(project_root: Path, job_id: str, artifact_id: str) -> ArtifactEntry | None:
     job_root = project_root / "data/jobs" / job_id
-    for entry in _main_artifacts(job_root) + _debug_artifacts(job_root) + _ocr_artifacts(job_root):
+    for entry in _main_artifacts(job_root) + _debug_artifacts(job_root) + _ocr_artifacts(job_root) + _secondary_asr_artifacts(job_root):
         if entry.id == artifact_id:
             return entry
     return None

@@ -41,6 +41,7 @@ const message = useMessage();
 const {
   asrCandidates,
   defaultAsrCandidate,
+  defaultSecondaryAsrCandidate,
   activeProfile,
   backends,
   defaultBackend,
@@ -75,6 +76,7 @@ const form = reactive<{
   output_dir: string;
   profile: string;
   asr_candidate: string;
+  secondary_asr_candidate: string;
   backend: string;
   ocr_backend: string;
   ocr_model: string;
@@ -96,6 +98,7 @@ const form = reactive<{
   output_dir: "",
   profile: "",
   asr_candidate: "",
+  secondary_asr_candidate: "",
   backend: "",
   ocr_backend: "",
   ocr_model: "",
@@ -185,6 +188,7 @@ const effectiveContentType = computed(() => {
 });
 
 watch(defaultAsrCandidate, value => { if (!form.asr_candidate) form.asr_candidate = value; });
+watch(defaultSecondaryAsrCandidate, value => { form.secondary_asr_candidate = value; });
 
 watch(activeProfile, (value) => {
   if (!form.profile && value) {
@@ -415,6 +419,7 @@ function buildPayload() {
     content_type: effectiveContentType.value,
     profile: form.profile || null,
     asr_candidate: form.asr_candidate || null,
+    secondary_asr_candidate: form.secondary_asr_candidate,
     backend: form.backend || null,
     ocr_backend: form.ocr_backend || null,
     ocr_model: form.ocr_model || null,
@@ -603,7 +608,7 @@ onBeforeUnmount(stopPolling);
                 <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
                   <n-grid-item span="2 m:1">
                     <n-form-item label="语音转文字模型">
-                      <AsrCandidateSelector v-model="form.asr_candidate" :options="asrCandidates" :loading="loading" />
+                      <AsrCandidateSelector v-model="form.asr_candidate" v-model:secondary-candidate="form.secondary_asr_candidate" :options="asrCandidates" :loading="loading" />
                     </n-form-item>
                   </n-grid-item>
                   <n-grid-item span="2 m:1">

@@ -10,7 +10,10 @@ export interface AsrCandidate {
   runtime_validation: string;
 }
 
-export interface AsrSelectionPayload { asr_candidate?: string | null; }
+export interface AsrSelectionPayload {
+  asr_candidate?: string | null;
+  secondary_asr_candidate?: string | null;
+}
 
 export interface ConfigResponse {
   asr_candidates: AsrCandidate[];
@@ -34,6 +37,7 @@ export interface FrontendSettings {
   codex_lb_bypass_proxy: boolean;
   profile: string;
   asr_candidate: string;
+  secondary_asr_candidate: string;
   backend: string;
   remote_concurrency: number;
   book_name: string;
@@ -143,6 +147,7 @@ export interface JobInputSummary {
 
 export interface JobState {
   asr_candidate?: string;
+  secondary_asr_candidate?: string;
   asr_engine?: string;
   asr_model?: string;
   id: string;

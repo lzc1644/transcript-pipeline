@@ -82,6 +82,9 @@ audio:
     - .flac
 
 asr:
+  # 可选第二候选，默认单 ASR；例如 qwen3-asr-0.6b，必须与主候选不同。
+  # 第二候选输出在 asr/secondary/<candidate>/，阶段 6 仅接受完成配对。
+  secondary_candidate: null
   # 默认仍使用 Whisper。新增候选的 SDK 在独立 Python 3.12 环境运行。
   # Docker 可用 TRANSCRIPT_ASR_PYTHON 指定容器内可选环境，不影响 Whisper。
   worker_python: .venv/asr-py312/bin/python

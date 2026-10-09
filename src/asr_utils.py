@@ -11,10 +11,11 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
 
+from src.asr.pairing import AsrPairError, begin_asr_pair, complete_asr_pair, file_sha256, pair_manifest_path, write_pair_manifest
 from src.runtime_utils import ensure_directory
 from src.schemas import LoadedSettings
 
@@ -79,6 +80,7 @@ class AsrBatchItem:
     source_audio_path: Path
     output_paths: AsrOutputPaths
     segment_count: int
+    secondary_output_paths: AsrOutputPaths | None = None
 
 
 CUDA_RUNTIME_PACKAGE_NAMES = ("nvidia.cublas.lib", "nvidia.cudnn.lib")
@@ -394,6 +396,10 @@ def transcribe_audio_file(
     )
 
 
+def bind_source_audio(result: AsrFileResult, audio_path: Path) -> AsrFileResult:
+    return replace(result, metadata={**(result.metadata or {}), "source_audio_sha256": file_sha256(audio_path)})
+
+
 def write_asr_result(result: AsrFileResult, output_paths: AsrOutputPaths) -> None:
     ensure_directory(output_paths.json_path.parent)
 
@@ -603,7 +609,7 @@ def transcribe_optional_backend(audio_files: list[Path], output_dir: Path,
     outputs = []
     for audio_path, result in zip(audio_files, results):
         paths = build_asr_output_paths(audio_path, output_dir)
-        write_asr_result(result, paths)
+        write_asr_result(bind_source_audio(result, audio_path), paths)
         outputs.append(AsrBatchItem(audio_path, paths, len(result.segments)))
     return outputs
 
@@ -627,23 +633,72 @@ def transcribe_batch(
         candidate = get_candidate(loaded_settings.settings.asr.candidate)
     except ValueError as exc:
         raise UnsupportedAsrEngineError(str(exc)) from exc
+    secondary = loaded_settings.settings.asr.secondary_candidate
+    if secondary == candidate.id:
+        raise AsrTranscriptionError("第二 ASR 候选必须与主候选不同")
     with asr_workspace_lock(output_dir) as workspace_fd, gpu_asr_lock(loaded_settings, logger) as gpu_fd:
-        check_output_candidate(audio_files, output_dir, candidate.id)
-        if candidate.id != "whisper-existing":
-            return transcribe_optional_backend(audio_files, output_dir, loaded_settings, logger,
-                                               tuple(fd for fd in [workspace_fd, gpu_fd] if fd is not None))
-        model = load_faster_whisper_model(loaded_settings)
-        output_files: list[AsrBatchItem] = []
+        lock_fds = tuple(fd for fd in [workspace_fd, gpu_fd] if fd is not None)
+        if not secondary:
+            check_output_candidate(audio_files, output_dir, candidate.id)
+            return transcribe_candidate_batch(audio_files, output_dir, loaded_settings, logger, lock_fds)
+
+        # 一张 GPU 串行运行，两个候选使用独立工作区；主 TXT 仍兼容原下游。
+        secondary_settings = loaded_settings.settings.model_copy(deep=True)
+        secondary_settings.asr.candidate = secondary
+        secondary_settings.asr.secondary_candidate = None
+        secondary_dir = ensure_directory(output_dir / "secondary" / secondary)
+        secondary_settings.paths.asr_dir = str(secondary_dir)
+        secondary_loaded = replace(loaded_settings, settings=secondary_settings)
+        with asr_workspace_lock(secondary_dir) as secondary_fd:
+            # 先使旧完成标记失效；辅助失败后即使旧文件仍在也不能用于新配对。
+            pairs: dict[Path, dict[str, Any]] = {}
+            try:
+                for audio in audio_files:
+                    pairs[audio] = begin_asr_pair(audio, output_dir, candidate.id, secondary)
+                check_output_candidate(audio_files, output_dir, candidate.id)
+                check_output_candidate(audio_files, secondary_dir, secondary)
+                primary_outputs = transcribe_candidate_batch(
+                    audio_files, output_dir, loaded_settings, logger, lock_fds)
+                if logger:
+                    logger.info("双 ASR 第二候选开始 | primary=%s | secondary=%s", candidate.id, secondary)
+                secondary_outputs = transcribe_candidate_batch(
+                    audio_files, secondary_dir, secondary_loaded, logger, (*lock_fds, secondary_fd))
+                if len(primary_outputs) != len(secondary_outputs):
+                    raise AsrTranscriptionError("双 ASR 输出数量不一致，拒绝宣称成功")
+                for audio in audio_files:
+                    complete_asr_pair(audio, output_dir, pairs[audio])
+            except (AsrTranscriptionError, AsrPairError, OSError, ValueError) as exc:
+                for audio, pair in pairs.items():
+                    write_pair_manifest(pair_manifest_path(output_dir, audio.stem),
+                                        {**pair, "status": "failed", "error": str(exc)})
+                raise AsrTranscriptionError(f"双 ASR 未完成: {exc}") from exc
+            return [replace(primary, secondary_output_paths=aux.output_paths)
+                    for primary, aux in zip(primary_outputs, secondary_outputs)]
+
+
+def transcribe_candidate_batch(audio_files: list[Path], output_dir: Path,
+                               loaded: LoadedSettings, logger: logging.Logger | None,
+                               lock_fds: tuple[int, ...]) -> list[AsrBatchItem]:
+    """锁由批处理入口持有；候选推理仍复用 registry 和既有 worker。"""
+    from src.asr.registry import get_candidate
+    if get_candidate(loaded.settings.asr.candidate).id != "whisper-existing":
+        return transcribe_optional_backend(audio_files, output_dir, loaded, logger, lock_fds)
+    model = load_faster_whisper_model(loaded)
+    try:
+        outputs: list[AsrBatchItem] = []
         for audio_path in audio_files:
-            result = transcribe_audio_file(audio_path, model, loaded_settings, logger=logger)
-            output_paths = build_asr_output_paths(audio_path, output_dir)
-            write_asr_result(result, output_paths)
-            output_files.append(AsrBatchItem(source_audio_path=audio_path, output_paths=output_paths,
-                                            segment_count=len(result.segments)))
-        return output_files
+            result = transcribe_audio_file(audio_path, model, loaded, logger=logger)
+            paths = build_asr_output_paths(audio_path, output_dir)
+            write_asr_result(bind_source_audio(result, audio_path), paths)
+            outputs.append(AsrBatchItem(audio_path, paths, len(result.segments)))
+        return outputs
+    finally:
+        del model
 
 
 def summarize_transcription_results(output_files: list[AsrBatchItem]) -> str:
     total = len(output_files)
     total_segments = sum(item.segment_count for item in output_files)
-    return f"total={total}, json={total}, txt={total}, segments={total_segments}"
+    summary = f"total={total}, json={total}, txt={total}, segments={total_segments}"
+    secondary_count = sum(item.secondary_output_paths is not None for item in output_files)
+    return f"{summary}, secondary_pairs={secondary_count}" if secondary_count else summary

@@ -103,6 +103,42 @@ API 请求字段为 `asr_candidate`。Web 设置页保存默认候选；单任�
 **不是 CUDA、缓存完整性或真实推理验收**。`cache_status`、`runtime_validation` 当前明确为 `not_checked`。
 任务状态显示已保存候选；有实际产物时优先显示产物里的实际 engine/model。
 
+## 双 ASR 联合校对（可选）
+
+单任务、批量、设置页及转录阶段的 ASR 选择器现在有“第二模型”选项。不选仍为单 ASR；主模型与第二模型必须不同。建议本轮对照选择主 `whisper-existing`、第二 `qwen3-asr-0.6b`，Whisper 的具体模型仍取所选 profile。也可反向选择，不预设哪份转录一定正确。
+
+配置字段为 `asr.secondary_candidate`，CLI 参数为 `--secondary-asr-candidate`，API 字段为 `secondary_asr_candidate`。API/CLI 省略或 `null` 继承配置，空字符串显式关闭；YAML 使用 `null` 关闭。默认未开启，不自动增加模型调用。
+
+```bash
+.venv/bin/python scripts/08_run_job.py \
+  --video /path/to/recording.mp4 --reference /path/to/reference.pdf \
+  --output-dir /path/to/output --profile wsl2_gpu_high_accuracy \
+  --asr-candidate whisper-existing --secondary-asr-candidate qwen3-asr-0.6b \
+  --model gpt-6.1-sol --reasoning-effort xhigh
+```
+
+两次 ASR 在现有 GPU 锁下串行运行，不同时加载两个模型抢显存。产物分开保留：
+
+```text
+intermediate/asr/source.json                      主 ASR
+intermediate/asr/source.txt
+intermediate/asr/secondary/qwen3-asr-0.6b/source.json
+intermediate/asr/secondary/qwen3-asr-0.6b/source.txt
+intermediate/asr/.pairs/source.json               当前配对状态及哈希
+```
+
+配对开始先标记 `pending`，两份均成功才原子发布 `complete`；失败标为 `failed`，中断遗留 `pending`。阶段 6 核对完成标记、两份 JSON/TXT 文件哈希、候选身份及音频 SHA256，任一不符都在调用 AI 前拒绝。旧辅助文件不会替代失败的新运行；仅把两份 TXT 放在目录或手改配置不能认定同源，也不自动为旧文件补完成标记。
+
+阶段 6 按共同分钟窗装配两份原始转录，每个原始段只出现一次，保留全部候选文字和完整参考附件。不按行号匹配，不先选择正确措辞；WINDOW 只是按段起点分组的粗定位，不是字级对齐。双 ASR 不先做单稿 OCR 预替换锁定，以免隐藏原始证据；单 ASR 的原锁定校验不变。两份原稿进入同一个 AI 请求，失败重试规则仍沿用原配置。
+
+最终 JSON 保留 `source_asr_file` 等旧字段，双 ASR 时增加 `asr_input_mode=dual_asr`、`source_asr_files`、`asr_pair_run_id`、`asr_pair_manifest`，策略为 `single_pass_dual_asr`。任务产物页面可查看第二 ASR 原稿及配对状态。
+
+阶段 6 目录/CLI 工作区支持有效配对；独立“上传单 TXT”校对文件模式仍是单 ASR，会明确关闭全局/配置中的第二候选，并在页面说明。API 显式请求双 ASR 文件校对会报错，不以两个 TXT 自动证明同源。历史任务重跑沿用原 ASR 组合；换组合请创建新任务。
+
+读书会和对谈提示词已精简为语义保真、主动纠错与轻度整理。编辑政策仅由 `config/prompts/final_cleanup.md` / `conversation_cleanup.md` 拥有，Python 只装配模式、证据、锁定引用及 JSON 接口。已有自定义任务指令不被自动覆盖，需在新任务中恢复默认指令或自行更新。
+
+**验证边界：** 本地测试及真实历史 ASR＋本机固定响应 API 集成验证通过；没有进行新双 ASR 推理或真实 GPT 校对。双候选串行 GPU 运行、整篇远端耗时和语义质量仍需人工运行验收。双 ASR 增加本地转写量和 AI 输入费用，不保证消除上游断流或识别错误。
+
 ## 输出与风险护栏
 
 - JSON 保留 `source_file`、`engine`、`model_size`、`device`、`compute_type`、`language`、`segments`、`full_text`；新增可选 `metadata`。下游仍读取同目录 JSON/TXT。

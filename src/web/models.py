@@ -8,6 +8,7 @@ from src.schemas import AsrCandidateName
 
 class AsrSelection(BaseModel):
     asr_candidate: AsrCandidateName | None = None
+    secondary_asr_candidate: AsrCandidateName | Literal[""] | None = None
 
 
 class SingleJobRequest(AsrSelection):

@@ -19,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
     parser.add_argument("--asr-candidate", help="ASR 候选 ID")
+    parser.add_argument("--secondary-asr-candidate", help="第二 ASR 候选；空字符串关闭双 ASR")
     parser.add_argument("--ocr-model", help="覆盖 Codex API OCR 使用的模型")
     parser.add_argument("--ocr-reasoning-effort", help="覆盖 Codex API OCR reasoning effort")
     parser.add_argument("--ocr-max-concurrency", type=int, help="覆盖 PDF OCR 最大在途请求数")
@@ -43,6 +44,7 @@ def main() -> int:
             loaded_settings,
             ModelOverrides(
                 asr_candidate=args.asr_candidate,
+                secondary_asr_candidate=args.secondary_asr_candidate,
                 ocr_model=args.ocr_model,
                 ocr_reasoning_effort=args.ocr_reasoning_effort,
                 ocr_max_concurrency=args.ocr_max_concurrency,

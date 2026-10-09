@@ -42,6 +42,7 @@ const message = useMessage();
 const {
   asrCandidates,
   defaultAsrCandidate,
+  defaultSecondaryAsrCandidate,
   backends,
   defaultBackend,
   error: configError,
@@ -69,6 +70,7 @@ const form = reactive({
   stage: "extract-audio",
   profile: "",
   asr_candidate: "",
+  secondary_asr_candidate: "",
   backend: "",
   model: "",
   reasoning_effort: "",
@@ -236,12 +238,16 @@ function optionalValue(value: string): string | null {
 }
 
 watch(defaultAsrCandidate, value => { if (!form.asr_candidate) form.asr_candidate = value; });
+watch(defaultSecondaryAsrCandidate, value => { form.secondary_asr_candidate = value; });
 
 function buildStageRunPayload(): StageRunPayload {
   const payload: StageRunPayload = {
     profile: optionalValue(form.profile),
   };
-  if (form.stage === "transcribe") payload.asr_candidate = optionalValue(form.asr_candidate);
+  if (form.stage === "transcribe" || form.stage === "refine") {
+    payload.asr_candidate = optionalValue(form.asr_candidate);
+    payload.secondary_asr_candidate = form.stage === "refine" && runMode.value === "file" ? "" : form.secondary_asr_candidate;
+  }
   if (usesOcrOverrides.value) {
     payload.ocr_backend = optionalValue(form.ocr_backend);
     payload.ocr_model = optionalValue(form.ocr_model);
@@ -503,9 +509,9 @@ onBeforeUnmount(stopPolling);
             </div>
 
             <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
-              <n-grid-item v-if="form.stage === 'transcribe'" span="2 m:1">
+              <n-grid-item v-if="form.stage === 'transcribe' || (form.stage === 'refine' && runMode === 'directory')" span="2 m:1">
                 <n-form-item label="语音转文字模型">
-                  <AsrCandidateSelector v-model="form.asr_candidate" :options="asrCandidates" :loading="configLoading" />
+                  <AsrCandidateSelector v-model="form.asr_candidate" v-model:secondary-candidate="form.secondary_asr_candidate" :options="asrCandidates" :loading="configLoading" />
                 </n-form-item>
               </n-grid-item>
               <n-grid-item span="2 m:1">
@@ -568,6 +574,9 @@ onBeforeUnmount(stopPolling);
               </template>
 
               <template v-else-if="usesRefineOverrides">
+                <n-grid-item v-if="runMode === 'file'" span="2">
+                  <n-alert type="info" :show-icon="false">单 TXT 文件校对仅使用单 ASR，不继承全局第二模型。联合校对请使用完整任务或已完成配对的 CLI 工作区。</n-alert>
+                </n-grid-item>
                 <n-grid-item span="2 m:1">
                   <n-form-item label="推理服务">
                     <BackendSelector v-model="form.backend" :options="backends" :loading="configLoading" />

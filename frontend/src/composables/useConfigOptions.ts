@@ -12,6 +12,7 @@ export function useConfigOptions() {
   const profiles = ref<string[]>([]);
   const asrCandidates = ref<AsrCandidate[]>([]);
   const defaultAsrCandidate = ref("");
+  const defaultSecondaryAsrCandidate = ref("");
   const backends = ref<string[]>([]);
   const videoExtensions = ref<string[]>([]);
   const referenceExtensions = ref<string[]>([]);
@@ -45,6 +46,7 @@ export function useConfigOptions() {
 
       const settings = await getFrontendSettings();
       defaultAsrCandidate.value = settings.asr_candidate || "whisper-existing";
+      defaultSecondaryAsrCandidate.value = settings.secondary_asr_candidate || "";
       if (!config.default_ocr_backend) {
         defaultOcrBackend.value = normalizeCodexApiBackend(settings.ocr_backend);
       }
@@ -64,6 +66,7 @@ export function useConfigOptions() {
   return {
     asrCandidates,
     defaultAsrCandidate,
+    defaultSecondaryAsrCandidate,
     profiles,
     backends,
     videoExtensions,

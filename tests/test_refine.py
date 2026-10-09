@@ -340,7 +340,8 @@ def test_build_single_pass_refine_prompt_includes_reference_and_locking_rules(tm
     assert "预替换全文是主输入" in prompt
     assert "deletion_candidates" in prompt
     assert "不得改写 locked_quote 的实词内容" in prompt
-    assert "unlocked_text 中的讲解、串场、例子、重复强调和讨论内容必须保留" in prompt
+    assert "[SEGMENT 02][unlocked_text]" in prompt
+    assert "只允许添加标点" not in prompt
 
 
 def test_build_single_pass_refine_prompt_without_reference_uses_conversation_rules(tmp_path: Path) -> None:
@@ -998,7 +999,7 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     assert backend_result["final_markdown"].startswith("# demo")
 
 
-def test_build_single_pass_refine_prompt_adds_backend_specific_review_warning(tmp_path: Path) -> None:
+def test_build_single_pass_refine_prompt_has_no_fictional_review_warning(tmp_path: Path) -> None:
     write_minimal_settings(tmp_path)
     asr_path = write_refine_inputs(tmp_path)
     loaded_settings = load_settings(project_root=tmp_path)
@@ -1038,8 +1039,10 @@ def test_build_single_pass_refine_prompt_adds_backend_specific_review_warning(tm
         reference_full_text="久有凌云志，重上井冈山。",
     )
 
-    assert "结果会交给 Gemini 和 Claude 审核" in codex_prompt
-    assert "结果会交给 Codex 和 Claude 审核" in gemini_prompt
+    assert "结果会交给" not in codex_prompt
+    assert "结果会交给" not in gemini_prompt
+    assert codex_prompt == gemini_prompt
+    assert codex_prompt.count("字段必须包含") == 1
 
 
 def test_refine_batch_writes_dual_backend_outputs_without_selected_result(

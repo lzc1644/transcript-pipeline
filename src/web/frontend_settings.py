@@ -27,6 +27,7 @@ class FrontendSettings(BaseModel):
     codex_lb_bypass_proxy: bool = False
     profile: str = ""
     asr_candidate: AsrCandidateName | Literal[""] = ""
+    secondary_asr_candidate: AsrCandidateName | Literal[""] | None = None
     backend: str = ""
     remote_concurrency: int = Field(default=2, ge=1)
     book_name: str = ""
@@ -46,6 +47,7 @@ class FrontendSettingsUpdate(BaseModel):
     codex_lb_bypass_proxy: bool | None = None
     profile: str | None = None
     asr_candidate: AsrCandidateName | Literal[""] | None = None
+    secondary_asr_candidate: AsrCandidateName | Literal[""] | None = None
     backend: str | None = None
     remote_concurrency: int | None = Field(default=None, ge=1)
     book_name: str | None = None
@@ -85,6 +87,8 @@ def load_frontend_settings(project_root: Path) -> FrontendSettings:
             setattr(settings, field_name, "")
     if settings.asr_candidate and settings.asr_candidate not in WEB_CANDIDATE_IDS:
         settings.asr_candidate = ""
+    if settings.secondary_asr_candidate and settings.secondary_asr_candidate not in WEB_CANDIDATE_IDS:
+        settings.secondary_asr_candidate = ""
     return settings
 
 
@@ -96,6 +100,7 @@ def save_frontend_settings(project_root: Path, update: FrontendSettingsUpdate) -
         "codex_lb_base_url",
         "profile",
         "asr_candidate",
+        "secondary_asr_candidate",
         "backend",
         "book_name",
         "chapter",
@@ -138,6 +143,7 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         configured_asr_candidate = loaded_settings.settings.asr.candidate or "whisper-existing"
         default_asr_candidate = (configured_asr_candidate if configured_asr_candidate in WEB_CANDIDATE_IDS
                                  else "whisper-existing")
+        default_secondary_asr_candidate = loaded_settings.settings.asr.secondary_candidate or ""
         configured_backends = loaded_settings.settings.llm.backends
         default_backend = configured_backends[0] if configured_backends else ""
         default_model = loaded_settings.settings.llm.model
@@ -154,6 +160,7 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         default_base_url = ""
         default_profile = ""
         default_asr_candidate = "whisper-existing"
+        default_secondary_asr_candidate = ""
         default_backend = ""
         default_model = ""
         default_reasoning_effort = ""
@@ -172,6 +179,7 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         "codex_lb_bypass_proxy": settings.codex_lb_bypass_proxy,
         "profile": settings.profile or default_profile,
         "asr_candidate": settings.asr_candidate or default_asr_candidate,
+        "secondary_asr_candidate": settings.secondary_asr_candidate if settings.secondary_asr_candidate is not None else default_secondary_asr_candidate,
         "backend": settings.backend or default_backend,
         "remote_concurrency": settings.remote_concurrency,
         "book_name": settings.book_name,

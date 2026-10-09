@@ -21,6 +21,8 @@ class ModelOverrides:
     ocr_max_concurrency: int | None = None
     ocr_submit_interval_seconds: float | None = None
     asr_candidate: str | None = None
+    # None 继承快照，空字符串显式关闭双 ASR。
+    secondary_asr_candidate: str | None = None
 
 
 def normalize_override_value(value: str | None, *, label: str) -> str | None:
@@ -50,6 +52,22 @@ def validate_ocr_scheduling_overrides(
         raise SettingsOverrideError("PDF OCR 投递间隔不能小于 0 秒。")
 
 
+def resolve_asr_overrides(candidate: str | None, secondary: str | None,
+                          overrides: ModelOverrides) -> tuple[str | None, str | None]:
+    from src.asr.registry import get_candidate
+    try:
+        if overrides.asr_candidate is not None:
+            candidate = get_candidate(overrides.asr_candidate).id
+        if overrides.secondary_asr_candidate is not None:
+            value = overrides.secondary_asr_candidate.strip()
+            secondary = get_candidate(value).id if value else None
+    except ValueError as exc:
+        raise SettingsOverrideError(str(exc)) from exc
+    if secondary == (candidate or "whisper-existing"):
+        raise SettingsOverrideError("第二 ASR 候选必须与主候选不同")
+    return candidate, secondary
+
+
 def apply_model_overrides(loaded_settings: LoadedSettings, overrides: ModelOverrides) -> None:
     llm_model = normalize_override_value(overrides.llm_model, label="阶段 6 模型")
     llm_reasoning_effort = normalize_override_value(overrides.llm_reasoning_effort, label="阶段 6 reasoning effort")
@@ -61,13 +79,13 @@ def apply_model_overrides(loaded_settings: LoadedSettings, overrides: ModelOverr
         overrides.ocr_submit_interval_seconds,
     )
 
+    candidate, secondary = resolve_asr_overrides(
+        loaded_settings.settings.asr.candidate,
+        loaded_settings.settings.asr.secondary_candidate, overrides)
     if overrides.asr_candidate is not None:
-        from src.asr.registry import get_candidate
-        try:
-            candidate = get_candidate(overrides.asr_candidate)
-        except ValueError as exc:
-            raise SettingsOverrideError(str(exc)) from exc
-        loaded_settings.settings.asr.candidate = candidate.id
+        loaded_settings.settings.asr.candidate = candidate
+    if overrides.secondary_asr_candidate is not None:
+        loaded_settings.settings.asr.secondary_candidate = secondary
     if llm_model is not None:
         loaded_settings.settings.llm.model = llm_model
     if llm_reasoning_effort is not None:
@@ -95,16 +113,17 @@ def apply_model_overrides_to_raw_settings(payload: dict, overrides: ModelOverrid
         overrides.ocr_submit_interval_seconds,
     )
 
-    if overrides.asr_candidate is not None:
-        from src.asr.registry import get_candidate
-        try:
-            candidate = get_candidate(overrides.asr_candidate)
-        except ValueError as exc:
-            raise SettingsOverrideError(str(exc)) from exc
-        asr_payload = payload.setdefault("asr", {})
+    if overrides.asr_candidate is not None or overrides.secondary_asr_candidate is not None:
+        asr_payload = payload.get("asr", {})
         if not isinstance(asr_payload, dict):
             raise SettingsOverrideError("配置字段 asr 必须是对象")
-        asr_payload["candidate"] = candidate.id
+        candidate, secondary = resolve_asr_overrides(
+            asr_payload.get("candidate"), asr_payload.get("secondary_candidate"), overrides)
+        asr_payload = payload.setdefault("asr", {})
+        if overrides.asr_candidate is not None:
+            asr_payload["candidate"] = candidate
+        if overrides.secondary_asr_candidate is not None:
+            asr_payload["secondary_candidate"] = secondary
     if llm_model is not None or llm_reasoning_effort is not None:
         llm_payload = payload.setdefault("llm", {})
         if not isinstance(llm_payload, dict):

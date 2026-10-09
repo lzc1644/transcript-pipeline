@@ -15,6 +15,7 @@ from rapidfuzz import fuzz
 
 from src.codex_lb_client import CodexLBClient, CodexLBClientError, endpoint_url
 from src.ocr_page_markers import strip_ocr_page_break_markers
+from src.refine_inputs import DualAsrInput, DualAsrInputError, load_dual_asr_input
 from src.request_trace import (
     TRACE_SCHEMA_VERSION,
     RequestTrace,
@@ -39,6 +40,7 @@ BACKEND_FALLBACK = "local_fallback"
 LEGACY_DUAL_REFINEMENT_BACKENDS = (BACKEND_CODEX, BACKEND_AGY)
 VALID_REFINEMENT_BACKENDS = (BACKEND_CODEX_API, BACKEND_AGY, BACKEND_CODEX)
 TARGET_MINIMAL_EDIT_BLOCKS = 20
+REFINE_JSON_CONTRACT = "请只返回 JSON，字段必须包含：final_markdown、section_map、refinement_notes、needs_review_sections、deletion_candidates。"
 
 
 class RefinementError(RuntimeError):
@@ -70,6 +72,7 @@ class RefinementInputPaths:
     basename: str
     asr_text_path: Path
     reference_text_path: Path | None
+    dual_asr_input: DualAsrInput | None = None
 
 
 @dataclass(frozen=True)
@@ -287,11 +290,22 @@ def resolve_refinement_input_paths(loaded_settings: LoadedSettings, asr_text_pat
     if reference_required and not reference_text_path.exists():
         raise RefinementError(f"阶段 6 缺少对应参考原文文件: {reference_text_path}")
 
+    try:
+        dual_input = load_dual_asr_input(loaded_settings, asr_text_path)
+    except DualAsrInputError as exc:
+        raise RefinementError(str(exc)) from exc
     return RefinementInputPaths(
         basename=basename,
         asr_text_path=asr_text_path,
         reference_text_path=reference_text_path if reference_required else None,
+        dual_asr_input=dual_input,
     )
+
+
+def asr_input_metadata(input_paths: RefinementInputPaths, loaded_settings: LoadedSettings) -> dict[str, Any]:
+    if input_paths.dual_asr_input is None:
+        return {}
+    return input_paths.dual_asr_input.provenance(loaded_settings.project_root)
 
 
 def load_text_file(path: Path, label: str) -> str:
@@ -693,70 +707,38 @@ def build_single_pass_refine_prompt(
     pre_replaced_segments: list[PreReplacementSegment],
     reference_full_text: str,
 ) -> str:
-    backend_review_message = "你的结果会交给 Gemini 和 Claude 审核，请认真校对，不要敷衍。"
-    if backend == BACKEND_AGY:
-        backend_review_message = "你的结果会交给 Codex 和 Claude 审核，请认真校对，不要敷衍。"
-
+    # 业务编辑政策仅由传入的 Markdown 提示词拥有；这里只装配输入协议和接口契约。
     has_reference = input_paths.reference_text_path is not None
-    rendered_segments: list[str] = []
-    for index, segment in enumerate(pre_replaced_segments, start=1):
-        segment_label = (
-            f"[SEGMENT {index:02d}][{segment.segment_type}]"
-            if has_reference
-            else f"[SEGMENT {index:02d}]"
-        )
-        rendered_segments.extend(
-            [
-                segment_label,
-                segment.text,
-                "",
-            ]
-        )
-
-    if not has_reference:
-        sections = [
-            prompt_text.strip(),
-            "",
-            "你现在负责阶段 6 的对谈录屏保真转录整理。",
-            backend_review_message,
-            "输入只有录音转写全文，没有参考原文或参考书目。",
-            "录音转写全文是唯一主输入；你不得补充录音中没有的信息。",
-            "所有有效讲话、追问、回答、停顿后的补充、重复强调和口语化表达都应保留。",
-            "只允许添加标点、合理断句、分段，并修正明确错字、别字、同音误识别。",
-            "如果 ASR 没有明确说话人线索，不得硬造主持人、嘉宾或其他身份标签。",
-            "删除任何超过短语级别的内容，都必须写入 deletion_candidates。",
-            "请只返回 JSON，字段必须包含：final_markdown、section_map、refinement_notes、needs_review_sections、deletion_candidates。",
-            "",
-            f"当前文件: {input_paths.basename}.txt",
-            "",
-            "录音转写全文：",
-            "\n".join(rendered_segments).strip(),
-        ]
-        return "\n".join(sections).strip()
-
-    sections = [
-        prompt_text.strip(),
-        "",
-        "你现在负责阶段 6 的整篇单次保真校对整理。",
-        backend_review_message,
-        "输入同时包含预替换全文和整篇参考原文。",
-        "预替换全文是主输入；整篇参考原文只是校正附件。",
-        "不得改写 locked_quote 的实词内容，只允许调整标点、断句和引用格式。",
-        "仅允许在 unlocked_text 中结合参考原文修正明确错字、同音误识别和遗漏的原文朗读段。",
-        "unlocked_text 中的讲解、串场、例子、重复强调和讨论内容必须保留。",
-        "证据不足时，不得把讲解改写为原文。",
-        "删除任何超过短语级别的内容，都必须写入 deletion_candidates。",
-        "请只返回 JSON，字段必须包含：final_markdown、section_map、refinement_notes、needs_review_sections、deletion_candidates。",
-        "",
-        f"当前文件: {input_paths.basename}.txt",
-        "",
-        "预替换全文：",
-        "\n".join(rendered_segments).strip(),
-        "",
-        "整篇参考原文：",
-        reference_full_text or "（无）",
-    ]
-    return "\n".join(sections).strip()
+    sections = [prompt_text.strip(), REFINE_JSON_CONTRACT, f"当前文件: {input_paths.basename}.txt"]
+    if input_paths.dual_asr_input is not None:
+        sections.extend([
+            "输入模式：同源双 ASR 联合校对。A/B 来自同一音频，没有提供音频本身。",
+            "WINDOW 是按段落起点归入的共同分钟窗，仅作粗定位，不是精确字级对齐或说话人边界。",
+            "双 ASR 原始全文：",
+            input_paths.dual_asr_input.render(),
+        ])
+    else:
+        rendered_segments = []
+        for index, segment in enumerate(pre_replaced_segments, start=1):
+            label = f"[SEGMENT {index:02d}][{segment.segment_type}]" if has_reference else f"[SEGMENT {index:02d}]"
+            rendered_segments.extend([label, segment.text, ""])
+        if has_reference:
+            sections.extend([
+                "输入模式：整篇单次校对。预替换全文是主输入；整篇参考原文只是校正附件。",
+                "工程契约：不得改写 locked_quote 的实词内容，只允许调整标点、断句和引用格式。",
+                "预替换全文：",
+            ])
+        else:
+            sections.extend([
+                "输入模式：对谈录屏保真转录整理。录音转写全文是唯一主输入，没有参考原文或参考书目。",
+                "录音转写全文：",
+            ])
+        sections.append("\n".join(rendered_segments).strip())
+    if has_reference:
+        sections.extend(["整篇参考原文：", reference_full_text or "（无）"])
+    else:
+        sections.append("本任务没有参考附件。")
+    return "\n\n".join(sections).strip()
 
 
 def locked_quotes_preserved(final_markdown: str, pre_replaced_segments: list[PreReplacementSegment]) -> bool:
@@ -1427,14 +1409,16 @@ def run_single_pass_backend_refinement(
             "fallback_backend": fallback_backend,
             "source_asr_file": relativize_path(input_paths.asr_text_path, loaded_settings.project_root),
             "source_reference_file": relativize_optional_reference(input_paths, loaded_settings),
+            **asr_input_metadata(input_paths, loaded_settings),
         },
     )
-    pre_replaced_segments = build_pre_replaced_document(
+    # 双 ASR 提供原始候选，不先用可能含 OCR 错误的附件改写/锁定其中一份。
+    pre_replaced_segments = [] if input_paths.dual_asr_input is not None else build_pre_replaced_document(
         asr_full_text=asr_full_text,
         reference_full_text=reference_full_text,
         loaded_settings=loaded_settings,
     )
-    edited_plain_text = build_pre_replaced_plain_text(pre_replaced_segments)
+    edited_plain_text = asr_full_text if input_paths.dual_asr_input is not None else build_pre_replaced_plain_text(pre_replaced_segments)
 
     def run_backend_attempt(target_backend: str) -> BackendDocumentRefinementResult:
         prompt = build_single_pass_refine_prompt(
@@ -1566,7 +1550,7 @@ def run_single_pass_backend_refinement(
         refinement_strategy=(
             document_result.refinement_strategy
             if document_result.refinement_strategy == "programmatic_markdown_fallback"
-            else "single_pass_safe_replace"
+            else "single_pass_dual_asr" if input_paths.dual_asr_input is not None else "single_pass_safe_replace"
         ),
         refinement_reason=(
             document_result.refinement_reason
@@ -1921,6 +1905,7 @@ def write_backend_result_file(
     payload = {
         "source_asr_file": relativize_path(input_paths.asr_text_path, loaded_settings.project_root),
         "source_reference_file": relativize_optional_reference(input_paths, loaded_settings),
+        **asr_input_metadata(input_paths, loaded_settings),
         "refinement_backends": [result.backend],
         "backend_status": {result.backend: backend_status},
         "prompt_mode": result.refinement_strategy,
@@ -1950,6 +1935,7 @@ def write_refinement_result(
     payload = {
         "source_asr_file": relativize_path(input_paths.asr_text_path, loaded_settings.project_root),
         "source_reference_file": relativize_optional_reference(input_paths, loaded_settings),
+        **asr_input_metadata(input_paths, loaded_settings),
         "refinement_backends": list(active_backends),
         "backend_status": backend_status,
         "prompt_mode": selected_result.refinement_strategy if selected_result else "manual_selection_required",
