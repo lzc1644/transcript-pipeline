@@ -70,6 +70,11 @@ def first_text(*values: str | None) -> str | None:
     return None
 
 
+def first_bool(*values: bool | None) -> bool | None:
+    # False 是显式关闭，不能用 or 回退到全局开启。
+    return next((value for value in values if value is not None), None)
+
+
 def secondary_asr_override(request, frontend_settings) -> str | None:
     # 空字符串是显式关闭，不能用 or 吞掉并重新启用全局默认。
     value = request.secondary_asr_candidate
@@ -79,6 +84,8 @@ def secondary_asr_override(request, frontend_settings) -> str | None:
 def request_payload_with_effective_ocr_settings(request, loaded_settings, *, freeze_asr: bool = False) -> dict[str, object]:
     payload = request.model_dump()
     reference_settings = loaded_settings.settings.reference
+    if hasattr(request, "fast_mode"):
+        payload["fast_mode"] = loaded_settings.settings.llm.fast_mode
     if hasattr(request, "asr_candidate"):
         payload["asr_candidate"] = loaded_settings.settings.asr.candidate or "whisper-existing"
         payload["secondary_asr_candidate"] = loaded_settings.settings.asr.secondary_candidate or ""
@@ -87,6 +94,7 @@ def request_payload_with_effective_ocr_settings(request, loaded_settings, *, fre
         payload["config"] = str(loaded_settings.settings_path)
     payload.update(
         {
+            "ocr_fast_mode": reference_settings.codex_ocr_fast_mode,
             "ocr_backend": reference_settings.ai_ocr_backend,
             "ocr_model": reference_settings.codex_ocr_model,
             "ocr_reasoning_effort": reference_settings.codex_ocr_reasoning_effort,
@@ -323,6 +331,8 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
             ModelOverrides(
                 llm_model=request.model or frontend_settings.model or None,
                 llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
+                llm_fast_mode=request.fast_mode,
+                ocr_fast_mode=request.ocr_fast_mode,
                 asr_candidate=request.asr_candidate,
                 secondary_asr_candidate=request.secondary_asr_candidate,
                 # job 的生成配置已经固化首次运行的 OCR 身份；重跑未显式覆盖时必须沿用原值。
@@ -333,6 +343,7 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
                 ocr_submit_interval_seconds=request.ocr_submit_interval_seconds,
             ),
         )
+        app.state.update_state(state_path, request_payload=request_payload_with_effective_ocr_settings(request, loaded_settings))
         raw_stages = loaded_settings.settings.pipeline.stages if loaded_settings.settings.pipeline else []
         stages = resolve_rerun_stages(raw_stages, request.start_stage)
         logger = setup_logging(loaded_settings.settings.runtime.log_level)
@@ -445,6 +456,8 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
             ocr_max_concurrency=request.ocr_max_concurrency,
             ocr_submit_interval_seconds=request.ocr_submit_interval_seconds,
+            llm_fast_mode=first_bool(request.fast_mode, frontend_settings.fast_mode),
+            ocr_fast_mode=first_bool(request.ocr_fast_mode, frontend_settings.ocr_fast_mode),
         )
         base_loaded_settings = load_settings(
             settings_path=request.config,
@@ -495,7 +508,8 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
         )
         logger = setup_logging(job_loaded_settings.settings.runtime.log_level)
         app.state.update_state(state_path, asr_candidate=job_loaded_settings.settings.asr.candidate or "whisper-existing",
-                               secondary_asr_candidate=job_loaded_settings.settings.asr.secondary_candidate or "")
+                               secondary_asr_candidate=job_loaded_settings.settings.asr.secondary_candidate or "",
+                               request_payload=request_payload_with_effective_ocr_settings(request, job_loaded_settings))
         stages = [normalize_stage_name(stage_name) for stage_name in job_loaded_settings.settings.pipeline.stages]
         progress_items: dict[str, dict[str, object]] = {}
 
@@ -716,13 +730,17 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
             ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
             ocr_max_concurrency=request.ocr_max_concurrency,
             ocr_submit_interval_seconds=request.ocr_submit_interval_seconds,
+            llm_fast_mode=first_bool(request.fast_mode, frontend_settings.fast_mode),
+            ocr_fast_mode=first_bool(request.ocr_fast_mode, frontend_settings.ocr_fast_mode),
         )
         base_loaded_settings = load_settings(
             settings_path=request.config,
             profile_name=effective_profile,
             project_root=root,
         )
-        app.state.update_state(state_path, asr_candidate=model_overrides.asr_candidate or base_loaded_settings.settings.asr.candidate or "whisper-existing")
+        app.state.update_state(state_path, asr_candidate=model_overrides.asr_candidate or base_loaded_settings.settings.asr.candidate or "whisper-existing",
+                               fast_mode=first_bool(model_overrides.llm_fast_mode, base_loaded_settings.settings.llm.fast_mode),
+                               ocr_fast_mode=first_bool(model_overrides.ocr_fast_mode, base_loaded_settings.settings.reference.codex_ocr_fast_mode))
         job_specs, failed_runtimes = load_batch_job_specs(
             base_loaded_settings=base_loaded_settings,
             manifest=request.manifest,
@@ -882,6 +900,8 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
                 ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
                 ocr_max_concurrency=request.ocr_max_concurrency,
                 ocr_submit_interval_seconds=request.ocr_submit_interval_seconds,
+                llm_fast_mode=first_bool(request.fast_mode, frontend_settings.fast_mode),
+                ocr_fast_mode=first_bool(request.ocr_fast_mode, frontend_settings.ocr_fast_mode),
             ),
         )
         if normalized_stage_name == "transcribe":
@@ -992,6 +1012,8 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
                 ocr_reasoning_effort=request.ocr_reasoning_effort or frontend_settings.ocr_reasoning_effort or None,
                 ocr_max_concurrency=request.ocr_max_concurrency,
                 ocr_submit_interval_seconds=request.ocr_submit_interval_seconds,
+                llm_fast_mode=first_bool(request.fast_mode, frontend_settings.fast_mode),
+                ocr_fast_mode=first_bool(request.ocr_fast_mode, frontend_settings.ocr_fast_mode),
             ),
         )
         workspace_loaded_settings = load_settings(
@@ -1130,6 +1152,7 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
         apply_model_overrides(
             loaded_settings,
             ModelOverrides(
+                ocr_fast_mode=first_bool(request.ocr_fast_mode, frontend_settings.ocr_fast_mode),
                 ocr_model=first_text(request.ocr_model, frontend_settings.ocr_model),
                 ocr_reasoning_effort=first_text(
                     request.ocr_reasoning_effort,

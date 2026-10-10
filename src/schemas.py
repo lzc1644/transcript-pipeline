@@ -89,6 +89,7 @@ class ReferenceSettings(AppBaseModel):
     gemini_ocr_fallback_model: str = ""
     codex_ocr_model: str = "gpt-6-luna"
     codex_ocr_reasoning_effort: str = "high"
+    codex_ocr_fast_mode: bool = False
     # 用户明确要求默认每 5 秒投递一页、最多 40 个在途请求；两项仍可由任务级设置覆盖。
     codex_ocr_max_concurrency: int = Field(default=40, ge=1)
     codex_ocr_submit_interval_seconds: float = Field(default=5.0, ge=0)
@@ -177,6 +178,7 @@ class LLMSettings(AppBaseModel):
     max_asr_chars_for_prompt: int = 120
     max_reference_chars_for_prompt: int = 120
     reasoning_effort: str = "high"
+    fast_mode: bool = False
     temperature: float = 0.1
     max_output_tokens: int = 4000
     # 对谈阶段 6 可能需要超过 30 分钟完成整篇输出，默认允许等待 60 分钟。

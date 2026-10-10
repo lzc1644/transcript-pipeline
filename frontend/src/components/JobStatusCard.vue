@@ -554,7 +554,7 @@ async function handleRerun() {
   }
   isRerunning.value = true;
   try {
-    await rerunJob(id, { start_stage: rerunStage.value });
+    await rerunJob(id, { start_stage: rerunStage.value, backend: "codex_api" });
     message.success(`已从 ${rerunStage.value} 重新启动任务`);
     emit("rerun", id);
   } catch (caught) {
@@ -597,7 +597,7 @@ async function handleBatchItemRerun(item: BatchItemState) {
   const startStage = batchItemRerunStageValue(item);
   rerunningBatchItemIds.value = [...rerunningBatchItemIds.value, itemJobId];
   try {
-    await rerunBatchItem(batchId, itemJobId, { start_stage: startStage });
+    await rerunBatchItem(batchId, itemJobId, { start_stage: startStage, backend: "codex_api" });
     message.success(`已从 ${startStage} 重跑子任务`);
     emit("rerun", batchId);
   } catch (caught) {

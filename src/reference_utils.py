@@ -763,6 +763,8 @@ def run_codex_api_pdf_ocr(
         configured_reasoning_effort = reference_settings.codex_ocr_reasoning_effort.strip()
         if configured_reasoning_effort:
             payload["reasoning"] = {"effort": configured_reasoning_effort}
+        if reference_settings.codex_ocr_fast_mode:
+            payload["service_tier"] = "priority"
 
         return sanitize_gemini_ocr_text(strip_fenced_text(client.responses_stream_text(payload)))
 

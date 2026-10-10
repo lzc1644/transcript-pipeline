@@ -1038,6 +1038,7 @@ def test_pdf_book_ocr_api_creates_task_and_serves_task_result(tmp_path: Path) ->
     assert seen["task_id"] == task_id
     assert seen["payload"] == {
         "input_path": str(input_path),
+        "ocr_fast_mode": None,
         "config": None,
         "ocr_model": None,
         "ocr_reasoning_effort": None,
@@ -1167,6 +1168,7 @@ def test_pdf_book_ocr_retry_reuses_task_and_request_payload(tmp_path: Path) -> N
         "task_id": task_id,
         "payload": {
             "input_path": str(input_path),
+            "ocr_fast_mode": False,
             "config": None,
             "ocr_model": "gpt-5.4-mini",
             "ocr_reasoning_effort": "high",
@@ -2050,6 +2052,7 @@ def test_stage_run_retry_reuses_same_run_and_effective_ocr_payload(
     assert captured["stage_name"] == "prepare-reference"
     payload = captured["payload"]
     assert isinstance(payload, dict)
+    assert payload["ocr_fast_mode"] is False
     assert payload["ocr_max_concurrency"] == 12
     assert payload["ocr_submit_interval_seconds"] == 2.5
     state = read_json_file(state_path)

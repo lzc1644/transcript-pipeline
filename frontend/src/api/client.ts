@@ -31,6 +31,8 @@ export interface ConfigResponse {
 }
 
 export interface FrontendSettings {
+  fast_mode: boolean;
+  ocr_fast_mode: boolean;
   codex_lb_base_url: string;
   codex_lb_api_key: string;
   has_codex_lb_api_key: boolean;
@@ -55,6 +57,8 @@ export interface FrontendSettings {
 }
 
 export interface FrontendSettingsPayload extends AsrSelectionPayload {
+  fast_mode?: boolean | null;
+  ocr_fast_mode?: boolean | null;
   codex_lb_base_url?: string | null;
   codex_lb_api_key?: string | null;
   clear_codex_lb_api_key?: boolean;
@@ -199,6 +203,8 @@ export interface JobArtifactContent extends JobArtifact {
 export type ResultDownloadFormat = "markdown" | "txt";
 
 export interface SingleJobPayload extends AsrSelectionPayload {
+  fast_mode?: boolean | null;
+  ocr_fast_mode?: boolean | null;
   video: string;
   reference?: string | null;
   output_dir: string;
@@ -220,6 +226,8 @@ export interface SingleJobPayload extends AsrSelectionPayload {
 }
 
 export interface BatchJobPayload extends AsrSelectionPayload {
+  fast_mode?: boolean | null;
+  ocr_fast_mode?: boolean | null;
   manifest?: string | null;
   videos_dir?: string | null;
   reference_dir?: string | null;
@@ -248,6 +256,8 @@ export interface RefinePromptResponse {
 }
 
 export interface StageRunPayload extends AsrSelectionPayload {
+  fast_mode?: boolean | null;
+  ocr_fast_mode?: boolean | null;
   profile?: string | null;
   backend?: string | null;
   config?: string | null;
@@ -286,6 +296,8 @@ export interface StageInputUploadResponse {
 }
 
 export interface JobRerunPayload extends AsrSelectionPayload {
+  fast_mode?: boolean | null;
+  ocr_fast_mode?: boolean | null;
   start_stage: string;
   profile?: string | null;
   backend?: string | null;
@@ -299,6 +311,7 @@ export interface JobRerunPayload extends AsrSelectionPayload {
 }
 
 export interface PDFBookOCRPayload {
+  ocr_fast_mode?: boolean | null;
   input_path: string;
   config?: string | null;
   ocr_model?: string | null;

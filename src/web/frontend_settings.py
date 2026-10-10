@@ -38,6 +38,8 @@ class FrontendSettings(BaseModel):
     ocr_backend: str = ""
     ocr_model: str = ""
     ocr_reasoning_effort: str = ""
+    fast_mode: bool | None = None
+    ocr_fast_mode: bool | None = None
 
 
 class FrontendSettingsUpdate(BaseModel):
@@ -58,6 +60,8 @@ class FrontendSettingsUpdate(BaseModel):
     ocr_backend: str | None = None
     ocr_model: str | None = None
     ocr_reasoning_effort: str | None = None
+    fast_mode: bool | None = None
+    ocr_fast_mode: bool | None = None
 
 
 def frontend_settings_path(project_root: Path) -> Path:
@@ -114,6 +118,10 @@ def save_frontend_settings(project_root: Path, update: FrontendSettingsUpdate) -
         raw_value = getattr(update, field_name)
         if raw_value is not None:
             payload[field_name] = normalize_setting_value(raw_value)
+    for field_name in ("fast_mode", "ocr_fast_mode"):
+        value = getattr(update, field_name)
+        if value is not None:
+            payload[field_name] = value
     if update.remote_concurrency is not None:
         payload["remote_concurrency"] = update.remote_concurrency
     if update.codex_lb_bypass_proxy is not None:
@@ -148,6 +156,8 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         default_backend = configured_backends[0] if configured_backends else ""
         default_model = loaded_settings.settings.llm.model
         default_reasoning_effort = loaded_settings.settings.llm.reasoning_effort
+        default_fast_mode = loaded_settings.settings.llm.fast_mode
+        default_ocr_fast_mode = loaded_settings.settings.reference.codex_ocr_fast_mode
         default_ocr_backend = loaded_settings.settings.reference.ai_ocr_backend
         default_ocr_model = loaded_settings.settings.reference.codex_ocr_model
         default_ocr_reasoning_effort = loaded_settings.settings.reference.codex_ocr_reasoning_effort
@@ -164,6 +174,8 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         default_backend = ""
         default_model = ""
         default_reasoning_effort = ""
+        default_fast_mode = False
+        default_ocr_fast_mode = False
         default_ocr_backend = ""
         default_ocr_model = ""
         default_ocr_reasoning_effort = ""
@@ -187,6 +199,8 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         "glossary_file": settings.glossary_file,
         "model": settings.model or default_model,
         "reasoning_effort": settings.reasoning_effort or default_reasoning_effort,
+        "fast_mode": settings.fast_mode if settings.fast_mode is not None else default_fast_mode,
+        "ocr_fast_mode": settings.ocr_fast_mode if settings.ocr_fast_mode is not None else default_ocr_fast_mode,
         "ocr_backend": settings.ocr_backend or default_ocr_backend,
         "ocr_model": settings.ocr_model or default_ocr_model,
         "ocr_reasoning_effort": settings.ocr_reasoning_effort or default_ocr_reasoning_effort,

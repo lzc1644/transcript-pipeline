@@ -18,6 +18,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 
 import { getFrontendSettings, saveFrontendSettings, type FrontendSettings } from "../api/client";
 import AsrCandidateSelector from "../components/AsrCandidateSelector.vue";
+import FastModeSwitch from "../components/FastModeSwitch.vue";
 import { useConfigOptions } from "../composables/useConfigOptions";
 const { asrCandidates, loading: configLoading } = useConfigOptions();
 
@@ -36,6 +37,8 @@ const form = reactive({
   asr_candidate: "",
   secondary_asr_candidate: "",
   reasoning_effort: "high",
+  fast_mode: false,
+  ocr_fast_mode: false,
   ocr_model: "",
   ocr_reasoning_effort: "high",
 });
@@ -76,6 +79,8 @@ function applySettings(settings: FrontendSettings) {
   form.asr_candidate = settings.asr_candidate || "whisper-existing";
   form.secondary_asr_candidate = settings.secondary_asr_candidate || "";
   form.reasoning_effort = settings.reasoning_effort;
+  form.fast_mode = settings.fast_mode ?? false;
+  form.ocr_fast_mode = settings.ocr_fast_mode ?? false;
   form.ocr_model = settings.ocr_model;
   form.ocr_reasoning_effort = settings.ocr_reasoning_effort;
 }
@@ -105,6 +110,8 @@ async function saveSettings() {
       asr_candidate: form.asr_candidate,
       secondary_asr_candidate: form.secondary_asr_candidate,
       reasoning_effort: form.reasoning_effort,
+      fast_mode: form.fast_mode,
+      ocr_fast_mode: form.ocr_fast_mode,
       ocr_model: form.ocr_model,
       ocr_reasoning_effort: form.ocr_reasoning_effort,
     });
@@ -189,12 +196,15 @@ onMounted(loadSettings);
             <n-form-item label="阶段 6 推理强度">
               <n-select v-model:value="form.reasoning_effort" :options="reasoningOptions" />
             </n-form-item>
+            <FastModeSwitch v-model="form.fast_mode" label="AI 精修快速模式（默认）" :disabled="loading || saving || !!loadError" />
             <n-form-item label="PDF OCR 模型">
               <n-select v-model:value="form.ocr_model" :options="modelOptions" />
             </n-form-item>
             <n-form-item label="PDF OCR 推理强度">
               <n-select v-model:value="form.ocr_reasoning_effort" :options="reasoningOptions" />
             </n-form-item>
+            <FastModeSwitch v-model="form.ocr_fast_mode" label="PDF OCR 快速模式（默认）" :disabled="loading || saving || !!loadError" />
+            <p class="prompt-hint">两个默认开关独立，仅供新任务使用。快速服务可能增加额度消耗或费用，不改变模型或推理强度。</p>
           </n-form>
         </n-card>
       </n-grid-item>

@@ -29,6 +29,7 @@ const selectOptions = computed(() => props.options.map((value) => ({ label: prof
 </script>
 
 <template>
+  <div class="profile-selector">
   <n-select
     :value="modelValue"
     :options="selectOptions"
@@ -37,4 +38,11 @@ const selectOptions = computed(() => props.options.map((value) => ({ label: prof
     clearable
     @update:value="emit('update:modelValue', $event)"
   />
+  <p class="prompt-hint">Whisper 的模型、精度和 beam 参数仅用于 Whisper；其它 ASR 不使用这些参数。</p>
+  </div>
 </template>
+
+<style scoped>
+.profile-selector { width: 100%; min-width: 0; }
+.prompt-hint { margin: 6px 0 0; }
+</style>

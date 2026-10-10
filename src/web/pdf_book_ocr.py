@@ -50,13 +50,17 @@ def build_pdf_book_ocr_task_paths(project_root: Path, task_id: str) -> PDFBookOC
 def pdf_book_ocr_retry_payload(state: dict) -> dict[str, object]:
     request_payload = state.get("request_payload")
     if isinstance(request_payload, dict) and isinstance(request_payload.get("input_path"), str):
-        return dict(request_payload)
+        payload = dict(request_payload)
+        # 旧任务没有快速开关，不继承后来开启的全局默认。
+        if payload.get("ocr_fast_mode") is None:
+            payload["ocr_fast_mode"] = False
+        return payload
 
     input_summary = state.get("input_summary")
     input_path = input_summary.get("input_path") if isinstance(input_summary, dict) else None
     if not isinstance(input_path, str) or not input_path.strip():
         raise PDFBookOCRTaskError("PDF OCR 历史任务缺少输入路径，无法重试。")
-    return {"input_path": input_path}
+    return {"input_path": input_path, "ocr_fast_mode": False}
 
 
 def resolve_uploaded_pdf_ocr_input(project_root: Path, input_path: str) -> Path:

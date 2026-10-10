@@ -12,6 +12,8 @@ class AsrSelection(BaseModel):
 
 
 class SingleJobRequest(AsrSelection):
+    fast_mode: bool | None = None
+    ocr_fast_mode: bool | None = None
     video: str
     reference: str | None = None
     output_dir: str
@@ -33,6 +35,8 @@ class SingleJobRequest(AsrSelection):
 
 
 class BatchJobRequest(AsrSelection):
+    fast_mode: bool | None = None
+    ocr_fast_mode: bool | None = None
     manifest: str | None = None
     videos_dir: str | None = None
     reference_dir: str | None = None
@@ -57,6 +61,8 @@ class BatchJobRequest(AsrSelection):
 
 
 class StageRunRequest(AsrSelection):
+    fast_mode: bool | None = None
+    ocr_fast_mode: bool | None = None
     config: str | None = None
     profile: str | None = None
     backend: Literal["codex_api", "codex_cli", "agy", "both"] | None = None
@@ -70,6 +76,7 @@ class StageRunRequest(AsrSelection):
 
 
 class PDFBookOCRRequest(BaseModel):
+    ocr_fast_mode: bool | None = None
     input_path: str = Field(min_length=1)
     config: str | None = None
     ocr_model: str | None = None
@@ -84,6 +91,8 @@ class StageFileRunRequest(StageRunRequest):
 
 
 class JobRerunRequest(AsrSelection):
+    fast_mode: bool | None = None
+    ocr_fast_mode: bool | None = None
     start_stage: str
     profile: str | None = None
     backend: Literal["codex_api", "codex_cli", "agy", "both"] | None = None

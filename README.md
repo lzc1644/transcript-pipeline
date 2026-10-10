@@ -168,6 +168,15 @@ bash scripts/install_wsl2_env.sh
 
 优先在 Web「运行设置」的「CPA / OpenAI 兼容 API 连接」中填写 Base URL 和 **CPA 客户端 API Key**（CPA 配置的 `api-keys`，不是管理面板密钥），按需开启直连。旧 `codex_lb` 配置段、Web 保存字段和 `CODEX_LB_*` 环境变量名保持不变，仅名称兼容，并不要求继续部署 codex-lb。网页保存的地址/key 会覆盖环境默认；迁移时请手动更新，程序不会覆盖已保存值。
 
+### 独立快速模式
+
+网页的「AI 精修快速模式」和「PDF OCR 快速模式」独立控制各自的请求；单任务/批量页位于配置方案下方，PDF 书籍 OCR 和单阶段页只显示对应开关。「运行设置」可分别保存两个默认值，任务页的选择不会回写默认值。网页固定使用已配置的 API 网关，不再显示推理服务下拉框；CLI 的其它后端仍保留兼容。
+
+- 默认均关闭。开启时仅对应 `/v1/responses` 请求增加 `service_tier: priority`；关闭时不发送该参数。模型、推理强度、提示词、质量校验和 OCR 投递/并发均不改变。
+- 本次任务显式值（包括 `false`）优先于 Web 默认值，再继承 YAML：`llm.fast_mode` 与 `reference.codex_ocr_fast_mode`。API 对应字段为 `fast_mode`、`ocr_fast_mode`。原任务快照和补页参数保留实际值，重试不继承后来修改的快速模式默认值；旧任务缺少字段时按关闭处理。成功 OCR 页不会因调度模式改变而失效。
+- 快速模式只针对 `codex_api`。快速服务可能增加额度消耗或费用，是否获得加速取决于 CPA/上游账号与模型；请求携带 `priority` 不等于已确认加速。Codex OAuth 响应的 `service_tier: default` 也不能单独用于判断快速模式无效。
+- CPA 不应通过全局 `payload.override` 强制所有请求使用 `priority`，否则应用中的两个开关无法独立控制。应用不会自动改写 CPA 配置或静默降级为普通模式。
+
 本地脚本配置示例（CPA 示例端口为 `8317`，按实际部署调整）：
 
 ```bash

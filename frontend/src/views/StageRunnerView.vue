@@ -31,7 +31,7 @@ import {
   type StageFileContract,
   type StageRunPayload,
 } from "../api/client";
-import BackendSelector from "../components/BackendSelector.vue";
+import FastModeSwitch from "../components/FastModeSwitch.vue";
 import JobStatusCard from "../components/JobStatusCard.vue";
 import ProfileSelector from "../components/ProfileSelector.vue";
 import AsrCandidateSelector from "../components/AsrCandidateSelector.vue";
@@ -43,12 +43,11 @@ const {
   asrCandidates,
   defaultAsrCandidate,
   defaultSecondaryAsrCandidate,
-  backends,
-  defaultBackend,
+  defaultFastMode,
+  defaultOcrFastMode,
   error: configError,
   loading: configLoading,
   profiles,
-  defaultOcrBackend,
   defaultOcrMaxConcurrency,
   defaultOcrModel,
   defaultOcrReasoningEffort,
@@ -71,10 +70,10 @@ const form = reactive({
   profile: "",
   asr_candidate: "",
   secondary_asr_candidate: "",
-  backend: "",
+  fast_mode: null as boolean | null,
+  ocr_fast_mode: null as boolean | null,
   model: "",
   reasoning_effort: "",
-  ocr_backend: "",
   ocr_model: "",
   ocr_reasoning_effort: "",
   ocr_max_concurrency: 40 as number | null,
@@ -113,7 +112,7 @@ const stageGuides: StageGuide[] = [
     description: "提取当前参考目录中的 TXT、Markdown 或 PDF 原文。",
     input: "data/input/reference/",
     output: "data/intermediate/extracted_text/ 与 data/intermediate/ocr/",
-    testHint: "测试 PDF OCR 时，在这里覆盖 OCR 服务、模型和推理强度。",
+    testHint: "测试 PDF OCR 时，在这里覆盖模型、推理强度和快速模式。",
   },
   {
     label: "文本对齐 (align)",
@@ -137,7 +136,7 @@ const stageGuides: StageGuide[] = [
     description: "基于 ASR 和参考原文执行阶段 6 精修。",
     input: "data/intermediate/asr/ 与 data/intermediate/extracted_text/",
     output: "data/intermediate/refined/",
-    testHint: "测试模型或推理服务时，在这里覆盖推理服务、模型和推理强度。",
+    testHint: "测试 AI 精修时，在这里覆盖模型、推理强度和快速模式。",
   },
   {
     label: "导出文档 (export-markdown)",
@@ -154,9 +153,6 @@ const currentStageGuide = computed(() => stageGuides.find((guide) => guide.value
 const isFileMode = computed(() => runMode.value === "file");
 const usesOcrOverrides = computed(() => form.stage === "prepare-reference");
 const usesRefineOverrides = computed(() => form.stage === "refine");
-const ocrBackendOptions = [
-  { label: "Codex API", value: "codex_api" },
-];
 const reasoningOptions = [
   { label: "低", value: "low" },
   { label: "中", value: "medium" },
@@ -249,14 +245,16 @@ function buildStageRunPayload(): StageRunPayload {
     payload.secondary_asr_candidate = form.stage === "refine" && runMode.value === "file" ? "" : form.secondary_asr_candidate;
   }
   if (usesOcrOverrides.value) {
-    payload.ocr_backend = optionalValue(form.ocr_backend);
+    payload.ocr_backend = "codex_api";
+    payload.ocr_fast_mode = form.ocr_fast_mode;
     payload.ocr_model = optionalValue(form.ocr_model);
     payload.ocr_reasoning_effort = optionalValue(form.ocr_reasoning_effort);
     payload.ocr_max_concurrency = form.ocr_max_concurrency;
     payload.ocr_submit_interval_seconds = form.ocr_submit_interval_seconds;
   }
   if (usesRefineOverrides.value) {
-    payload.backend = optionalValue(form.backend);
+    payload.backend = "codex_api";
+    payload.fast_mode = form.fast_mode;
     payload.model = optionalValue(form.model);
     payload.reasoning_effort = optionalValue(form.reasoning_effort);
   }
@@ -350,16 +348,8 @@ watch(
   },
 );
 
-watch(defaultOcrBackend, (value) => {
-  if (!form.ocr_backend && value) {
-    form.ocr_backend = value;
-  }
-});
-watch(defaultBackend, (value) => {
-  if (!form.backend && value) {
-    form.backend = value;
-  }
-});
+watch(defaultFastMode, value => { if (form.fast_mode === null) form.fast_mode = value; });
+watch(defaultOcrFastMode, value => { if (form.ocr_fast_mode === null) form.ocr_fast_mode = value; });
 watch(defaultOcrModel, (value) => {
   if (!form.ocr_model && value) {
     form.ocr_model = value;
@@ -521,15 +511,9 @@ onBeforeUnmount(stopPolling);
               </n-grid-item>
 
               <template v-if="usesOcrOverrides">
-                <n-grid-item span="2 m:1">
-                  <n-form-item label="PDF OCR 服务">
-                    <n-select
-                      v-model:value="form.ocr_backend"
-                      :options="ocrBackendOptions"
-                      clearable
-                      placeholder="使用默认 OCR 服务"
-                    />
-                  </n-form-item>
+                <n-grid-item span="2">
+                  <FastModeSwitch v-model="form.ocr_fast_mode" label="PDF OCR 快速模式" :disabled="configLoading" />
+                  <p class="prompt-hint">仅实际执行 PDF OCR 时请求快速服务；可能增加额度消耗或费用，不改变推理强度。</p>
                 </n-grid-item>
                 <n-grid-item span="2 m:1">
                   <n-form-item label="PDF OCR 模型">
@@ -577,10 +561,9 @@ onBeforeUnmount(stopPolling);
                 <n-grid-item v-if="runMode === 'file'" span="2">
                   <n-alert type="info" :show-icon="false">单 TXT 文件校对仅使用单 ASR，不继承全局第二模型。联合校对请使用完整任务或已完成配对的 CLI 工作区。</n-alert>
                 </n-grid-item>
-                <n-grid-item span="2 m:1">
-                  <n-form-item label="推理服务">
-                    <BackendSelector v-model="form.backend" :options="backends" :loading="configLoading" />
-                  </n-form-item>
+                <n-grid-item span="2">
+                  <FastModeSwitch v-model="form.fast_mode" label="AI 精修快速模式" :disabled="configLoading" />
+                  <p class="prompt-hint">通过 CPA 请求快速服务；可能增加额度消耗或费用，不改变推理强度。</p>
                 </n-grid-item>
                 <n-grid-item span="2 m:1">
                   <n-form-item label="阶段 6 模型">

@@ -913,6 +913,8 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
 
         run_mode = str(state.get("run_mode") or "directory")
         request_type = StageFileRunRequest if run_mode == "file" else StageRunRequest
+        if payload.get("ocr_fast_mode") is None:
+            payload["ocr_fast_mode"] = False
         try:
             request = request_type.model_validate(payload)
         except ValueError as exc:

@@ -19,7 +19,7 @@ import {
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
 import { getJob, getRefineDefaultInstruction, type JobState, submitJob } from "../api/client";
-import BackendSelector from "../components/BackendSelector.vue";
+import FastModeSwitch from "../components/FastModeSwitch.vue";
 import JobStatusCard from "../components/JobStatusCard.vue";
 import ProfileSelector from "../components/ProfileSelector.vue";
 import AsrCandidateSelector from "../components/AsrCandidateSelector.vue";
@@ -32,9 +32,8 @@ const {
   defaultAsrCandidate,
   defaultSecondaryAsrCandidate,
   activeProfile,
-  backends,
-  defaultBackend,
-  defaultOcrBackend,
+  defaultFastMode,
+  defaultOcrFastMode,
   defaultOcrMaxConcurrency,
   defaultOcrModel,
   defaultOcrReasoningEffort,
@@ -60,8 +59,8 @@ const form = reactive({
   profile: "",
   asr_candidate: "",
   secondary_asr_candidate: "",
-  backend: "",
-  ocr_backend: "",
+  fast_mode: null as boolean | null,
+  ocr_fast_mode: null as boolean | null,
   ocr_model: "",
   ocr_reasoning_effort: "",
   ocr_max_concurrency: 40 as number | null,
@@ -72,9 +71,6 @@ const form = reactive({
   refine_prompt: "",
 });
 
-const ocrBackendOptions = [
-  { label: "Codex API", value: "codex_api" },
-];
 const ocrReasoningOptions = [
   { label: "低", value: "low" },
   { label: "中", value: "medium" },
@@ -105,17 +101,8 @@ watch(defaultOutputDir, (value) => {
   }
 });
 
-watch(defaultBackend, (value) => {
-  if (!form.backend && value) {
-    form.backend = value;
-  }
-});
-
-watch(defaultOcrBackend, (value) => {
-  if (!form.ocr_backend && value) {
-    form.ocr_backend = value;
-  }
-});
+watch(defaultFastMode, value => { if (form.fast_mode === null) form.fast_mode = value; });
+watch(defaultOcrFastMode, value => { if (form.ocr_fast_mode === null) form.ocr_fast_mode = value; });
 watch(defaultOcrModel, (value) => {
   if (!form.ocr_model && value) {
     form.ocr_model = value;
@@ -223,8 +210,10 @@ async function submit() {
       profile: form.profile || null,
       asr_candidate: form.asr_candidate || null,
       secondary_asr_candidate: form.secondary_asr_candidate,
-      backend: form.backend || null,
-      ocr_backend: form.ocr_backend || null,
+      backend: "codex_api",
+      ocr_backend: "codex_api",
+      fast_mode: form.fast_mode,
+      ocr_fast_mode: isConversation.value ? false : form.ocr_fast_mode,
       ocr_model: form.ocr_model || null,
       ocr_reasoning_effort: form.ocr_reasoning_effort || null,
       ocr_max_concurrency: form.ocr_max_concurrency,
@@ -262,16 +251,14 @@ onBeforeUnmount(stopPolling);
 <template>
   <div class="workbench-page single-job-view">
     <section class="page-heading">
-      <div><h2>新建单任务</h2><p>上传录屏与参考源，选择本次配置。提交后在右侧查看进度与整理结果。</p></div>
+      <div><h2>新建单任务</h2><p>左侧上传录屏与参考源，右侧选择本次配置。提交后在下方查看进度与整理结果。</p></div>
     </section>
 
     <n-alert v-if="error" type="error" :title="error" :bordered="false" class="glass-alert" />
 
-    <div class="workbench-columns">
-    <div class="workspace-primary">
-    <n-card class="view-card form-panel" :bordered="false">
-
-      <n-form label-placement="top">
+    <n-form label-placement="top" class="workbench-columns">
+      <div class="workspace-primary">
+        <n-card class="view-card form-panel" :bordered="false">
             <div class="form-section">
               <h3 class="form-section-title">输入文件</h3>
               <n-form-item label="任务类型" required>
@@ -318,25 +305,24 @@ onBeforeUnmount(stopPolling);
                 </n-alert>
               </n-form-item>
             </div>
+        </n-card>
+      </div>
+      <aside class="workspace-inspector" aria-label="本次任务配置">
+        <n-card class="view-card form-panel" :bordered="false">
             <div class="form-section">
               <h3 class="form-section-title">常用配置 · 仅本次任务</h3>
-              <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
-                <n-grid-item span="2 m:1">
-                  <n-form-item label="语音转文字模型">
-                    <AsrCandidateSelector v-model="form.asr_candidate" v-model:secondary-candidate="form.secondary_asr_candidate" :options="asrCandidates" :loading="loading" />
-                  </n-form-item>
-                </n-grid-item>
-                <n-grid-item span="2 m:1">
-                  <n-form-item label="配置方案">
-                    <ProfileSelector v-model="form.profile" :options="profiles" :loading="loading" />
-                  </n-form-item>
-                </n-grid-item>
-                <n-grid-item span="2 m:1">
-                  <n-form-item label="推理服务">
-                    <BackendSelector v-model="form.backend" :options="backends" :loading="loading" />
-                  </n-form-item>
-                </n-grid-item>
-              </n-grid>
+              <n-form-item label="语音转文字模型">
+                <AsrCandidateSelector v-model="form.asr_candidate" v-model:secondary-candidate="form.secondary_asr_candidate" :options="asrCandidates" :loading="loading" />
+              </n-form-item>
+              <n-form-item label="配置方案">
+                <ProfileSelector v-model="form.profile" :options="profiles" :loading="loading" />
+              </n-form-item>
+              <section class="fast-mode-options" aria-label="快速模式">
+                <h4>快速模式 · 仅本次任务</h4>
+                <FastModeSwitch v-model="form.fast_mode" label="AI 精修快速模式" :disabled="loading" />
+                <FastModeSwitch v-if="!isConversation" v-model="form.ocr_fast_mode" label="PDF OCR 快速模式" :disabled="loading" />
+                <p class="prompt-hint">通过 CPA 请求快速服务，可能增加额度消耗或费用；不改变模型或推理强度。PDF 开关仅在实际执行 OCR 时生效。</p>
+              </section>
               <details class="advanced-options">
                 <summary>高级参数 · OCR、术语与整理指令</summary>
                 <n-grid :cols="2" :x-gap="12" :y-gap="0" responsive="screen" item-responsive>
@@ -348,16 +334,6 @@ onBeforeUnmount(stopPolling);
                       </n-space>
                     </n-form-item>
                   </n-grid-item>
-                <n-grid-item span="2 m:1">
-                  <n-form-item label="PDF OCR 服务">
-                    <n-select
-                      v-model:value="form.ocr_backend"
-                      :options="ocrBackendOptions"
-                      clearable
-                      placeholder="使用默认 OCR 服务"
-                    />
-                  </n-form-item>
-                </n-grid-item>
                 <n-grid-item v-if="!isConversation" span="2 m:1">
                   <n-form-item label="PDF OCR 模型">
                     <n-input v-model:value="form.ocr_model" placeholder="例如 gpt-6-luna" />
@@ -429,19 +405,16 @@ onBeforeUnmount(stopPolling);
             开始整理
           </n-button>
         </n-flex>
-      </n-form>
-    </n-card>
-
-    </div>
-    <aside class="workspace-inspector" aria-label="当前任务">
-      <JobStatusCard v-if="jobState" title="当前任务" :state="jobState" default-expanded @rerun="handleJobRerun" />
-      <section v-else class="inspector-empty">
-        <h3>当前任务</h3>
-        <p>尚未提交任务。运行进度、错误详情和结果会显示在这里。</p>
-        <ol><li>上传本机视频与参考源</li><li>确认配置并开始整理</li><li>下载草稿，进行人工校对</li></ol>
-        <router-link to="/jobs">查看已有任务 →</router-link>
-      </section>
-    </aside>
-    </div>
+        </n-card>
+      </aside>
+    </n-form>
+    <JobStatusCard v-if="jobState" title="当前任务" :state="jobState" default-expanded @rerun="handleJobRerun" />
   </div>
 </template>
+
+<style scoped>
+.workbench-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 1200px) {
+  .workbench-columns { grid-template-columns: minmax(0, 1fr); }
+}
+</style>

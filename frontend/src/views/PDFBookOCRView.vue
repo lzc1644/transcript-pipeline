@@ -34,6 +34,7 @@ import {
   type PDFBookOCRTask,
 } from "../api/client";
 import RemoteDirectoryUpload from "../components/RemoteDirectoryUpload.vue";
+import FastModeSwitch from "../components/FastModeSwitch.vue";
 import RemoteFileUpload from "../components/RemoteFileUpload.vue";
 
 type InputMode = "file" | "directory";
@@ -62,6 +63,7 @@ const form = reactive({
   input_path: "",
   ocr_model: "",
   ocr_reasoning_effort: "",
+  ocr_fast_mode: null as boolean | null,
   ocr_max_concurrency: 40 as number | null,
   ocr_submit_interval_seconds: 5 as number | null,
 });
@@ -198,6 +200,9 @@ function taskSourceLabel(task: PDFBookOCRTask): string {
 async function loadDefaults() {
   try {
     const settings = await getFrontendSettings();
+    if (form.ocr_fast_mode === null) {
+      form.ocr_fast_mode = settings.ocr_fast_mode ?? false;
+    }
     if (!form.ocr_model) {
       form.ocr_model = settings.ocr_model;
     }
@@ -317,6 +322,7 @@ async function submit() {
   try {
     const response = await submitPDFBookOCR({
       input_path: form.input_path,
+      ocr_fast_mode: form.ocr_fast_mode,
       ocr_model: form.ocr_model || null,
       ocr_reasoning_effort: form.ocr_reasoning_effort || null,
       ocr_max_concurrency: form.ocr_max_concurrency,
@@ -421,6 +427,9 @@ onBeforeUnmount(stopPolling);
             <n-form-item label="OCR 模型">
               <n-input v-model:value="form.ocr_model" placeholder="留空则沿用运行设置" clearable />
             </n-form-item>
+
+            <FastModeSwitch v-model="form.ocr_fast_mode" label="PDF OCR 快速模式" />
+            <p class="prompt-hint">仅本次 OCR 及其缺页重试使用；通过 CPA 请求快速服务，可能增加额度消耗或费用，不改变推理强度或并发。</p>
 
             <details class="advanced-options">
               <summary>高级参数 · 请求投递与并发</summary>

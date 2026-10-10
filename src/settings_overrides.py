@@ -15,6 +15,8 @@ class SettingsOverrideError(ValueError):
 class ModelOverrides:
     llm_model: str | None = None
     llm_reasoning_effort: str | None = None
+    llm_fast_mode: bool | None = None
+    ocr_fast_mode: bool | None = None
     ocr_backend: str | None = None
     ocr_model: str | None = None
     ocr_reasoning_effort: str | None = None
@@ -90,6 +92,10 @@ def apply_model_overrides(loaded_settings: LoadedSettings, overrides: ModelOverr
         loaded_settings.settings.llm.model = llm_model
     if llm_reasoning_effort is not None:
         loaded_settings.settings.llm.reasoning_effort = llm_reasoning_effort
+    if overrides.llm_fast_mode is not None:
+        loaded_settings.settings.llm.fast_mode = overrides.llm_fast_mode
+    if overrides.ocr_fast_mode is not None:
+        loaded_settings.settings.reference.codex_ocr_fast_mode = overrides.ocr_fast_mode
     if ocr_backend is not None:
         loaded_settings.settings.reference.ai_ocr_backend = ocr_backend
     if ocr_model is not None:
@@ -124,7 +130,7 @@ def apply_model_overrides_to_raw_settings(payload: dict, overrides: ModelOverrid
             asr_payload["candidate"] = candidate
         if overrides.secondary_asr_candidate is not None:
             asr_payload["secondary_candidate"] = secondary
-    if llm_model is not None or llm_reasoning_effort is not None:
+    if llm_model is not None or llm_reasoning_effort is not None or overrides.llm_fast_mode is not None:
         llm_payload = payload.setdefault("llm", {})
         if not isinstance(llm_payload, dict):
             raise SettingsOverrideError("配置字段 llm 必须是对象，无法覆盖阶段 6 模型。")
@@ -132,11 +138,14 @@ def apply_model_overrides_to_raw_settings(payload: dict, overrides: ModelOverrid
             llm_payload["model"] = llm_model
         if llm_reasoning_effort is not None:
             llm_payload["reasoning_effort"] = llm_reasoning_effort
+        if overrides.llm_fast_mode is not None:
+            llm_payload["fast_mode"] = overrides.llm_fast_mode
 
     if (
         ocr_backend is not None
         or ocr_model is not None
         or ocr_reasoning_effort is not None
+        or overrides.ocr_fast_mode is not None
         or overrides.ocr_max_concurrency is not None
         or overrides.ocr_submit_interval_seconds is not None
     ):
@@ -149,6 +158,8 @@ def apply_model_overrides_to_raw_settings(payload: dict, overrides: ModelOverrid
             reference_payload["codex_ocr_model"] = ocr_model
         if ocr_reasoning_effort is not None:
             reference_payload["codex_ocr_reasoning_effort"] = ocr_reasoning_effort
+        if overrides.ocr_fast_mode is not None:
+            reference_payload["codex_ocr_fast_mode"] = overrides.ocr_fast_mode
         if overrides.ocr_max_concurrency is not None:
             reference_payload["codex_ocr_max_concurrency"] = overrides.ocr_max_concurrency
         if overrides.ocr_submit_interval_seconds is not None:

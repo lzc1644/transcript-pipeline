@@ -111,6 +111,8 @@ reference:
   gemini_ocr_fallback_model: ""
   codex_ocr_model: gpt-6-luna
   codex_ocr_reasoning_effort: high
+  # 仅 PDF OCR 请求快速服务，不改变模型、推理强度或并发；可能增加额度消耗。
+  codex_ocr_fast_mode: false
   # 默认每 5 秒新增一页，不等待前一页完成；最多允许 40 个请求同时在途，Web 任务可单独覆盖。
   codex_ocr_max_concurrency: 40
   codex_ocr_submit_interval_seconds: 5.0
@@ -192,6 +194,8 @@ llm:
   max_asr_chars_for_prompt: 120
   max_reference_chars_for_prompt: 120
   reasoning_effort: high
+  # 仅 AI 精修请求快速服务，与 PDF OCR 开关独立。
+  fast_mode: false
   temperature: 0.1
   max_output_tokens: 4000
   # 对谈阶段 6 需要整篇输出长对话；先允许远程 SSE 最长等待 60 分钟，避免 30 分钟时误中断。

@@ -35,7 +35,10 @@ def test_resolve_pdf_book_ocr_output_file_rejects_path_traversal(tmp_path: Path)
 def test_pdf_book_ocr_retry_payload_supports_legacy_task_state() -> None:
     payload = pdf_book_ocr_retry_payload({"input_summary": {"input_path": "/uploads/book.pdf"}})
 
-    assert payload == {"input_path": "/uploads/book.pdf"}
+    assert payload == {"input_path": "/uploads/book.pdf", "ocr_fast_mode": False}
+    for enabled in (False, True):
+        request = {"input_path": "/uploads/book.pdf", "ocr_fast_mode": enabled}
+        assert pdf_book_ocr_retry_payload({"request_payload": request}) == request
 
 
 def test_execute_pdf_book_ocr_writes_isolated_task_state_and_results(

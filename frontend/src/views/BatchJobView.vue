@@ -20,7 +20,7 @@ import {
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
 import { getBatch, getRefineDefaultInstruction, listFs, submitBatchJob, type FileItem, type JobState } from "../api/client";
-import BackendSelector from "../components/BackendSelector.vue";
+import FastModeSwitch from "../components/FastModeSwitch.vue";
 import ProfileSelector from "../components/ProfileSelector.vue";
 import AsrCandidateSelector from "../components/AsrCandidateSelector.vue";
 import RemoteDirectoryUpload from "../components/RemoteDirectoryUpload.vue";
@@ -43,9 +43,8 @@ const {
   defaultAsrCandidate,
   defaultSecondaryAsrCandidate,
   activeProfile,
-  backends,
-  defaultBackend,
-  defaultOcrBackend,
+  defaultFastMode,
+  defaultOcrFastMode,
   defaultOcrMaxConcurrency,
   defaultOcrModel,
   defaultOcrReasoningEffort,
@@ -77,8 +76,8 @@ const form = reactive<{
   profile: string;
   asr_candidate: string;
   secondary_asr_candidate: string;
-  backend: string;
-  ocr_backend: string;
+  fast_mode: boolean | null;
+  ocr_fast_mode: boolean | null;
   ocr_model: string;
   ocr_reasoning_effort: string;
   ocr_max_concurrency: number | null;
@@ -99,8 +98,8 @@ const form = reactive<{
   profile: "",
   asr_candidate: "",
   secondary_asr_candidate: "",
-  backend: "",
-  ocr_backend: "",
+  fast_mode: null,
+  ocr_fast_mode: null,
   ocr_model: "",
   ocr_reasoning_effort: "",
   ocr_max_concurrency: 40,
@@ -112,9 +111,6 @@ const form = reactive<{
   refine_prompt: "",
 });
 
-const ocrBackendOptions = [
-  { label: "Codex API", value: "codex_api" },
-];
 const ocrReasoningOptions = [
   { label: "低", value: "low" },
   { label: "中", value: "medium" },
@@ -202,17 +198,8 @@ watch(defaultOutputDir, (value) => {
   }
 });
 
-watch(defaultBackend, (value) => {
-  if (!form.backend && value) {
-    form.backend = value;
-  }
-});
-
-watch(defaultOcrBackend, (value) => {
-  if (!form.ocr_backend && value) {
-    form.ocr_backend = value;
-  }
-});
+watch(defaultFastMode, value => { if (form.fast_mode === null) form.fast_mode = value; });
+watch(defaultOcrFastMode, value => { if (form.ocr_fast_mode === null) form.ocr_fast_mode = value; });
 watch(defaultOcrModel, (value) => {
   if (!form.ocr_model && value) {
     form.ocr_model = value;
@@ -420,8 +407,10 @@ function buildPayload() {
     profile: form.profile || null,
     asr_candidate: form.asr_candidate || null,
     secondary_asr_candidate: form.secondary_asr_candidate,
-    backend: form.backend || null,
-    ocr_backend: form.ocr_backend || null,
+    backend: "codex_api",
+    ocr_backend: "codex_api",
+    fast_mode: form.fast_mode,
+    ocr_fast_mode: form.mode === "conversation-dir" ? false : form.ocr_fast_mode,
     ocr_model: form.ocr_model || null,
     ocr_reasoning_effort: form.ocr_reasoning_effort || null,
     ocr_max_concurrency: form.ocr_max_concurrency,
@@ -615,11 +604,12 @@ onBeforeUnmount(stopPolling);
                     <n-form-item label="配置方案">
                       <ProfileSelector v-model="form.profile" :options="profiles" :loading="loading" />
                     </n-form-item>
-                  </n-grid-item>
-                  <n-grid-item span="2 m:1">
-                    <n-form-item label="推理服务">
-                      <BackendSelector v-model="form.backend" :options="backends" :loading="loading" />
-                    </n-form-item>
+                    <section class="fast-mode-options" aria-label="快速模式">
+                      <h4>快速模式 · 仅本次批量任务</h4>
+                      <FastModeSwitch v-model="form.fast_mode" label="AI 精修快速模式" :disabled="loading" />
+                      <FastModeSwitch v-if="form.mode !== 'conversation-dir'" v-model="form.ocr_fast_mode" label="PDF OCR 快速模式" :disabled="loading" />
+                      <p class="prompt-hint">通过 CPA 请求快速服务，可能增加额度消耗或费用；不改变模型或推理强度。PDF 开关仅在实际执行 OCR 时生效。</p>
+                    </section>
                   </n-grid-item>
                 </n-grid>
                 <details class="advanced-options">
@@ -633,16 +623,6 @@ onBeforeUnmount(stopPolling);
                         </n-space>
                       </n-form-item>
                     </n-grid-item>
-                  <n-grid-item span="2 m:1">
-                    <n-form-item label="PDF OCR 服务">
-                      <n-select
-                        v-model:value="form.ocr_backend"
-                        :options="ocrBackendOptions"
-                        clearable
-                        placeholder="使用默认 OCR 服务"
-                      />
-                    </n-form-item>
-                  </n-grid-item>
                   <n-grid-item span="2 m:1">
                     <n-form-item label="批量远程并发度" required>
                       <n-input-number v-model:value="form.remote_concurrency" :min="1" :precision="0" class="w-full" />

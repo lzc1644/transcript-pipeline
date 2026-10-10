@@ -982,6 +982,8 @@ def run_codex_api_payload(
     configured_reasoning_effort = llm_settings.reasoning_effort.strip()
     if configured_reasoning_effort:
         payload["reasoning"] = {"effort": configured_reasoning_effort}
+    if llm_settings.fast_mode:
+        payload["service_tier"] = "priority"
 
     client = CodexLBClient(loaded_settings.settings.codex_lb, timeout_seconds=llm_settings.timeout_seconds)
     try:
@@ -1002,6 +1004,8 @@ def run_codex_api_payload(
                 "recorded_at": trace_now_iso(),
                 "model": configured_model,
                 "reasoning_effort": configured_reasoning_effort,
+                "fast_mode": llm_settings.fast_mode,
+                "requested_service_tier": payload.get("service_tier"),
                 "stream": True,
                 "store": False,
                 "timeout_seconds": llm_settings.timeout_seconds,

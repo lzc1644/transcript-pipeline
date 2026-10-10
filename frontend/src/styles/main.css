@@ -104,6 +104,9 @@ a { color: var(--primary); }
 .view-card.n-card > .n-card-header .n-card-header__main { min-width: 0; }
 .form-section + .form-section { margin-top: 24px; padding-top: 24px; border-top: 1px solid var(--border-subtle); }
 .form-section-title { margin: 0 0 16px; font-size: 14px; font-weight: 600; }
+.fast-mode-options { margin-bottom: 20px; }
+.fast-mode-options h4 { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
+.fast-mode-options .prompt-hint { margin: 0; }
 .panel-header-icon { display: flex; align-items: center; color: var(--primary); }
 .form-action-area { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border-subtle); }
 .w-full { width: 100%; min-width: 0; }
