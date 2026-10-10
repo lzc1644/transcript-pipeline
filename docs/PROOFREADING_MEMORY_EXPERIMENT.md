@@ -8,7 +8,7 @@
 
 批准链路：**显式三稿 → 可解释有界修改片段/请求 → 离线响应导入或显式 Responses 分析 → pending 候选 → 人工审核 → 精确任务范围检索 → 冻结 task-context / 有限模型数据块**。
 
-借鉴 Hermes 的本地持久记忆、候选审核、按需检索和冻结快照，不接入 Hermes 或外部记忆服务。独立深模块 `src/proofreading_memory.py`，薄 CLI `scripts/12_memory_experiment.py`，stdlib SQLite，无新依赖。CLI 与测试使用同一道接口；模型边界可替换。
+借鉴 Hermes 的本地持久记忆、候选审核、按需检索和冻结快照，不接入 Hermes 或外部记忆服务。独立深模块 `src/proofreading_memory.py`，薄 CLI `scripts/12_memory_experiment.py`，stdlib SQLite，无新依赖。CLI 与测试使用同一道接口；模型边界可替换。用户追加授权后，现有工作台增加独立 Web 板块和 API 适配层，仍不接入生产阶段6。
 
 已有 `glossary_utils.py` 是字符串词表、顺序截取400字，不承载来源或审核，本实验不复用其存储。`refine_utils.py`、`job_runner.write_job_settings`、生产 cleanup 提示词、通用词表、默认配置全部不改。
 
@@ -107,7 +107,50 @@ system↔human 使用有字符offset的**行级 difflib.SequenceMatcher(autojunk
 
 输出默认拒绝已有文件/软链接/输入路径，以同目录临时文件+fsync+原子无覆盖link发布；context和可选block各自原子，不是跨文件事务（第二输出失败时已生成的JSON仍有效）。原稿和上游产物绝不覆盖。数据库和请求含原稿，须自行管理敏感资料/备份与文件权限。
 
-## 使用
+## Web 工作台
+
+入口：侧栏 **工具 → 校对记忆实验**，路由 `/proofreading-memory`。复用 Vue / Naive UI、深浅主题和窄屏抽屉，不引入新 UI 框架。以下为本次板块的结构契约，尺寸和控件文案为示意：
+
+```text
+┌─ 校对记忆实验 ─────────────────────────────────────────┐
+│ 独立实验 / 默认离线 / 未审出处不是自动审核或置信度学习      │
+├────────────────────────┬──────────────────────────────┤
+│ 1 三稿与精确范围         │ 实验历史 / 当前保存请求        │
+│ 书籍 / 讲者 / 数据类型    │ 修改窗口、覆盖范围、请求下载   │
+│ ASR / 系统 / 人工稿上传   │ 2 联网分析（须同意）          │
+│ 可选已有参考文本         │ 模型候选预览 → 显式保存       │
+│ [准备请求，不联网]       │ 或离线 JSON 导入              │
+├────────────────────────┴──────────────────────────────┤
+│ 3 人工审核：审核人＋理由；当前版本证据 / 未审出现记录      │
+│    [批准] [拒绝] / [停用] → 二次确认                      │
+├───────────────────────────────────────────────────────┤
+│ 4 检索文本＋预算 → 冻结 JSON / 模型块预览及下载            │
+└───────────────────────────────────────────────────────┘
+```
+
+窄屏变为单列；可展开片段、证据、出现记录和模型块，不悬浮覆盖正文。上传、读取历史、分析中、空列表、失败和冻结结果均有状态反馈；操作中禁用重复提交。原稿不写入浏览器 localStorage，文本作为数据渲染，不执行其中 HTML 或命令。Python 字符区间在浏览器按 Unicode code point 显示，不能直接用 UTF-16 `slice`。
+
+### 操作顺序与文件所有权
+
+1. 填写书籍标识、讲者标识、reading/conversation，并明确选择真实人工修改或 synthetic。分别上传 UTF-8 三稿；可选已有参考/OCR TXT/MD，须填写来源类型和版本。当前不直接选择任意服务器路径，也不新跑OCR。
+2. 点击「准备分析请求（不联网）」；检查实际修改窗口和覆盖范围，下载自包含请求。输入仍受原模块预算限制；页面不自动截断或自动挑选子集，超预算时使用较小、明确标注的输入（CLI 仍可显式选择片段ID）。左侧未保存的新输入不会改变当前请求的范围或上下文。
+3. 离线导入响应 JSON，或明确同意联网后发起后台分析。联网优先读取既有 Web 运行设置中的地址、密钥、model/reasoning；缺省沿用配置/环境，页面 model 仅覆盖本次。客户端使用实例级连接/密钥/代理参数，不临时修改进程环境，不改全局默认配置，也不把密钥写进实验文件。后台结果只预览，必须另点「保存为待审核」才入库。
+4. 候选列表只显示当前保存请求的精确范围及数据集。填审核人和理由，批准/拒绝/停用需确认，并提交所见版本号以拒绝陈旧审核。当前版本的证据与全部 `unreviewed` 出现记录分别展示；批准当前版本不代表独立确认所有佐证。修订仍可使用原 CLI，本轮未增加网页修订编辑器。
+5. 使用当前请求的范围和数据集导出已批准记忆；检索文本默认ASR，也可替换为下一份待校对文本。超预算整条省略，空选择解释原因。每次产生新快照，可下载冻结JSON和模型块，供人工受控实验；不自动调用阶段6。
+
+独立数据目录为 `data/proofreading-memory/`：`uploads/` 保存随机token命名的输入副本，`experiments/<id>/request.json` 是不可覆盖请求，`analyses/<id>/` 保存状态及合法响应，`contexts/<id>/` 保存冻结JSON/TXT，`memory.sqlite3` 是专用v2实验库。HTTP调用方不能选择数据库/输出路径，标识和上传token严格校验，拒绝逃逸软链接、非UTF-8、空文件和超限上传，失败上传清理未完成文件。已有CLI实验库不会自动合并；若此库为v1，仍需用户备份后显式用CLI `migrate-v1`，Web不偷偷迁移。
+
+API 归属为 `src/web/proofreading_memory.py` 的独立 `APIRouter`（`/api/proofreading-memory`）；负责HTTP输入、实验文件和后台编排，合法性、去重、版本审核和冻结选择均调用原领域模块。前端为 `frontend/src/api/proofreadingMemory.ts` 与专用页面，未向 `refine_utils.py` 添加职责。
+
+### 必须遵守：单进程实验目录所有权
+
+**仅支持一个 API 进程独占该实验目录，不支持多 worker 或多个服务实例共享目录。** `api_server.main` 的默认服务为单worker；不要为这个实验启用 `uvicorn --workers N`（N>1）或启动第二个实例复用目录。
+
+后台分析的 `active` 集合和重复提交锁均为进程私有：活跃ID不在本进程时，读取 `pending/running` 状态会写为中断失败。如果两个进程共享目录，会误判另一进程的任务，而且重复提交保护不能跨进程。服务重启后不会自动重试模型请求或自动入库；旧尝试保留，用户须明确重新发起。离开页面不取消已发起后台分析。
+
+以后若批准多进程支持，必须先引入持久 owner/lease，依据租约确认孤儿任务并做跨进程提交互斥，不能仅用当前集合判断。HTTP服务沿用项目现有的访问控制；本板块不是新的多租户鉴权系统，应在受信任的内网/本机使用并保护原稿与实验目录。
+
+## CLI 使用
 
 全部Python使用项目 `.venv/bin/python`。输出及库应放隔离目录，例如 `tmp/proofreading-memory-experiment/`，不能当生产通用记忆。
 
@@ -157,6 +200,18 @@ reject/disable同approve选项；revise另加 `--replacement candidate.json`。C
 
 ## 验证与下一步
 
+### Web 板块最终验证
+
+- `.venv/bin/python -m pytest`：**775 passed（36.37s）**；记忆核心/校验/Web聚焦 **123 passed**。新增24个Web用例及2个SDK代理回归覆盖HTTP上传/路径/范围隔离、整批导入、版本审核、冻结下载、显式联网、后台防重/失败/重启，以及轮询与完成并发。状态读取和最终状态发布/ownership释放共用guard，避免陈旧running读取覆盖success；这仍是单进程保护，不是分布式锁。
+- 前端 `vue-tsc + Vite` 构建通过；保留既有 >500kB bundle 提示，不在本轮做打包架构重构。
+- 实际Chrome：1440/390px×深浅主题共4个新页布局组合，手机导航键盘/Escape/焦点恢复与七路由切换，以及完整隔离API流程共**6组通过，无浏览器运行时错误**。查看修改窗口（包括非BMP字符）、离线导入、审核取消/确认、不同请求同经验的未审出处积累、冻结下载、停用后旧文件不漂移、坏JSON拒绝及刷新恢复均验证；手机下拉浮层和展开态无横向溢出。
+- 实际HTTP样例：复制真实fcb任务的ASR/system/已有OCR，使用明确synthetic人工稿及replay响应，15次操作成功；pending选0、模拟批准选1/2003字符、停用新上下文选0，旧下载字节不变，两个任务六份原材料hash不变。同一Web实验库也经原CLI真实读取。
+- 标准Responses客户端到本机固定SSE服务实际验证Web运行设置（含虚构测试密钥）、model/reasoning和代理参数，确认环境不变、密钥不进入实验工件；这不是远端模型推理。浏览器fixture阻止联网分析启动，0次远端模型/新ASR/OCR调用。
+
+产物：`tmp/proofreading-memory-web-check/pytest-final.log`、`pytest-focused.log`；`run-4TkfVs/browser-final/results.json`、截图及`memory-flow.json`；`run-4TkfVs/real-source-validation.json`、`real-source-context.json`、`real-source-block.txt`及`cli-memory-inspection.json`。测试复跑入口见 `frontend/tests/README.md`；临时服务不作为部署结果。
+
+### CLI 基础验证记录
+
 聚焦测试覆盖输入拒绝、JSON/hash/预算、四类候选/伪造来源、事务零污染、显式联网开关、实际标准Responses客户端本机固定SSE、去重/审核/修订/旧版本、synthetic/scope隔离、轻量检索/预算、冻结/无覆盖和CLI同接口。命令：
 
 ```sh
@@ -173,4 +228,4 @@ P1出处积累修复后的实际验证：聚焦99 passed，全量749 passed（33
 
 离线CLI重新执行原29步至 `tmp/proofreading-memory-experiment/fixes/offline/`，另12条CLI验证同经验两个不同human hash/request的提案出处，以及复制旧v1库的显式迁移，共41条（34成功、7预期拒绝）。1个approved v2 memory关联2个occurrences，第二理由/来源hash可从list读取且仍未审核；新增佐证后context JSON和render **byte-for-byte一致**，重复导入换模式保留首次replay，不增加occurrence/版本/审计。旧v1实验库复制后迁移回填5个occurrences，原五张表内容与旧context字节一致；原库/旧冻结工件不回改。产物：`fixes/occurrence-validation.json`、`occurrence-run.log`、`list.occurrences.json`、`context.before-occurrence.*`、`context.after-occurrence.*`、`context.migrated.*`。六份原材料hash仍相同，全部synthetic/replay/offline，0次远端模型/新ASR/OCR调用。
 
-此版只输出可人工用于实验的冻结context/提示词数据块，不调用阶段6，不消费其模型输出自动学习，不接API/Web、不自动发布、不新增OCR/ASR、不做全局复杂对齐/embedding/知识图谱/微调。不自动提升OCR或synthetic到通用记忆。缺真实人工稿，不能声称术语准确性、阅读感或保真质量改善。下一步应由用户提供真实人工修改稿，逐条核验候选，并在冻结上下文的受控对照中评估语义保真；跨书/讲者共享推广另需明确审核设计。
+此版只输出可人工用于实验的冻结context/提示词数据块，不调用阶段6，不消费其模型输出自动学习。按用户追加授权提供独立API/Web操作入口；不自动发布、不新增OCR/ASR、不做全局复杂对齐/embedding/知识图谱/微调。不自动提升OCR或synthetic到通用记忆。缺真实人工稿，不能声称术语准确性、阅读感或保真质量改善。下一步应由用户提供真实人工修改稿，逐条核验候选，并在冻结上下文的受控对照中评估语义保真；跨书/讲者共享推广另需明确审核设计。

@@ -10,6 +10,7 @@ const groups = [
   { label: "工具", items: [
     { to: "/stage-runner", label: "单阶段运行", icon: "M5 4h14v5H5zM5 15h14v5H5zM12 9v6" },
     { to: "/pdf-book-ocr", label: "PDF 书籍 OCR", icon: "M14 3H5v18h14V8zM14 3v5h5M8 13h8M8 17h5" },
+    { to: "/proofreading-memory", label: "校对记忆实验", icon: "M4 4h7v16H4zM11 4h9v16h-9M14 8h3M14 12h3M14 16h3" },
   ] },
   { label: "设置", items: [
     { to: "/settings", label: "运行设置", icon: "M4 7h16M4 17h16M9 4v6M15 14v6" },

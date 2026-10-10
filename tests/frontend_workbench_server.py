@@ -59,6 +59,7 @@ def build_app(root: Path):
                 or path == "/api/uploads"
                 or path.startswith("/api/stage-inputs/")
                 or path == "/api/stages/export-markdown/file-run"
+                or (path.startswith("/api/proofreading-memory/") and not path.endswith("/analyses"))
                 or (request.method == "DELETE" and path.startswith("/api/jobs/ui-example-"))
             )
             if not allowed:

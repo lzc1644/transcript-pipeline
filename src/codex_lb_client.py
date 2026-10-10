@@ -6,13 +6,13 @@ import shutil
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.client import HTTPException, IncompleteRead
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 from src.request_trace import RequestTrace, endpoint_metadata, exception_metadata, trace_now_iso
 from src.schemas import CodexLBSettings
@@ -26,12 +26,17 @@ class CodexLBClientError(RuntimeError):
 class CodexLBClient:
     settings: CodexLBSettings
     timeout_seconds: float | None = None
+    # Optional per-call Web settings; never mutate process-wide credentials/proxy state.
+    base_url_override: str | None = None
+    api_key_override: str | None = field(default=None, repr=False)
+    bypass_proxy: bool = False
 
     @property
     def base_url(self) -> str:
         env_name = self.settings.base_url_env.strip()
         env_value = os.environ.get(env_name, "").strip() if env_name else ""
-        base_url = env_value or self.settings.base_url.strip()
+        base_url = (self.base_url_override if self.base_url_override is not None
+                    else env_value or self.settings.base_url).strip()
         if not base_url:
             raise CodexLBClientError("API 网关 base_url 为空，请检查 codex_lb.base_url 或配置的地址环境变量。")
         return base_url.rstrip("/")
@@ -39,7 +44,8 @@ class CodexLBClient:
     @property
     def api_key(self) -> str:
         env_name = self.settings.api_key_env.strip()
-        api_key = os.environ.get(env_name, "").strip() if env_name else ""
+        api_key = (self.api_key_override.strip() if self.api_key_override is not None
+                   else os.environ.get(env_name, "").strip() if env_name else "")
         if not api_key:
             raise CodexLBClientError(f"缺少 API 网关 API Key 环境变量: {env_name or 'CODEX_LB_API_KEY'}")
         return api_key
@@ -119,6 +125,7 @@ class CodexLBClient:
                 label=label,
                 timeout_seconds=self.timeout_seconds,
                 use_curl_first=should_use_curl_first(self.base_url),
+                bypass_proxy=self.bypass_proxy,
             ),
             label=label,
         )
@@ -149,6 +156,7 @@ class CodexLBClient:
             timeout_seconds=self.timeout_seconds,
             use_curl_first=should_use_curl_first(self.base_url),
             request_trace=request_trace,
+            bypass_proxy=self.bypass_proxy,
         )
         if request_trace is not None:
             request_trace.write_json("sse-summary.json", summarize_event_stream(stream_text))
@@ -181,6 +189,7 @@ class CodexLBClient:
             label=label,
             timeout_seconds=self.timeout_seconds,
             use_curl_first=should_use_curl_first(upload_url),
+            bypass_proxy=self.bypass_proxy,
         )
 
 
@@ -202,6 +211,7 @@ def read_http_response(
     timeout_seconds: float | None,
     use_curl_first: bool = False,
     request_trace: RequestTrace | None = None,
+    bypass_proxy: bool = False,
 ) -> str:
     if use_curl_first:
         return read_http_response_with_curl(
@@ -209,18 +219,20 @@ def read_http_response(
             label=label,
             timeout_seconds=timeout_seconds,
             request_trace=request_trace,
+            bypass_proxy=bypass_proxy,
         )
 
     started_at = trace_now_iso()
     started = time.monotonic()
+    open_request = build_opener(ProxyHandler({})).open if bypass_proxy else urlopen
     try:
         if timeout_seconds is None:
-            with urlopen(request) as response:
+            with open_request(request) as response:
                 response_bytes = response.read()
                 status_code = getattr(response, "status", None)
                 effective_url = response.geturl() if hasattr(response, "geturl") else request.full_url
         else:
-            with urlopen(request, timeout=timeout_seconds) as response:
+            with open_request(request, timeout=timeout_seconds) as response:
                 response_bytes = response.read()
                 status_code = getattr(response, "status", None)
                 effective_url = response.geturl() if hasattr(response, "geturl") else request.full_url
@@ -267,6 +279,7 @@ def read_http_response(
                 label=label,
                 timeout_seconds=timeout_seconds,
                 request_trace=request_trace,
+                bypass_proxy=bypass_proxy,
             )
         raise CodexLBClientError(f"{label} HTTP {exc.code}: {safe_body or exc.reason}") from exc
     except IncompleteRead as exc:
@@ -357,6 +370,7 @@ def read_http_response_with_curl(
     label: str,
     timeout_seconds: float | None,
     request_trace: RequestTrace | None = None,
+    bypass_proxy: bool = False,
 ) -> str:
     # 用户的远程 codex-lb 反代域会用 Cloudflare 1010 拦截 Python urllib 的 TLS/客户端指纹；
     # curl 已验证可通过同一 API 入口和远程文件上传 URL，因此远程地址优先使用 curl，本地仍走 urllib。
@@ -383,6 +397,8 @@ def read_http_response_with_curl(
             "--write-out",
             build_curl_write_out_format(),
         ]
+        if bypass_proxy:
+            command.extend(["--noproxy", "*"])
         if timeout_seconds is not None:
             command.extend(["--max-time", str(timeout_seconds)])
         if body_path is not None:

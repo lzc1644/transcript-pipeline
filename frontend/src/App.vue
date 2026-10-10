@@ -17,6 +17,7 @@ const pages: Record<string, [string, string]> = {
   "/jobs": ["任务", "任务列表"],
   "/stage-runner": ["工具", "单阶段运行"],
   "/pdf-book-ocr": ["工具", "PDF 书籍 OCR"],
+  "/proofreading-memory": ["工具", "校对记忆实验"],
   "/settings": ["设置", "运行设置"],
 };
 const pageContext = computed(() => pages[route.path] ?? ["工作台", "读书会整理"]);

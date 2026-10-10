@@ -378,7 +378,7 @@ function formatApiError(status: number, rawBody: string): string {
   }
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     headers: {
       "Content-Type": "application/json",

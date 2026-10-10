@@ -26,6 +26,7 @@ def test_browser_fixture_blocks_model_execution(tmp_path: Path) -> None:
         "/api/stages/refine/run",
         "/api/pdf-book-ocr",
         "/api/jobs/ui-example-failed/rerun",
+        "/api/proofreading-memory/experiments/" + "a" * 32 + "/analyses",
     ):
         response = request_json(app, "POST", path, json_body={})
         assert response.status_code == 403

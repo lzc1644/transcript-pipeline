@@ -52,6 +52,7 @@ from src.web.stage_file_runs import (
     stage_input_slots,
     validate_stage_input_files,
 )
+from src.web.proofreading_memory import create_memory_router
 from src.web.state_store import collect_state_items, create_initial_state, read_json_file, update_state, write_json_file
 from src.web.tasks import (
     execute_batch_item_rerun,
@@ -216,6 +217,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     app.state.execute_pdf_book_ocr = execute_pdf_book_ocr
     app.state.execute_stage_file_run = execute_stage_file_run
     app.state.execute_stage_run = execute_stage_run
+    app.include_router(create_memory_router(app))
     
     # Active jobs in-memory tracker
     app.state.active_jobs = set()

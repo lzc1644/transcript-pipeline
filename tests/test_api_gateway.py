@@ -58,3 +58,22 @@ def test_explicit_legacy_codex_endpoint_is_still_honored(monkeypatch: pytest.Mon
         "http://127.0.0.1:2455/backend-api/codex/responses",
         "http://127.0.0.1:2455/v1/responses",
     ]
+
+
+@pytest.mark.parametrize("bypass", [False, True])
+def test_per_call_proxy_option_reaches_curl_without_changing_legacy_default(monkeypatch, bypass):
+    from urllib.request import Request
+    from src.codex_lb_client import CodexLBClientError, read_http_response
+
+    commands = []
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        raise OSError("test-only blocked launch")
+
+    monkeypatch.setattr("src.codex_lb_client.subprocess.run", fake_run)
+    with pytest.raises(CodexLBClientError, match="无法启动 curl"):
+        read_http_response(Request("https://not-contacted.invalid/v1/responses", data=b"{}"),
+                           label="test", timeout_seconds=1, use_curl_first=True, bypass_proxy=bypass)
+    assert ("--noproxy" in commands[0]) is bypass
+    if bypass:
+        assert commands[0][commands[0].index("--noproxy") + 1] == "*"
