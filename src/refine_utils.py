@@ -14,7 +14,7 @@ from typing import Any
 from rapidfuzz import fuzz
 
 from src.codex_lb_client import CodexLBClient, CodexLBClientError, endpoint_url
-from src.ocr_page_markers import strip_ocr_page_break_markers
+from src.ocr_page_markers import is_ocr_page_break_line, strip_ocr_page_break_markers
 from src.refine_inputs import DualAsrInput, DualAsrInputError, load_dual_asr_input
 from src.request_trace import (
     TRACE_SCHEMA_VERSION,
@@ -101,6 +101,7 @@ class PreReplacementSegment:
     reference_text: str
     start_sentence_index: int
     end_sentence_index: int
+    reference_paragraph_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -327,16 +328,70 @@ def split_text_into_paragraphs(text: str) -> list[str]:
     return paragraphs or single_lines
 
 
-def split_text_into_sentences(text: str) -> list[str]:
-    units: list[str] = []
-    for paragraph in split_text_into_paragraphs(text):
+def _split_sentences_with_paragraph_ids(text: str) -> list[tuple[str, int]]:
+    units: list[tuple[str, int]] = []
+    for paragraph_id, paragraph in enumerate(split_text_into_paragraphs(text)):
         parts = re.split(r"(?<=[。！？!?；;])", paragraph)
         normalized_parts = [normalize_inline_text(part) for part in parts if normalize_inline_text(part)]
         if normalized_parts:
-            units.extend(normalized_parts)
+            units.extend((sentence, paragraph_id) for sentence in normalized_parts)
         elif paragraph.strip():
-            units.append(normalize_inline_text(paragraph))
+            units.append((normalize_inline_text(paragraph), paragraph_id))
     return units
+
+
+def split_text_into_sentences(text: str) -> list[str]:
+    return [sentence for sentence, _ in _split_sentences_with_paragraph_ids(text)]
+
+
+def map_reference_sentence_paragraphs(text: str, sentences: list[str]) -> list[int]:
+    """保留参考文本的行/段落归属，不改变已有逐句匹配单元。
+
+    TXT 常以单换行分段，并在章节之间混用空行；不能因存在空行而
+    忽略其余单换行。OCR 换页附近的换行不作为新的段落边界。
+    """
+    paragraphs: list[str] = []
+    continue_page = False
+    for line in text.splitlines():
+        if is_ocr_page_break_line(line):
+            continue_page = True
+            continue
+        if not line.strip():
+            continue
+        if continue_page and paragraphs:
+            paragraphs[-1] += " " + normalize_inline_text(line)
+        else:
+            paragraphs.append(normalize_inline_text(line))
+        continue_page = False
+
+    # 与 split_text_into_sentences 的空白归一化一致，按顺序定位，避免
+    # 相同句子在不同段重复出现时误用第一次出现的位置。
+    flat_text = " ".join(paragraphs)
+    paragraph_starts: list[int] = []
+    position = 0
+    for paragraph in paragraphs:
+        paragraph_starts.append(position)
+        position += len(paragraph) + 1
+    cursor = 0
+    paragraph_index = 0
+    paragraph_ids: list[int] = []
+    for sentence in sentences:
+        start = flat_text.index(sentence, cursor)
+        while paragraph_index + 1 < len(paragraph_starts) and paragraph_starts[paragraph_index + 1] <= start:
+            paragraph_index += 1
+        paragraph_ids.append(paragraph_index + 1)
+        cursor = start + len(sentence)
+    return paragraph_ids
+
+
+def join_sentence_paragraphs(sentences: list[str], paragraph_ids: list[int]) -> str:
+    """只恢复已有段界，不把句界或工程分块伪装成自然段。"""
+    parts: list[str] = []
+    for index, sentence in enumerate(sentences):
+        if index:
+            parts.append("\n\n" if paragraph_ids[index] != paragraph_ids[index - 1] else " ")
+        parts.append(sentence)
+    return "".join(parts).strip()
 
 
 def normalize_for_match(text: str) -> str:
@@ -424,9 +479,12 @@ def build_pre_replaced_document(
     reference_full_text: str,
     loaded_settings: LoadedSettings,
 ) -> list[PreReplacementSegment]:
-    source_sentences = split_text_into_sentences(asr_full_text)
+    source_units = _split_sentences_with_paragraph_ids(asr_full_text)
+    source_sentences = [sentence for sentence, _ in source_units]
+    source_paragraph_ids = [paragraph_id for _, paragraph_id in source_units]
     # 只过滤规则预替换的匹配输入；交给模型的全文附件仍保留页边界。
     reference_sentences = split_text_into_sentences(strip_ocr_page_break_markers(reference_full_text))
+    reference_paragraph_ids = map_reference_sentence_paragraphs(reference_full_text, reference_sentences)
     settings = get_safe_replace_settings(loaded_settings)
 
     sentence_states: list[dict[str, Any]] = []
@@ -490,10 +548,13 @@ def build_pre_replaced_document(
     current_source: list[str] = []
     current_text: list[str] = []
     current_reference: list[str] = []
+    current_paragraph_ids: list[int] = []
+    current_source_paragraph_ids: list[int] = []
     segment_start = 0
 
     def flush_segment(segment_end: int) -> None:
         nonlocal current_type, current_source, current_text, current_reference, segment_start
+        nonlocal current_paragraph_ids, current_source_paragraph_ids
         if current_type is None or not current_text:
             return
         if current_type == "unlocked_text":
@@ -507,8 +568,12 @@ def build_pre_replaced_document(
                 segments.append(
                     PreReplacementSegment(
                         segment_type=current_type,
-                        text="\n\n".join(chunk_text).strip(),
-                        source_text="\n\n".join(chunk_source).strip(),
+                        text=join_sentence_paragraphs(
+                            chunk_text, current_paragraph_ids[offset : offset + chunk_size],
+                        ),
+                        source_text=join_sentence_paragraphs(
+                            chunk_source, current_source_paragraph_ids[offset : offset + chunk_size],
+                        ),
                         reference_text="",
                         start_sentence_index=segment_start + offset,
                         end_sentence_index=min(segment_start + offset + len(chunk_text) - 1, segment_end),
@@ -518,17 +583,20 @@ def build_pre_replaced_document(
             segments.append(
                 PreReplacementSegment(
                     segment_type=current_type,
-                    text="\n\n".join(current_text).strip(),
-                    source_text="\n\n".join(current_source).strip(),
+                    text=join_sentence_paragraphs(current_text, current_paragraph_ids),
+                    source_text=join_sentence_paragraphs(current_source, current_source_paragraph_ids),
                     reference_text="".join(current_reference).strip(),
                     start_sentence_index=segment_start,
                     end_sentence_index=segment_end,
+                    reference_paragraph_ids=tuple(dict.fromkeys(current_paragraph_ids)),
                 )
             )
         current_type = None
         current_source = []
         current_text = []
         current_reference = []
+        current_paragraph_ids = []
+        current_source_paragraph_ids = []
 
     for state in sentence_states:
         segment_type = "locked_quote" if state["index"] in locked_sentence_indexes else "unlocked_text"
@@ -540,6 +608,11 @@ def build_pre_replaced_document(
             segment_start = state["index"]
         current_source.append(state["source_text"])
         current_text.append(segment_text)
+        current_source_paragraph_ids.append(source_paragraph_ids[state["index"]])
+        current_paragraph_ids.append(
+            reference_paragraph_ids[state["reference_index"]]
+            if segment_type == "locked_quote" else source_paragraph_ids[state["index"]]
+        )
         if segment_reference_text:
             current_reference.append(segment_reference_text)
     flush_segment(len(sentence_states) - 1)
@@ -721,6 +794,8 @@ def build_single_pass_refine_prompt(
         rendered_segments = []
         for index, segment in enumerate(pre_replaced_segments, start=1):
             label = f"[SEGMENT {index:02d}][{segment.segment_type}]" if has_reference else f"[SEGMENT {index:02d}]"
+            if has_reference and segment.reference_paragraph_ids:
+                label += "[REFERENCE_PARAGRAPHS " + ",".join(map(str, segment.reference_paragraph_ids)) + "]"
             rendered_segments.extend([label, segment.text, ""])
         if has_reference:
             sections.extend([

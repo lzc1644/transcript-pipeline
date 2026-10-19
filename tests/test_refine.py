@@ -237,11 +237,12 @@ def test_build_pre_replaced_document_locks_only_high_confidence_reference_runs(t
     assert segments == [
         PreReplacementSegment(
             segment_type="locked_quote",
-            text="天地玄黄，宇宙洪荒。\n\n日月盈昃，辰宿列张。",
+            text="天地玄黄，宇宙洪荒。 日月盈昃，辰宿列张。",
             source_text="天地玄黄 宇宙洪荒。\n\n日月盈昃 辰宿列张。",
             reference_text="天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。",
             start_sentence_index=0,
             end_sentence_index=1,
+            reference_paragraph_ids=(1,),
         ),
         PreReplacementSegment(
             segment_type="unlocked_text",
