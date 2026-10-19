@@ -459,7 +459,10 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
                 {"type": "response.output_text.delta", "delta": delta},
                 ensure_ascii=False,
             )
-            return FakeResponse(f"event: response.output_text.delta\ndata: {event_payload}\n\n")
+            return FakeResponse(
+                f"event: response.output_text.delta\ndata: {event_payload}\n\n"
+                'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n'
+            )
         pytest.fail(f"未预期的请求: {request.full_url}")
 
     def fake_render_page(_path: Path, page_number: int, page_count: int) -> str:
@@ -763,7 +766,10 @@ def test_run_codex_api_pdf_ocr_uses_curl_first_for_remote_responses(
             {"type": "response.output_text.delta", "delta": "远程流式 OCR 结果。"},
             ensure_ascii=False,
         )
-        stdout = f"event: response.output_text.delta\ndata: {payload}\n\n\n200"
+        stdout = (
+            f"event: response.output_text.delta\ndata: {payload}\n\n"
+            'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n\n200'
+        )
 
     def fake_run(command, *, input, text, capture_output, check):
         _ = input, text, capture_output, check

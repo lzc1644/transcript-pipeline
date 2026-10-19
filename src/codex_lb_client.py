@@ -26,6 +26,7 @@ class CodexLBClientError(RuntimeError):
 class CodexLBClient:
     settings: CodexLBSettings
     timeout_seconds: float | None = None
+    require_stream_completed: bool = False
 
     @property
     def base_url(self) -> str:
@@ -153,7 +154,7 @@ class CodexLBClient:
         if request_trace is not None:
             request_trace.write_json("sse-summary.json", summarize_event_stream(stream_text))
         try:
-            output_text = extract_event_stream_text(stream_text)
+            output_text = extract_event_stream_text(stream_text, require_completed=self.require_stream_completed)
         except CodexLBClientError as exc:
             if request_trace is not None:
                 request_trace.write_json(
@@ -642,7 +643,8 @@ def extract_response_text(payload: dict[str, Any]) -> str:
     return text
 
 
-def extract_event_stream_text(stream_text: str) -> str:
+def extract_event_stream_text(stream_text: str, *, require_completed: bool = False) -> str:
+    saw_completed = False
     parts: list[str] = []
     completed_text: str | None = None
     saw_output_text = False
@@ -691,11 +693,15 @@ def extract_event_stream_text(stream_text: str) -> str:
             if candidate:
                 completed_text = candidate
             continue
-        if event_type in {"response.failed", "response.incomplete"}:
+        if event_type in {"response.failed", "response.incomplete", "error", "response.error"}:
             failed_payload = payload
             continue
         if event_type == "response.completed":
             response = payload.get("response")
+            if isinstance(response, dict) and response.get("status") in {"incomplete", "failed"}:
+                failed_payload = payload
+                continue
+            saw_completed = True
             if isinstance(response, dict):
                 if contains_output_text_part(response.get("output")):
                     saw_output_text = True
@@ -705,6 +711,8 @@ def extract_event_stream_text(stream_text: str) -> str:
 
     if failed_payload is not None:
         raise CodexLBClientError(f"Codex Responses API 返回失败事件: {failed_payload}")
+    if require_completed and not saw_completed:
+        raise CodexLBClientError("Responses API 响应流未完整结束：缺少 response.completed，不能将部分文字视为整页成功。")
     # 完成事件提供最终全文；增量事件可能缺失开头片段，不能优先用于最终结果。
     text = (completed_text or "").strip() or "".join(parts).strip()
     if text:
@@ -750,7 +758,7 @@ def summarize_event_stream(stream_text: str) -> dict[str, Any]:
         event_type = str(payload.get("type") or event_name or "unknown")
         event_counts[event_type] = event_counts.get(event_type, 0) + 1
         last_event_type = event_type
-        if event_type in {"response.completed", "response.failed", "response.incomplete"}:
+        if event_type in {"response.completed", "response.failed", "response.incomplete", "error", "response.error"}:
             terminal_event = event_type
 
         id_candidates = [payload.get("response_id"), payload.get("id")]

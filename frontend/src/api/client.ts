@@ -332,6 +332,8 @@ export interface PDFBookOCRItem {
   failed_pages: number;
   failed_page_numbers: number[];
   page_errors: Record<string, string>;
+  fallback_page_models?: Record<string, string>;
+  ocr_identity?: string;
   resumable: boolean;
 }
 

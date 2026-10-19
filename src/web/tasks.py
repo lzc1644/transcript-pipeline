@@ -11,7 +11,7 @@ from fastapi import FastAPI
 
 from scripts.run_pipeline import STAGE_EXIT_PARTIAL, run_stage
 from src.config_loader import ConfigLoadError, load_settings
-from src.pdf_book_ocr import PDFBookOCRError, PDFBookOCRProgress, ocr_pdf_book_batch
+from src.pdf_book_ocr import PDFBookOCRError, PDFBookOCRProgress, ocr_pdf_book_batch, pdf_book_ocr_source_label
 from src.reference_utils import ReferenceFileProgress
 from src.job_runner import (
     BatchJobRuntime,
@@ -50,6 +50,7 @@ from src.web.models import (
 from src.web.pdf_book_ocr import (
     PDFBookOCRTaskPaths,
     build_pdf_book_ocr_task_paths,
+    pdf_book_ocr_retry_plans,
     relative_pdf_book_ocr_output_path,
     resolve_uploaded_pdf_ocr_input,
 )
@@ -1088,15 +1089,6 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
         app.state.active_jobs.discard(run_id)
 
 
-def pdf_book_ocr_source_label(source_pdf: Path, input_path: Path) -> str:
-    if input_path.is_dir():
-        try:
-            return source_pdf.relative_to(input_path).as_posix()
-        except ValueError:
-            pass
-    return source_pdf.name
-
-
 def serialize_pdf_book_ocr_items(task_paths: PDFBookOCRTaskPaths, input_path: Path, summary) -> list[dict[str, object]]:
     serialized_items: list[dict[str, object]] = []
     for item in summary.items:
@@ -1114,6 +1106,9 @@ def serialize_pdf_book_ocr_items(task_paths: PDFBookOCRTaskPaths, input_path: Pa
                 "failed_page_numbers": list(item.failed_page_numbers),
                 "page_errors": {str(page_number): error for page_number, error in item.page_errors.items()},
                 "resumable": not item.success and item.page_count > item.completed_pages,
+                **({"ocr_identity": item.ocr_identity} if item.ocr_identity else {}),
+                **({"fallback_page_models": {str(page): model for page, model in item.fallback_page_models.items()}}
+                   if item.fallback_page_models else {}),
             }
         )
     return serialized_items
@@ -1133,6 +1128,9 @@ def serialize_pdf_book_ocr_progress(input_path: Path, progress: PDFBookOCRProgre
         "failed_page_numbers": list(progress.failed_page_numbers),
         "page_errors": {str(page_number): error for page_number, error in progress.page_errors.items()},
         "resumable": progress.completed_pages < progress.page_count,
+        **({"ocr_identity": progress.ocr_identity} if progress.ocr_identity else {}),
+        **({"fallback_page_models": {str(page): model for page, model in progress.fallback_page_models.items()}}
+           if progress.fallback_page_models else {}),
     }
 
 
@@ -1140,6 +1138,8 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
     root = app.state.project_root
     task_paths = build_pdf_book_ocr_task_paths(root, task_id)
     state_path = task_paths.state_path
+    previous_state = read_json_file(state_path)
+    is_retry = previous_state.get("current_stage") == "resume"
 
     app.state.active_jobs.add(task_id)
     try:
@@ -1163,10 +1163,13 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
             ),
         )
         input_path = resolve_uploaded_pdf_ocr_input(root, request.input_path)
+        retry_plans = pdf_book_ocr_retry_plans(previous_state, input_path, loaded_settings) if is_retry else {}
         app.state.update_state(
             state_path,
             status="running",
             current_stage="ocr",
+            **({"ocr_retry_plans": {label: plan.to_dict() for label, plan in retry_plans.items()}}
+               if is_retry else {}),
             request_payload=request_payload_with_effective_ocr_settings(request, loaded_settings),
             error_message="",
         )
@@ -1192,6 +1195,7 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
                 loaded_settings,
                 checkpoint_root=task_paths.checkpoint_dir,
                 progress_callback=book_progress,
+                **({"retry_plans": retry_plans} if retry_plans else {}),
             )
 
         items = serialize_pdf_book_ocr_items(task_paths, input_path, summary)

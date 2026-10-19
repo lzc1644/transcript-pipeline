@@ -530,7 +530,7 @@ onBeforeUnmount(stopPolling);
               <n-button type="warning" secondary :loading="retrying" @click="retryMissingPages">
                 重试缺失页
               </n-button>
-              <span>已成功页面会保留，只重新识别尚未完成的页。</span>
+              <span>保留成功页；GPT 上游截断或过滤页在重试时改用 gemini-3.5-flash-lite，其余缺页仍用原模型。</span>
             </div>
 
             <n-empty v-if="!isTaskRunning && taskItems.length === 0" description="任务尚未产生可展示的结果。" />
@@ -550,6 +550,10 @@ onBeforeUnmount(stopPolling);
                 <div v-if="item.failed_page_numbers?.length" class="pdf-book-ocr-result-item__pages">
                   <strong>待重试页：</strong>
                   <span>{{ item.failed_page_numbers.join('、') }}</span>
+                </div>
+                <div v-if="Object.keys(item.fallback_page_models ?? {}).length" class="pdf-book-ocr-result-item__pages">
+                  <strong>Gemini 补页：</strong>
+                  <span>{{ Object.keys(item.fallback_page_models ?? {}).join('、') }}（gemini-3.5-flash-lite）</span>
                 </div>
                 <details v-if="pageErrorEntries(item).length" class="pdf-book-ocr-result-item__details">
                   <summary>查看逐页错误详情</summary>

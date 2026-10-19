@@ -8,6 +8,21 @@ from pathlib import Path
 from src.schemas import LoadedSettings
 
 PDF_OCR_PROTOCOL_VERSION = "codex-api-image-page-v1"
+PDF_OCR_RETRY_FALLBACK_MODEL = "gemini-3.5-flash-lite"
+PDF_OCR_RETRY_FALLBACK_REASONING_EFFORT = "medium"
+
+
+def is_upstream_ocr_output_error(error: str) -> bool:
+    """仅识别明确的输出拦截/截断，不把超时、TLS、限流等错误当作切模依据。"""
+    normalized = error.casefold()
+    return any(marker in normalized for marker in (
+        "response.incomplete",
+        "content_filter",
+        "safety_violation",
+        "regurg_plugin",
+        "regurg plugin blocked the output stream",
+        "响应流未完整结束",
+    ))
 
 
 @dataclass(frozen=True)
@@ -45,12 +60,71 @@ class PDFOCRRunIdentity:
 
 
 @dataclass(frozen=True)
+class PDFOCRPageModel:
+    model: str
+    reasoning_effort: str
+    fast_mode: bool = False
+
+
+@dataclass(frozen=True)
+class PDFOCRRetryPlan:
+    """父身份不变，只为指定物理页选择补页模型。"""
+
+    identity_fingerprint: str
+    page_numbers: tuple[int, ...]
+
+    def to_dict(self) -> dict:
+        return {
+            "identity_fingerprint": self.identity_fingerprint,
+            "page_numbers": list(self.page_numbers),
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> PDFOCRRetryPlan | None:
+        if not isinstance(value, dict) or not isinstance(value.get("identity_fingerprint"), str):
+            return None
+        pages = value.get("page_numbers")
+        if not isinstance(pages, list):
+            return None
+        return cls(value["identity_fingerprint"], tuple(sorted({
+            page for page in pages if type(page) is int and page > 0
+        })))
+
+
+def build_pdf_ocr_retry_plan(
+    identity: PDFOCRRunIdentity,
+    page_errors: dict[int, str],
+    previous_plan: PDFOCRRetryPlan | None = None,
+) -> PDFOCRRetryPlan:
+    """纯规划：仅 GPT 的输出失败页切模，同身份已有补页计划持续保留。"""
+    pages: set[int] = set()
+    if identity.model.casefold().startswith("gpt"):
+        if previous_plan is not None and previous_plan.identity_fingerprint == identity.fingerprint:
+            pages.update(previous_plan.page_numbers)
+        pages.update(page for page, error in page_errors.items()
+                     if page > 0 and is_upstream_ocr_output_error(error))
+    return PDFOCRRetryPlan(identity.fingerprint, tuple(sorted(pages)))
+
+
+def select_pdf_ocr_page_model(
+    primary: PDFOCRPageModel,
+    page_number: int,
+    retry_plan: PDFOCRRetryPlan | None = None,
+) -> PDFOCRPageModel:
+    if (retry_plan is not None and primary.model.casefold().startswith("gpt")
+            and page_number in retry_plan.page_numbers):
+        return PDFOCRPageModel(PDF_OCR_RETRY_FALLBACK_MODEL, PDF_OCR_RETRY_FALLBACK_REASONING_EFFORT)
+    return primary
+
+
+@dataclass(frozen=True)
 class PDFOCRPageState:
     """统一描述一次 PDF OCR 当前已完成页和失败页。"""
 
     page_count: int
     completed_page_numbers: tuple[int, ...] = ()
     page_errors: dict[int, str] = field(default_factory=dict)
+    fallback_page_models: dict[int, str] = field(default_factory=dict)
 
     @property
     def completed_pages(self) -> int:

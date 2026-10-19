@@ -224,6 +224,16 @@ Base URL 可填服务根地址或带 `/v1` 的地址（支持尾部 `/` 和反�
 设置图片投递间隔和最大并发数，补页时沿用原任务设置。使用前仍需按上文设置
 `CODEX_LB_BASE_URL` 和 `CODEX_LB_API_KEY`，并安装 `pdftoppm`。
 
+### GPT 输出异常页的 Gemini 补页
+
+独立 PDF OCR 首轮仍只使用任务选定的模型，不在页失败后自动追加调用。主模型为 GPT 时，点击“重试缺失页”会将明确的输出过滤/截断页改用同一 CPA 接口中的 `gemini-3.5-flash-lite`（`medium`、不发送 `priority`）：包括 `response.incomplete`、`content_filter`、`safety_violation` / `regurg_plugin`，以及 HTTP 读取正常结束但缺少 `response.completed` 的协议截断。TLS、超时、限流、鉴权失败和纯传输断流仍使用原模型。
+
+- 每次点击只对缺失页各发起一次请求；Gemini 仍失败则保留缺页，不循环重试、不删除注释、不接受部分正文。
+- 补页计划按文件来源和父运行身份隔离，保持原 GPT 模型/reasoning 的检查点目录，已成功页不重跑。计划会在请求前持久化，服务中断或 Gemini 临时失败后仍能继续；已选入 Gemini 补页的页不会因之后的网络/鉴权失败而撤销该计划。
+- 新成功页另存 `page-NNNNNN.source.json`，记录真实模型、reasoning、父模型及文本哈希；旧 TXT 检查点没有来源文件仍兼容。任务结果的 `fallback_page_models` 和页面“Gemini 补页”标记列出已成功的补页来源，不向正文插入工程信息。
+- 主模型配置不会被自动改写；若此前手动切成 Gemini，需自行选回希望使用的 GPT 模型后新建 GPT 主任务。旧 GPT 任务的重试仍沿用其历史配置。
+- 此策略只接入独立 PDF OCR 的手动重试；不改变阶段 6 整稿校对，也不为阶段 3 增加静默 fallback。
+
 可临时覆盖书籍 OCR 模型：
 
 ```bash

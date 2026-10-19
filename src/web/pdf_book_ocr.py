@@ -8,6 +8,9 @@ from pathlib import Path
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from src.pdf_book_ocr import iter_pdf_book_files, pdf_book_ocr_source_label
+from src.pdf_ocr_workflow import PDFOCRRetryPlan, build_pdf_ocr_retry_plan, build_pdf_ocr_run_identity
+from src.schemas import LoadedSettings
 from src.web.uploads import upload_root
 
 PDF_BOOK_OCR_TASK_ID_PATTERN = re.compile(r"pdf-ocr-[0-9a-f]{32}")
@@ -61,6 +64,35 @@ def pdf_book_ocr_retry_payload(state: dict) -> dict[str, object]:
     if not isinstance(input_path, str) or not input_path.strip():
         raise PDFBookOCRTaskError("PDF OCR 历史任务缺少输入路径，无法重试。")
     return {"input_path": input_path, "ocr_fast_mode": False}
+
+
+def pdf_book_ocr_retry_plans(
+    state: dict, input_path: Path, loaded_settings: LoadedSettings,
+) -> dict[str, PDFOCRRetryPlan]:
+    """只由历史失败导出按文件/父身份隔离的计划，不执行 OCR 或改变主模型。"""
+    items = {item.get("source_file"): item for item in (state.get("items") or []) if isinstance(item, dict)}
+    previous = state.get("ocr_retry_plans") or {}
+    plans: dict[str, PDFOCRRetryPlan] = {}
+    for source in iter_pdf_book_files(input_path):
+        label = pdf_book_ocr_source_label(source, input_path)
+        identity = build_pdf_ocr_run_identity(source, loaded_settings)
+        item = items.get(label, {})
+        errors: dict[int, str] = {}
+        # 新任务有身份记录；内容/主模型/reasoning 改变后不能沿用旧错误。
+        # 历史任务没有该字段时，在不可变上传文件的当前父身份下首次绑定。
+        if not item.get("ocr_identity") or item["ocr_identity"] == identity.fingerprint:
+            for page, error in (item.get("page_errors") or {}).items():
+                try:
+                    number = int(page)
+                except (ValueError, TypeError):
+                    continue
+                if number > 0 and isinstance(error, str):
+                    errors[number] = error
+        old_plan = PDFOCRRetryPlan.from_dict(previous.get(label)) if isinstance(previous, dict) else None
+        plan = build_pdf_ocr_retry_plan(identity, errors, old_plan)
+        if plan.page_numbers:
+            plans[label] = plan
+    return plans
 
 
 def resolve_uploaded_pdf_ocr_input(project_root: Path, input_path: str) -> Path:
