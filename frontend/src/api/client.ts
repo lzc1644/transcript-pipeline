@@ -24,6 +24,7 @@ export interface ConfigResponse {
   default_ocr_backend: string;
   active_profile: string;
   video_extensions: string[];
+  media_extensions?: string[];
   reference_extensions: string[];
   default_output_dir: string;
   upload_dir: string;

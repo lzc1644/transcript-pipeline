@@ -7,7 +7,8 @@ from typing import Iterable
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from src.job_runner import JobPaths, sanitize_filename_stem, supported_video_extensions
+from src.ffmpeg_utils import supported_media_extensions
+from src.job_runner import JobPaths, sanitize_filename_stem
 from src.runtime_utils import ensure_directory, normalize_stage_name
 from src.schemas import LoadedSettings
 
@@ -61,8 +62,8 @@ def stage_input_slots(stage_name: str, loaded_settings: LoadedSettings) -> tuple
         "extract-audio": (
             StageInputSlot(
                 key="video",
-                label="视频文件",
-                extensions=tuple(sorted(supported_video_extensions(loaded_settings))),
+                label="视频或音频文件",
+                extensions=tuple(sorted(supported_media_extensions(loaded_settings))),
                 workspace_directory="input/videos",
             ),
         ),

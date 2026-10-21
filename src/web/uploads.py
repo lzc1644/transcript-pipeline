@@ -8,7 +8,8 @@ from uuid import uuid4
 from fastapi import HTTPException, Request
 
 from src.config_loader import LoadedSettings
-from src.job_runner import sanitize_filename_stem, supported_reference_extensions, supported_video_extensions
+from src.ffmpeg_utils import supported_media_extensions
+from src.job_runner import sanitize_filename_stem, supported_reference_extensions
 
 UploadKind = Literal["video", "reference", "manifest", "glossary", "pdf_ocr"]
 
@@ -30,7 +31,7 @@ def upload_root(project_root: Path) -> Path:
 
 def upload_allowed_extensions(kind: UploadKind, loaded_settings: LoadedSettings) -> set[str]:
     if kind == "video":
-        return supported_video_extensions(loaded_settings)
+        return supported_media_extensions(loaded_settings)
     if kind == "reference":
         return set(supported_reference_extensions())
     if kind == "manifest":

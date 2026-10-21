@@ -14,7 +14,7 @@ from src.job_runner import JobRunnerError, run_single_job
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="按单任务输入绑定方式运行完整主链。")
-    parser.add_argument("--video", required=True, help="输入视频文件路径")
+    parser.add_argument("--video", required=True, help="输入视频或音频文件路径（保留 --video 参数名以兼容已有用法）")
     parser.add_argument("--reference", help="参考源：本地 txt/md/pdf 或网页链接；对谈模式不需要")
     parser.add_argument("--output-dir", required=True, help="最终 Markdown 输出目录")
     parser.add_argument(

@@ -93,10 +93,10 @@ const stageGuides: StageGuide[] = [
   {
     label: "音频提取 (extract-audio)",
     value: "extract-audio",
-    description: "从当前视频目录提取统一格式的音频。",
+    description: "从当前输入目录的视频或音频生成统一格式的音频。",
     input: "data/input/videos/",
     output: "data/input/audio/",
-    testHint: "适合检查视频扫描、ffmpeg 可用性与音频产物。",
+    testHint: "适合检查视频 / 音频扫描、ffmpeg 可用性与音频产物。",
   },
   {
     label: "语音转写 (transcribe)",

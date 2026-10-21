@@ -16,7 +16,7 @@ from src.settings_overrides import ModelOverrides
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="按批量 job 输入契约运行完整主链。")
     parser.add_argument("--manifest", help="批量任务清单，支持 yaml/json")
-    parser.add_argument("--videos-dir", help="视频目录")
+    parser.add_argument("--videos-dir", help="视频或音频目录（支持混放）")
     parser.add_argument("--reference-dir", help="参考原文目录，按 basename 配对")
     parser.add_argument("--shared-reference", help="共享参考源，本地 txt/md/pdf 或网页链接")
     parser.add_argument("--output-dir", help="最终 Markdown 输出目录")

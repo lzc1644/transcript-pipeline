@@ -22,6 +22,7 @@ from src.job_runner import (
     build_final_output_filename,
     build_job_paths,
     copy_final_output,
+    cleanup_completed_job_video,
     execute_batch_stage_for_runtime,
     execute_remote_pipeline_for_runtime,
     load_batch_job_specs,
@@ -415,6 +416,12 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
                 ),
             )
             output_path = str(copied_output_path)
+            cleanup_completed_job_video(
+                job_paths=job_paths,
+                video_source=Path(video_source),
+                loaded_settings=loaded_settings,
+                logger=logger,
+            )
 
         app.state.update_state(
             state_path,
@@ -559,6 +566,12 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
                 book_name=effective_book_name,
                 chapter=effective_chapter,
             ),
+        )
+        cleanup_completed_job_video(
+            job_paths=job_paths,
+            video_source=video_source,
+            loaded_settings=job_loaded_settings,
+            logger=logger,
         )
         app.state.update_state(
             state_path,

@@ -54,7 +54,7 @@ const {
   loading,
   profiles,
   referenceExtensions,
-  videoExtensions,
+  mediaExtensions,
 } = useConfigOptions();
 const batchState = ref<JobState | null>(null);
 const submitting = ref(false);
@@ -130,12 +130,12 @@ const modeTip = computed(() => {
     return "Manifest 模式将按指定的清单 JSON/YAML 提交；未声明 content_type 的条目会继承当前选择的默认任务类型。";
   }
   if (form.mode === "paired-dir") {
-    return "目录配对模式会自动扫描视频目录下所有视频，并在参考目录中匹配同名（basename）的 .txt、.md 或 .pdf 参考文本。";
+    return "目录配对模式会自动扫描输入目录下所有视频和音频，并在参考目录中匹配同名（basename）的 .txt、.md 或 .pdf 参考文本。";
   }
   if (form.mode === "conversation-dir") {
-    return "对谈录屏目录模式只扫描视频目录，不需要参考源，适合访谈、讨论和自由对话录屏。";
+    return "对谈目录模式扫描视频和音频，不需要参考源，适合访谈、讨论和自由对话录音。";
   }
-  return "共享参考模式会自动扫描视频目录下所有视频，并为它们全部配置同一个共享的参考文本文件或 URL 地址。";
+  return "共享参考模式会自动扫描输入目录下所有视频和音频，并为它们全部配置同一个共享的参考文本文件或 URL 地址。";
 });
 
 const requiredWarning = computed(() => {
@@ -143,7 +143,7 @@ const requiredWarning = computed(() => {
     return "请选择 Manifest 清单文件。";
   }
   if (form.mode !== "manifest" && (!form.videos_dir || !form.output_dir)) {
-    return "请选择视频源目录，并等待服务器默认输出目录加载完成。";
+    return "请选择视频或音频源目录，并等待服务器默认输出目录加载完成。";
   }
   if (form.mode === "paired-dir" && !form.reference_dir) {
     return "目录配对模式下参考源目录是必填项。";
@@ -341,8 +341,8 @@ async function inspectSources(): Promise<boolean> {
   previewError.value = "";
   try {
     const videosResponse = await listFs(form.videos_dir, "all", false);
-    const videoFiles = videosResponse.items.filter((item) => isAllowedFile(item, videoExtensions.value));
-    const ignoredFiles = videosResponse.items.filter((item) => !item.is_dir && !isAllowedFile(item, videoExtensions.value));
+    const videoFiles = videosResponse.items.filter((item) => isAllowedFile(item, mediaExtensions.value));
+    const ignoredFiles = videosResponse.items.filter((item) => !item.is_dir && !isAllowedFile(item, mediaExtensions.value));
 
     let referenceCount = 0;
     let missingReferences: string[] = [];
@@ -370,12 +370,12 @@ async function inspectSources(): Promise<boolean> {
     };
 
     if (videoFiles.length === 0) {
-      previewError.value = `视频目录中没有检测到可处理的视频文件，支持格式：${videoExtensions.value.join("、")}`;
+      previewError.value = `输入目录中没有检测到可处理的视频或音频文件，支持格式：${mediaExtensions.value.join("、")}`;
       message.warning(previewError.value);
       return false;
     }
     if (missingReferences.length > 0) {
-      previewError.value = `有 ${missingReferences.length} 个视频在参考目录中缺少对应的同名文本文件。`;
+      previewError.value = `有 ${missingReferences.length} 个视频或音频在参考目录中缺少对应的同名文本文件。`;
       message.warning(previewError.value);
       return false;
     }
@@ -485,7 +485,7 @@ onBeforeUnmount(stopPolling);
 <template>
   <div class="workbench-page batch-job-view">
     <section class="page-heading">
-      <div><h2>批量任务</h2><p>选择清单或上传目录，预检输入后统一提交。每个视频的处理结果独立保留。</p></div>
+      <div><h2>批量任务</h2><p>选择清单或上传目录，预检输入后统一提交。每个视频或音频的处理结果独立保留。</p></div>
       <a v-if="batchState" href="#batch-results">查看当前批次 ↓</a>
     </section>
 
@@ -502,7 +502,7 @@ onBeforeUnmount(stopPolling);
               <n-radio-button value="manifest" class="mode-radio-btn">Manifest 配置清单</n-radio-button>
               <n-radio-button value="paired-dir" class="mode-radio-btn">目录自动配对</n-radio-button>
               <n-radio-button value="shared-reference" class="mode-radio-btn">目录共享参考</n-radio-button>
-              <n-radio-button value="conversation-dir" class="mode-radio-btn">对谈录屏目录</n-radio-button>
+              <n-radio-button value="conversation-dir" class="mode-radio-btn">对谈视频 / 音频目录</n-radio-button>
             </n-radio-group>
           </div>
 
@@ -540,16 +540,17 @@ onBeforeUnmount(stopPolling);
                 </n-form-item>
 
                 <template v-else>
-                  <n-form-item label="视频源目录" required>
+                  <n-form-item label="视频或音频源目录" required>
                     <n-space vertical class="w-full">
                       <RemoteDirectoryUpload
                         v-model="form.videos_dir"
                         kind="video"
-                        label="视频"
-                        :extensions="videoExtensions"
-                        button-text="选择并上传本机视频目录"
+                        label="视频或音频"
+                        :extensions="mediaExtensions"
+                        button-text="选择并上传本机视频或音频目录"
                       />
                       <n-input v-model:value="form.videos_dir" readonly placeholder="上传后自动生成服务器目录" />
+                      <p class="prompt-hint">每个子任务成功后自动删除服务器上的视频副本，保留音频和文字；失败任务保留视频供重试。</p>
                     </n-space>
                   </n-form-item>
                   
@@ -703,7 +704,7 @@ onBeforeUnmount(stopPolling);
                 预检输入目录
               </n-button>
               <span class="batch-preview__hint">
-                允许视频：<span class="ext-tag">{{ videoExtensions.join("、") || "-" }}</span>
+                允许视频 / 音频：<span class="ext-tag">{{ mediaExtensions.join("、") || "-" }}</span>
                 <template v-if="form.mode !== 'conversation-dir'">
                   ；参考文本：<span class="ext-tag">{{ referenceExtensions.join("、") || "-" }}</span>
                 </template>
@@ -715,7 +716,7 @@ onBeforeUnmount(stopPolling);
             <div v-if="sourcePreview" class="preview-stats-grid">
               <div class="stat-bubble is-success">
                 <span class="stat-num">{{ sourcePreview.videoCount }}</span>
-                <span class="stat-label">待处理视频</span>
+                <span class="stat-label">待处理视频 / 音频</span>
               </div>
               <div v-if="form.mode === 'paired-dir'" class="stat-bubble is-info">
                 <span class="stat-num">{{ sourcePreview.referenceCount }}</span>
@@ -817,7 +818,7 @@ onBeforeUnmount(stopPolling);
                 <div class="grid-cell"><span class="cell-label">配置模式:</span> {{ String(item.mode ?? "-") }}</div>
                 <div class="grid-cell"><span class="cell-label">任务类型:</span> {{ String(item.content_type ?? "-") }}</div>
                 <div class="grid-cell"><span class="cell-label">失败阶段:</span> <span :class="{'text-error font-semibold': item.failed_stage}">{{ String(item.failed_stage || "-") }}</span></div>
-                <div class="grid-cell span-all"><span class="cell-label">视频路径:</span> <span class="mono-path">{{ String(item.video_source ?? "-") || "-" }}</span></div>
+                <div class="grid-cell span-all"><span class="cell-label">视频 / 音频路径:</span> <span class="mono-path">{{ String(item.video_source ?? "-") || "-" }}</span></div>
                 <div class="grid-cell span-all"><span class="cell-label">参考源:</span> <span class="mono-path">{{ String(item.reference_source ?? "") || "无" }}</span></div>
                 <div class="grid-cell span-all"><span class="cell-label">输出路径:</span> <span class="mono-path is-out">{{ String(item.copied_output_path ?? "-") || "-" }}</span></div>
                 <div v-if="String(item.error_message ?? '')" class="grid-cell span-all err-cell">
@@ -835,7 +836,7 @@ onBeforeUnmount(stopPolling);
 <style scoped>
 .mode-selector-wrapper { display: grid; gap: 12px; }
 .mode-label { font-weight: 600; }
-.mode-radio-group { display: flex; flex-wrap: wrap; gap: 8px; }
+.mode-radio-group.n-radio-group { display: flex; height: auto; flex-wrap: wrap; gap: 8px; }
 .mode-radio-btn { border-radius: 8px; }
 .batch-results { padding-top: 24px; border-top: 1px solid var(--border-subtle); }
 .batch-preview__hint { font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }

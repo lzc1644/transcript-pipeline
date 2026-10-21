@@ -43,7 +43,7 @@ const {
   loading,
   profiles,
   referenceExtensions,
-  videoExtensions,
+  mediaExtensions,
 } = useConfigOptions();
 const jobState = ref<JobState | null>(null);
 const submitting = ref(false);
@@ -81,7 +81,7 @@ const contentTypeOptions = [
   { label: "读书会整理", value: "book_club" },
   { label: "对谈转录", value: "conversation" },
 ];
-const videoAccept = computed(() => videoExtensions.value.join(","));
+const mediaAccept = computed(() => mediaExtensions.value.join(","));
 const referenceAccept = computed(() => referenceExtensions.value.join(","));
 const glossaryAccept = ".txt,.md";
 const isConversation = computed(() => form.content_type === "conversation");
@@ -186,7 +186,7 @@ async function handleJobRerun(jobId: string) {
 
 async function submit() {
   if (!form.video || !form.output_dir) {
-    message.warning("视频和服务器默认输出目录是必填项。");
+    message.warning("视频或音频文件和服务器默认输出目录是必填项。");
     return;
   }
   if (!isConversation.value && !form.reference) {
@@ -251,7 +251,7 @@ onBeforeUnmount(stopPolling);
 <template>
   <div class="workbench-page single-job-view">
     <section class="page-heading">
-      <div><h2>新建单任务</h2><p>左侧上传录屏与参考源，右侧选择本次配置。提交后在下方查看进度与整理结果。</p></div>
+      <div><h2>新建单任务</h2><p>左侧上传视频或音频与参考源，右侧选择本次配置。提交后在下方查看进度与整理结果。</p></div>
     </section>
 
     <n-alert v-if="error" type="error" :title="error" :bordered="false" class="glass-alert" />
@@ -272,16 +272,17 @@ onBeforeUnmount(stopPolling);
                   </n-radio-button>
                 </n-radio-group>
               </n-form-item>
-              <n-form-item label="视频文件" required>
+              <n-form-item label="视频或音频文件" required>
                 <n-space vertical class="w-full">
                   <RemoteFileUpload
                     v-model="form.video"
                     kind="video"
-                    label="视频文件"
-                    :accept="videoAccept"
-                    button-text="选择并上传本机视频"
+                    label="视频或音频文件"
+                    :accept="mediaAccept"
+                    button-text="选择并上传本机视频或音频"
                   />
                   <n-input v-model:value="form.video" readonly placeholder="上传后自动生成服务器路径" />
+                  <p class="prompt-hint">成功完成后自动删除服务器上的视频副本，保留音频和文字结果；失败任务保留视频供重试。</p>
                 </n-space>
               </n-form-item>
               <n-form-item v-if="!isConversation" label="参考源文件或 URL" required>

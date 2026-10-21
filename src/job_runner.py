@@ -19,6 +19,7 @@ import yaml
 
 from scripts.run_pipeline import STAGE_EXIT_PARTIAL, run_stage
 from src.config_loader import ConfigLoadError, load_settings
+from src.ffmpeg_utils import supported_media_extensions
 from src.glossary_utils import build_initial_prompt, load_glossary_terms, merge_glossary_terms
 from src.runtime_utils import ensure_directory, normalize_stage_name, relativize_path, setup_logging
 from src.schemas import LoadedSettings
@@ -471,12 +472,12 @@ def load_batch_job_specs(
         if reference_path and (not reference_path.exists() or not reference_path.is_dir()):
             raise JobRunnerError(f"reference_dir 不存在或不是目录: {reference_path}")
 
-        allowed_video_extensions = supported_video_extensions(base_loaded_settings)
+        allowed_video_extensions = supported_media_extensions(base_loaded_settings)
         for video_path in sorted(videos_path.iterdir()):
             if not video_path.is_file():
                 continue
             if video_path.suffix.lower() not in allowed_video_extensions:
-                # 批量目录只以受支持的视频文件建任务，允许同目录混放参考文本或 PDF。
+                # 只以受支持的视频/音频建任务，允许同目录混放参考文本或 PDF。
                 continue
 
             if reference_path is not None:
@@ -684,7 +685,7 @@ def prepare_job_inputs(
 ) -> JobPreparedInputs:
     normalized_content_type = normalize_content_type(content_type)
     if not video_source.exists():
-        raise JobRunnerError(f"视频源不存在: {video_source}")
+        raise JobRunnerError(f"视频或音频源不存在: {video_source}")
 
     video_destination = job_paths.input_videos_dir / f"{CANONICAL_INPUT_BASENAME}{video_source.suffix.lower()}"
     shutil.copy2(video_source, video_destination)
@@ -910,6 +911,54 @@ def copy_final_output(job_paths: JobPaths, output_dir: Path, final_filename: str
     return source_path, destination_path
 
 
+def cleanup_completed_job_video(
+    *,
+    job_paths: JobPaths,
+    video_source: Path,
+    loaded_settings: LoadedSettings,
+    logger: logging.Logger,
+) -> None:
+    """Release owned video copies after delivery, retaining audio and external originals."""
+    extension = video_source.suffix.lower()
+    if (
+        extension not in supported_video_extensions(loaded_settings)
+        or extension in loaded_settings.settings.audio.supported_audio_ext
+    ):
+        return
+
+    try:
+        audio_path = loaded_settings.path_for("audio_dir") / (
+            f"{CANONICAL_INPUT_BASENAME}.{loaded_settings.settings.audio.output_format.lstrip('.')}"
+        )
+        if (
+            not audio_path.resolve().is_relative_to(job_paths.job_root.resolve())
+            or not audio_path.is_file()
+            or audio_path.stat().st_size == 0
+        ):
+            logger.warning("视频清理跳过：未找到保留的任务音频 | job_id=%s", job_paths.job_id)
+            return
+
+        prepared_video = job_paths.input_videos_dir / f"{CANONICAL_INPUT_BASENAME}{extension}"
+        candidates = []
+        if prepared_video.resolve().is_relative_to(job_paths.job_root.resolve()):
+            candidates.append(prepared_video)
+        # CLI 任意本地原件不归任务所有；只允许清理 Web 专用上传目录中的源视频。
+        source = video_source.resolve()
+        managed_upload_root = loaded_settings.project_root.resolve() / "data/uploads/videos"
+        if source.is_relative_to(managed_upload_root):
+            candidates.append(source)
+    except OSError as exc:
+        logger.warning("视频清理检查失败 | job_id=%s | %s", job_paths.job_id, exc)
+        return
+
+    for candidate in candidates:
+        try:
+            candidate.unlink(missing_ok=True)
+            logger.info("已清理任务视频 | job_id=%s | %s", job_paths.job_id, candidate)
+        except OSError as exc:
+            logger.warning("视频清理失败，最终结果已保留 | %s | %s", candidate, exc)
+
+
 def prepare_batch_jobs(
     *,
     project_root: Path,
@@ -1038,6 +1087,12 @@ def execute_batch_stage_for_runtime(
                 ),
             )
             runtime.copied_output_path = copied_output_path
+            cleanup_completed_job_video(
+                job_paths=job_paths,
+                video_source=Path(runtime.spec.video),
+                loaded_settings=job_loaded_settings,
+                logger=logger,
+            )
             runtime.status = "success"
             runtime.current_stage = "done"
     except (ConfigLoadError, JobRunnerError) as exc:
@@ -1418,6 +1473,12 @@ def run_single_job(
         job_paths,
         output_path,
         build_final_output_filename(video_source, book_name=book_name, chapter=chapter),
+    )
+    cleanup_completed_job_video(
+        job_paths=job_paths,
+        video_source=video_source,
+        loaded_settings=job_loaded_settings,
+        logger=logger,
     )
     logger.info("job 完成 | job_id=%s | final=%s", job_id, copied_output_path)
 

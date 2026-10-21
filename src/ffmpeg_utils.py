@@ -37,6 +37,11 @@ def normalize_extension(extension: str) -> str:
     return normalized
 
 
+def supported_media_extensions(loaded_settings: LoadedSettings) -> set[str]:
+    audio = loaded_settings.settings.audio
+    return set(audio.supported_video_ext) | set(audio.supported_audio_ext)
+
+
 def iter_video_files(video_dir: Path, allowed_extensions: Iterable[str]) -> list[Path]:
     normalized_extensions = {normalize_extension(extension) for extension in allowed_extensions}
     if not video_dir.exists():
@@ -114,12 +119,13 @@ def extract_audio_batch(
     settings = loaded_settings.settings
     video_dir = loaded_settings.path_for("videos_dir")
     audio_dir = ensure_directory(loaded_settings.path_for("audio_dir"))
-    video_files = iter_video_files(video_dir, settings.audio.supported_video_ext)
+    media_extensions = supported_media_extensions(loaded_settings)
+    video_files = iter_video_files(video_dir, media_extensions)
 
     if not video_files:
-        supported_ext = ", ".join(settings.audio.supported_video_ext)
+        supported_ext = ", ".join(sorted(media_extensions))
         raise InputDirectoryEmptyError(
-            f"输入目录中没有可处理的视频文件: {video_dir}。支持扩展名: {supported_ext}"
+            f"输入目录中没有可处理的视频或音频文件: {video_dir}。支持扩展名: {supported_ext}"
         )
 
     ffmpeg_binary = find_ffmpeg_binary()

@@ -250,7 +250,7 @@ const kindLabel = computed(() => {
 const defaultCardTitle = computed(() => {
   if (kind.value === "job") {
     const sourceName = displaySourceName(videoSource.value) || displaySourceName(props.state.output_path);
-    return sourceName ? `视频：${sourceName}` : `单任务 ${stateId.value || "未命名"}`;
+    return sourceName ? `视频 / 音频：${sourceName}` : `单任务 ${stateId.value || "未命名"}`;
   }
   if (kind.value === "batch") {
     const directoryName = displaySourceName(videosDir.value);
@@ -263,7 +263,7 @@ const defaultCardTitle = computed(() => {
     }
     const firstVideoName = displaySourceName(batchItems.value[0]?.video_source);
     if (firstVideoName) {
-      return `批量任务：${firstVideoName} 等 ${batchItems.value.length} 个视频`;
+      return `批量任务：${firstVideoName} 等 ${batchItems.value.length} 个文件`;
     }
     return `批量任务 ${stateId.value || "未命名"}`;
   }
@@ -303,7 +303,7 @@ const identityEntries = computed<IdentityEntry[]>(() => {
   const entries: Array<IdentityEntry | null> = [];
   if (kind.value === "job") {
     entries.push(makeIdentityEntry("内容类型", contentType.value, contentType.value));
-    entries.push(makeIdentityEntry("原始视频", videoSource.value));
+    entries.push(makeIdentityEntry("原始视频 / 音频", videoSource.value));
     entries.push(
       contentType.value === "conversation" && !referenceSource.value
         ? { label: "参考源", value: "无", fullValue: "无" }
@@ -318,7 +318,7 @@ const identityEntries = computed<IdentityEntry[]>(() => {
     entries.push(makeIdentityEntry("共享参考", sharedReference.value));
     entries.push(makeIdentityEntry("输出目录", outputDir.value, outputDir.value));
     if (!videosDir.value && batchItems.value[0]?.video_source) {
-      entries.push(makeIdentityEntry("首个视频", batchItems.value[0].video_source));
+      entries.push(makeIdentityEntry("首个视频 / 音频", batchItems.value[0].video_source));
     }
   } else {
     entries.push(makeIdentityEntry("产物位置", props.state.output_path, textValue(props.state.output_path)));
@@ -988,7 +988,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
               <span class="status-card__path">{{ String(state.output_path ?? "-") || "-" }}</span>
             </n-descriptions-item>
             <template v-if="hasInputSummary">
-              <n-descriptions-item v-if="videoSource" label="原始视频" :span="2">
+              <n-descriptions-item v-if="videoSource" label="原始视频 / 音频" :span="2">
                 <span class="status-card__path">{{ videoSource }}</span>
               </n-descriptions-item>
               <n-descriptions-item v-if="referenceSource || contentType === 'conversation'" label="参考源" :span="2">
@@ -1018,7 +1018,7 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
             </n-descriptions-item>
 
             <template v-if="state.total !== undefined">
-              <n-descriptions-item label="视频总任务数">
+              <n-descriptions-item label="视频 / 音频总任务数">
                 {{ String(state.total ?? "-") || "-" }}
               </n-descriptions-item>
               <n-descriptions-item label="状态统计">

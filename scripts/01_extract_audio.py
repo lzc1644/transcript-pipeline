@@ -14,7 +14,7 @@ from src.runtime_utils import setup_logging
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="抽取视频音频为 WAV 文件。")
+    parser = argparse.ArgumentParser(description="将视频或音频文件统一转换为 WAV 音频。")
     parser.add_argument("--config", help="配置文件路径，默认使用 config/settings.yaml")
     parser.add_argument("--profile", help="运行 profile，覆盖配置文件中的默认 profile")
     return parser

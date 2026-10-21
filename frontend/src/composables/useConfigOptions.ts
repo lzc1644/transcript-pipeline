@@ -7,7 +7,7 @@ export function useConfigOptions() {
   const asrCandidates = ref<AsrCandidate[]>([]);
   const defaultAsrCandidate = ref("");
   const defaultSecondaryAsrCandidate = ref("");
-  const videoExtensions = ref<string[]>([]);
+  const mediaExtensions = ref<string[]>([]);
   const referenceExtensions = ref<string[]>([]);
   const activeProfile = ref("");
   const defaultOcrModel = ref("");
@@ -28,7 +28,7 @@ export function useConfigOptions() {
       const config = await getConfig();
       profiles.value = config.profiles;
       asrCandidates.value = config.asr_candidates ?? [];
-      videoExtensions.value = config.video_extensions;
+      mediaExtensions.value = config.media_extensions ?? config.video_extensions;
       referenceExtensions.value = config.reference_extensions;
       activeProfile.value = config.active_profile;
       defaultOutputDir.value = config.default_output_dir;
@@ -57,7 +57,7 @@ export function useConfigOptions() {
     defaultAsrCandidate,
     defaultSecondaryAsrCandidate,
     profiles,
-    videoExtensions,
+    mediaExtensions,
     referenceExtensions,
     activeProfile,
     defaultOcrModel,

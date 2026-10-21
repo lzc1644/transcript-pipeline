@@ -15,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 import uvicorn
 
 from src.config_loader import ConfigLoadError, load_settings
+from src.ffmpeg_utils import supported_media_extensions
 from src.job_runner import create_batch_id, create_job_id, supported_reference_extensions, supported_video_extensions
 from src.refine_utils import PromptLoadError, VALID_REFINEMENT_BACKENDS, load_markdown_assemble_prompt
 from src.runtime_utils import normalize_stage_name
@@ -308,6 +309,7 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             "default_ocr_backend": loaded_settings.settings.reference.ai_ocr_backend,
             "active_profile": loaded_settings.active_profile_name,
             "video_extensions": sorted(supported_video_extensions(loaded_settings)),
+            "media_extensions": sorted(supported_media_extensions(loaded_settings)),
             "reference_extensions": list(supported_reference_extensions()),
             "default_output_dir": str(loaded_settings.path_for("final_dir")),
             "upload_dir": str(upload_root(root)),

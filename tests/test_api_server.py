@@ -138,6 +138,7 @@ def test_get_config_returns_profiles_and_backends(tmp_path: Path) -> None:
         "default_ocr_backend": "codex_api",
         "active_profile": "local_cpu",
         "video_extensions": [".mkv", ".mov", ".mp4", ".webm"],
+        "media_extensions": [".flac", ".m4a", ".mkv", ".mov", ".mp3", ".mp4", ".wav", ".webm"],
         "reference_extensions": [".txt", ".md", ".pdf"],
         "default_output_dir": str(tmp_path / "data/output/final"),
         "upload_dir": str(tmp_path / "data/uploads"),
