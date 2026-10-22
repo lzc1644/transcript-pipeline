@@ -52,6 +52,11 @@ data/output/final/*
 data/output/logs/*
 !data/output/logs/.gitkeep
 
+# Independent dictation models and private session artifacts
+data/models/
+data/dictation/
+data/https/
+
 # Temporary debug artifacts
 tmp/
 tmp_*

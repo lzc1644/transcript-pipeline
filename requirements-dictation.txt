@@ -1,0 +1,8 @@
+# CPU worker only; do not install into the base Web environment.
+sherpa-onnx==1.12.39
+numpy==2.2.6
+onnxruntime==1.23.2
+huggingface-hub==0.36.2
+av==16.1.0
+pydantic==2.12.5
+PyYAML==6.0.3

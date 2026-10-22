@@ -23,7 +23,8 @@ def _uses_japanese_script(text: str) -> bool:
 
 
 class QwenBackend:
-    def __init__(self, candidate: Candidate, device: str, cache: Path, parameters: dict[str, Any]):
+    def __init__(self, candidate: Candidate, device: str, cache: Path, parameters: dict[str, Any], *,
+                 timestamps: bool = True, local_files_only: bool = False):
         import torch
         from huggingface_hub import snapshot_download
         from qwen_asr import Qwen3ASRModel
@@ -37,15 +38,24 @@ class QwenBackend:
         self.chunk_limit = MAX_FORCE_ALIGN_INPUT_SECONDS
         self.chunk_seconds = parameters.get("chunk_seconds", 30.0)
         self.model_path = snapshot_download(candidate.model, revision=candidate.revision, cache_dir=str(cache / "hf"),
-                                            allow_patterns=["*.json", "*.txt", "*.safetensors"])
-        aligner_path = snapshot_download(ALIGNER_MODEL, revision=ALIGNER_REVISION, cache_dir=str(cache / "hf"),
-                                        allow_patterns=["*.json", "*.txt", "*.safetensors"])
+                                            allow_patterns=["*.json", "*.txt", "*.safetensors"],
+                                            local_files_only=local_files_only)
+        aligner_options = {}
+        if timestamps:
+            aligner_path = snapshot_download(ALIGNER_MODEL, revision=ALIGNER_REVISION, cache_dir=str(cache / "hf"),
+                                            allow_patterns=["*.json", "*.txt", "*.safetensors"],
+                                            local_files_only=local_files_only)
+            aligner_options = {
+                "forced_aligner": aligner_path,
+                "forced_aligner_kwargs": {"dtype": self.dtype,
+                                          "device_map": "cuda:0" if device == "cuda" else "cpu",
+                                          "attn_implementation": "sdpa"},
+            }
         location = "cuda:0" if device == "cuda" else "cpu"
         self.model = Qwen3ASRModel.from_pretrained(
             self.model_path, dtype=self.dtype, device_map=location, attn_implementation="sdpa",
             max_inference_batch_size=1, max_new_tokens=self.limit,
-            forced_aligner=aligner_path,
-            forced_aligner_kwargs={"dtype": self.dtype, "device_map": location, "attn_implementation": "sdpa"},
+            **aligner_options,
         )
         original_generate = self.model.model.generate
 

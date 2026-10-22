@@ -1,0 +1,2 @@
+# Process lifecycle only; ASR dependencies remain in their isolated environments.
+supervisor==4.3.0

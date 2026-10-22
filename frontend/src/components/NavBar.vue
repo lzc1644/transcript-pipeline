@@ -8,6 +8,7 @@ const groups = [
     { to: "/jobs", label: "任务列表", icon: "M9 6h11M9 12h11M9 18h11M4 6h1M4 12h1M4 18h1" },
   ] },
   { label: "工具", items: [
+    { to: "/dictation", label: "语音输入", icon: "M9 3h6v11H9zM5 10v3a7 7 0 0 0 14 0v-3M12 20v2" },
     { to: "/stage-runner", label: "单阶段运行", icon: "M5 4h14v5H5zM5 15h14v5H5zM12 9v6" },
     { to: "/pdf-book-ocr", label: "PDF 书籍 OCR", icon: "M14 3H5v18h14V8zM14 3v5h5M8 13h8M8 17h5" },
   ] },

@@ -118,7 +118,8 @@ elif name == "docker":
             print(identity + "|" + s["os"] + "|" + s["security"])
         elif ".Runtimes" in fmt: print('{"nvidia":{}}' if s["runtime"] else '{"runc":{}}')
     elif args[0] == "ps":
-        key = "legacy" if "label=com.docker.compose.service=app" in args else "trans"
+        key = ("legacy" if "label=com.docker.compose.service=app" in args else
+               "https" if "label=com.docker.compose.service=https" in args else "trans")
         if s.get("ps_fail"): die()
         print(s[key])
     elif args[0] == "run":
@@ -146,7 +147,7 @@ class Host:
             kernel="Linux 7.0.0-generic", arch="x86_64", pid1="systemd", driver=True,
             context="default", endpoint="unix:///var/run/docker.sock", daemon=True,
             access=True, compose=True, runtime=True, engine_unit="loaded", id="local-daemon", os="Ubuntu 26.04.1 LTS",
-            security='["name=seccomp"]', legacy="", trans="", health="healthy", packages=["docker-ce"],
+            security='["name=seccomp"]', legacy="", trans="", https="", health="healthy", packages=["docker-ce"],
         )
         bindir = base / "bin"
         bindir.mkdir()
@@ -257,6 +258,24 @@ def test_explicit_blockers(host, field, value, message):
 def test_unsupported_os(host, release):
     host.os_release.write_text(release)
     assert host.run("--check").returncode == 1
+    assert_read_only(host)
+
+
+@pytest.mark.parametrize("source", ["shell", "dotenv", "container"])
+@pytest.mark.parametrize("mode", ["--check", "--yes"])
+def test_https_deployment_rejects_base_only_updates_before_mutation(host, source, mode):
+    knobs = {}
+    if source == "shell":
+        knobs["COMPOSE_FILE"] = "compose.yaml:compose.https.yaml"
+    elif source == "dotenv":
+        (host.base / "repo/.env").write_text('COMPOSE_FILE="compose.yaml:compose.https.yaml"\n')
+    else:
+        host.state["https"] = "transcript-pipeline-https-1 Up"
+    result = host.run(mode, **knobs)
+    assert result.returncode == 1
+    assert "拒绝仅更新基础" in result.stderr and "旧版分离 HTTPS" in result.stderr
+    assert "up -d --no-build --wait trans" in result.stderr
+    assert "保留 CA 卷" in result.stderr
     assert_read_only(host)
 
 

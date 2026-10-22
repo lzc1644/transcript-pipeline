@@ -43,6 +43,15 @@ while (($#)); do
   shift
 done
 ((!CHECK_ONLY || !ASSUME_YES)) || fail '--check 与 --yes 不能同时使用'
+# Old two-container installations must migrate before this single-image entry.
+# Never automatically delete an operator's container or certificate volume.
+reject_https_update() {
+  fail '检测到旧版分离 HTTPS，拒绝仅更新基础 compose.yaml。请按 docs/HTTPS.md 迁移为单镜像：确认任务结束，停止/移除旧 https 容器（不带 -v），去掉 compose.https.yaml，再执行 docker compose up -d --no-build --wait trans。保留 CA 卷'
+}
+if [[ ${COMPOSE_FILE:-} == *compose.https.yaml* ]] || \
+   { [[ -f "$ROOT/.env" ]] && grep -Eq '^[[:space:]]*COMPOSE_FILE[[:space:]]*=.*compose\.https\.yaml' "$ROOT/.env"; }; then
+  reject_https_update
+fi
 export ASR_BACKENDS="${ASR_BACKENDS:-qwen}"
 case "$ASR_BACKENDS" in
   whisper|qwen|funasr|all) ;;
@@ -136,7 +145,11 @@ verify_daemon() {
   info "已核实本机 rootful Docker: $os_name"
 }
 inspect_services() {
-  local legacy existing
+  local legacy existing https
+  https="$(dkr ps -a --filter 'label=com.docker.compose.project=transcript-pipeline' \
+    --filter 'label=com.docker.compose.service=https' --format '{{.Names}} {{.Status}}')" \
+    || fail 'HTTPS 服务检查失败'
+  [[ -z $https ]] || reject_https_update
   legacy="$(dkr ps -a --filter 'label=com.docker.compose.project=transcript-pipeline' \
     --filter 'label=com.docker.compose.service=app' --format '{{.Names}} {{.Status}}')" \
     || fail '旧 app 服务检查失败'

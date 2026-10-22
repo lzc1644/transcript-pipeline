@@ -18,6 +18,7 @@ const pages: Record<string, [string, string]> = {
   "/stage-runner": ["工具", "单阶段运行"],
   "/pdf-book-ocr": ["工具", "PDF 书籍 OCR"],
   "/settings": ["设置", "运行设置"],
+  "/dictation": ["工具", "语音输入"],
 };
 const pageContext = computed(() => pages[route.path] ?? ["工作台", "读书会整理"]);
 function updateClass() {
@@ -83,7 +84,7 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
   <n-config-provider :theme="isDark ? darkTheme : null" :theme-overrides="themeOverrides">
     <n-dialog-provider>
       <n-message-provider>
-        <div class="app-shell">
+        <div class="app-shell" :class="{ 'app-shell--compact': route.path === '/dictation' && route.query.compact === '1' }">
           <a class="skip-link" href="#main-content">跳至主要内容</a>
           <aside class="app-sidebar" aria-label="工作台导航">
             <div class="app-brand"><span class="app-brand__mark" aria-hidden="true">文</span><div><strong>读书会整理</strong><small>Transcript Pipeline</small></div></div>

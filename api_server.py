@@ -197,12 +197,16 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        app.state.dictation.storage.recover()
         try:
             yield
         finally:
+            await app.state.dictation.close()
             app.state.executor.shutdown(wait=False, cancel_futures=True)
 
     app = FastAPI(title="transcript-pipeline API", lifespan=lifespan)
+    from src.web.dictation import install_dictation
+    install_dictation(app, root)
     app.state.project_root = root
     app.state.run_tasks_inline = run_tasks_inline
     app.state.executor = ThreadPoolExecutor(max_workers=4)

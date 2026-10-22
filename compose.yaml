@@ -10,19 +10,27 @@ services:
         APP_UID: ${APP_UID:-1000}
         APP_GID: ${APP_GID:-1000}
         ASR_BACKENDS: ${ASR_BACKENDS:-qwen}
+        DICTATION: ${DICTATION:-1}
     init: true
     restart: unless-stopped
-    stop_grace_period: 30s
+    # 5s request drain + up to 120s remote exit + 16s worker closure, with margin.
+    stop_grace_period: 160s
     environment:
       - HOME=/home/app
       - TRANSCRIPT_PROFILE=${TRANSCRIPT_PROFILE:-wsl2_gpu_high_accuracy}
       - CODEX_LB_BASE_URL
       - CODEX_LB_API_KEY
+      - HTTPS_ENABLED=${HTTPS_ENABLED:-true}
+      - HTTPS_ADDRESSES=${HTTPS_ADDRESSES:-https://localhost:8443}
+      - HTTPS_DEFAULT_SNI=${HTTPS_DEFAULT_SNI:-localhost}
     ports:
       - "${DOCKER_BIND_IP:-0.0.0.0}:${APP_PORT:-8080}:8000"
+      - "${DOCKER_BIND_IP:-0.0.0.0}:${HTTPS_PORT:-8443}:8443"
     volumes:
       - ./data:/app/data
       - model-cache:/home/app/.cache/transcript-pipeline
+      - https-data:/data
+      - https-config:/config
     cap_drop:
       - ALL
     security_opt:
@@ -35,7 +43,7 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      test: [CMD, curl, --fail, --silent, --show-error, http://127.0.0.1:8000/api/health]
+      test: [CMD, /bin/sh, /app/docker/healthcheck.sh]
       interval: 30s
       timeout: 5s
       start_period: 30s
@@ -48,3 +56,5 @@ services:
 
 volumes:
   model-cache:
+  https-data:
+  https-config:

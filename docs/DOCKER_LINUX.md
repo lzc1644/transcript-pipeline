@@ -1,6 +1,6 @@
 # 原生 Ubuntu + NVIDIA Docker 部署
 
-本页的“原生 Linux”指 **Docker Engine 直接运行在 Ubuntu 宿主机，不经过 WSL2 / Docker Desktop**。复用仓库现有 Dockerfile 和 `compose.yaml`，仍然只有一个服务 `trans`，不提供完全不用 Docker 的 Ubuntu 安装方案。WSL2 用户请看 [DOCKER.md](DOCKER.md)。
+本页的“原生 Linux”指 **Docker Engine 直接运行在 Ubuntu 宿主机，不经过 WSL2 / Docker Desktop**。复用仓库现有 Dockerfile 和 `compose.yaml`，一个 `trans` 容器内置API与TLS，镜像导入、证书信任和旧双容器迁移见 [HTTPS.md](HTTPS.md)。不提供完全不用 Docker 的 Ubuntu 安装方案。WSL2 用户请看 [DOCKER.md](DOCKER.md)。
 
 ## 支持范围与依赖链
 
@@ -40,7 +40,7 @@ bash scripts/deploy_docker_linux.sh --check
 
 同时有缺项和未完成项时，返回 `2`，输出中仍列出已发现缺项；不支持的平台、远程 endpoint、旧 app 等明确危险条件直接返回 `1`。
 
-当前机器只读预检：Ubuntu 26.04.1、RTX 3060 Ti 8 GB、宿主驱动 595.91.07 正常，Docker 服务运行，Compose 可用；普通用户无 socket 权限，**daemon/runtime/已有容器尚未核实，退出码应为 2**。PATH/常见路径未发现 `nvidia-ctk`，dpkg 未登记 `nvidia-container-toolkit`，但不能用此代替实际 runtime 检查。批准部署后才允许尝试 `sudo docker`；不自动加 docker 组。
+早期只读预检记录：Ubuntu 26.04.1、RTX 3060 Ti 8 GB、宿主驱动 595.91.07 正常，当时普通用户无 socket 权限，daemon/runtime/已有容器未核实，退出码为2。此后用户已自行准备 Docker/GPU 环境；2026-10-22 已批准并实际完成应用与 HTTPS 部署，见本页末尾。脚本仍不自动加 docker 组。
 
 确认影响后，首次建议仅绑定本机：
 
@@ -61,6 +61,8 @@ bash scripts/deploy_docker_linux.sh
 ### Docker endpoint 与 sudo
 
 脚本按 Docker CLI 优先级检查有效连接：`DOCKER_CONTEXT` 优先于 `DOCKER_HOST`，否则读取当前 context。只允许 `/var/run/docker.sock`（接受等价 `/run/docker.sock`），拒绝远程、Desktop、rootless；可访问 daemon 时还检查操作系统、rootless 标记和 daemon ID。
+
+镜像已内置HTTPS，基础Compose即可同时管理HTTP/TLS。若检测到旧的 `compose.https.yaml` 设置或分离 `https` 容器，本脚本会拒绝直接更新（包括 `--check` 提醒），要求按 [HTTPS.md](HTTPS.md#从原来的两个容器迁移) 先完成一次迁移；不自动删除容器或CA卷。迁移后只需管理 `trans`。
 
 所有实际 Docker/Compose 操作通过同一个封装，显式固定 `--host unix:///var/run/docker.sock`，不让 sudo 的默认 context 指向其他主机；提权/重启后再次检查 daemon ID。Compose 固定项目名 `transcript-pipeline` 和仓库的基础 `compose.yaml`，不读取 `COMPOSE_FILE`、`COMPOSE_PROJECT_NAME` 或 `compose.override.yaml` 来改变目标。自定义/隔离验收使用下文的**人工 Compose 命令**，不要拿部署脚本直接更新生产数据。
 
@@ -123,7 +125,7 @@ SH
 export ACCEPT_ROOT="$(mktemp -d /tmp/transcript-gpu-accept.XXXXXX)"
 export ACCEPT_PROJECT=transcript-whisper-accept
 export APP_UID="$(id -u)" APP_GID="$(id -g)"
-export APP_PORT=18080 DOCKER_BIND_IP=127.0.0.1 TRANSCRIPT_PROFILE=wsl2_gpu_high_accuracy
+export APP_PORT=18080 HTTPS_PORT=18443 DOCKER_BIND_IP=127.0.0.1 TRANSCRIPT_PROFILE=wsl2_gpu_high_accuracy
 mkdir -m 700 "$ACCEPT_ROOT/data" "$ACCEPT_ROOT/logs"
 mkdir -p "$ACCEPT_ROOT/data/input/audio"
 cp /absolute/path/to/approved-short.wav "$ACCEPT_ROOT/data/input/audio/sample.wav"
@@ -137,7 +139,7 @@ YAML
 # 单实例验收；若有其他验收项目，请选择不同项目名/端口。
 dc_accept() {
   sudo env ACCEPT_ROOT="$ACCEPT_ROOT" APP_UID="$APP_UID" APP_GID="$APP_GID" \
-    APP_PORT="$APP_PORT" DOCKER_BIND_IP="$DOCKER_BIND_IP" TRANSCRIPT_PROFILE="$TRANSCRIPT_PROFILE" \
+    APP_PORT="$APP_PORT" HTTPS_PORT="$HTTPS_PORT" DOCKER_BIND_IP="$DOCKER_BIND_IP" TRANSCRIPT_PROFILE="$TRANSCRIPT_PROFILE" \
     docker --host unix:///var/run/docker.sock compose --project-name "$ACCEPT_PROJECT" \
     --project-directory "$PWD" -f "$PWD/compose.yaml" -f "$ACCEPT_ROOT/accept.yaml" "$@"
 }
@@ -170,7 +172,7 @@ dc_accept logs --no-color --tail 100 trans >"$ACCEPT_ROOT/logs/container.log"
 # 仍在同一个仓库根目录 shell，保留上面的 dc_accept 函数
 WHISPER_ACCEPT_ROOT="$ACCEPT_ROOT"
 export ACCEPT_ROOT="$(mktemp -d /tmp/transcript-qwen-accept.XXXXXX)"
-export ACCEPT_PROJECT=transcript-qwen-accept APP_PORT=18081
+export ACCEPT_PROJECT=transcript-qwen-accept APP_PORT=18081 HTTPS_PORT=18444
 mkdir -m 700 "$ACCEPT_ROOT/data" "$ACCEPT_ROOT/logs"
 mkdir -p "$ACCEPT_ROOT/data/input/audio"
 cp /absolute/path/to/approved-short.wav "$ACCEPT_ROOT/data/input/audio/sample.wav"
@@ -192,7 +194,7 @@ dc_accept exec -T trans /app/.venv/bin/python scripts/02_transcribe.py \
 
 确认验收任务结束，再对**各自隔离项目** `dc_accept up -d --no-build --force-recreate trans`（`ACCEPT_ROOT`、`ACCEPT_PROJECT` 和端口要指向同一个验收项目）；比较重建前后 ASR 文件内容/校验和、模型缓存文件与日志，再运行同一短音频检查没有重复下载权重。保留验收目录及命名卷以便复核。不要使用 `docker compose down -v`，不要用删卷来模拟重建。卷的权限与自定义缓存路径注意事项见 [DOCKER.md 的存储说明](DOCKER.md#存储与权限)。
 
-首次本机验收成功后，再独立批准 LAN 配置。Ubuntu 不需要 Windows `portproxy`、Hyper-V 防火墙或 WSL mirrored/NAT 配置；其他设备访问 **Ubuntu 主机的局域网 IP** 和发布端口。默认服务没有登录认证或 HTTPS，Key 在 HTTP LAN 上传输未加密，**禁止直接暴露公网**。
+首次本机验收成功后，再独立批准 LAN 配置。Ubuntu 不需要 Windows `portproxy`、Hyper-V 防火墙或 WSL mirrored/NAT 配置；其他设备访问 **Ubuntu 主机的局域网 IP** 和发布端口。默认服务没有登录认证；内网麦克风及Key传输应使用设备已信任的8443 HTTPS，而非8080 HTTP，**禁止直接暴露公网**。
 
 Docker 发布端口可能绕过 UFW 的常规规则，不能仅凭一条 `ufw allow` 或 `ufw status` 宣称访问已受限。由管理员按 [Docker 的端口过滤/UFW 说明](https://docs.docker.com/engine/network/packet-filtering-firewalls/)评估绑定地址和转发规则，本脚本不修改防火墙。必须从另一台设备验证 `/`、`/api/health` 可达性，并从不允许的来源验证限制效果；localhost 成功不是 LAN 验收。
 
@@ -223,4 +225,6 @@ bash -n scripts/deploy_docker_linux.sh
 
 `tests/test_docker_linux_deploy.py` 用命令桩模拟平台、socket、sudo、安装、runtime、构建、健康与 GPU 失败；不会真的安装软件/重启 Docker。命令桩通过只能证明脚本控制逻辑，不证明本机 GPU 可推理。
 
-本轮实际只运行只读预检，**没有批准/执行宿主安装、daemon 修改、容器构建/启动或模型推理**。下一步先批准固定本机 endpoint 下的 `sudo docker` 只读核查，确认 runtime、Toolkit、旧服务和正在运行的任务，再决定补装及隔离分层验收。不能用这份部署文档或已有 WSL 验收记录宣称当前 Ubuntu 已部署成功。
+2026-10-22 用户批准后，已在此 Ubuntu 的本机 Docker 上构建/更新 `transcript-pipeline:local`，保留8080 HTTP并添加8443 HTTPS。本次复用已有 daemon/GPU runtime，不安装宿主软件、不改 daemon/驱动/防火墙。修复非 root 容器读取0600/0700源码失败，Compose 默认传入 `DICTATION=1`；独立CPU环境、GPU可见性及真实CPU/GPU听写已通过。容器健康、无重启循环；Docker HTTP和可信HTTPS的浏览器真实录音虚拟麦克风各7项检查通过，未替代其他设备与物理麦克风验收。未重跑默认Whisper长任务或宣称所有ASR候选均验收。
+
+后续按用户要求合并为**一个镜像、一个trans容器**，Supervisor统一管理API/Caddy，不再需要overlay。原CA卷保留，旧HTTPS容器已迁移移除；基础Compose的健康检查统一验证HTTP和可信TLS。Linux安装脚本只在仍存在旧overlay/容器时阻断并提示迁移，不泛化任意COMPOSE_FILE。API停机145秒/Docker160秒，已真实验证35秒外部HTTP与未结束上传并发时TERM正常退出、原稿/已收数据保留且锁可重获。镜像文件导入及客户端证书安装见 [HTTPS.md](HTTPS.md)。

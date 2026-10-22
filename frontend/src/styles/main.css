@@ -86,6 +86,10 @@ a { color: var(--primary); }
 .skip-link { position: fixed; top: 8px; left: 8px; padding: 8px 16px; background: var(--surface-raised); z-index: 3000; transform: translateY(-160%); }
 .skip-link:focus { transform: none; }
 
+.app-shell--compact { grid-template-columns: minmax(0, 1fr); }
+.app-shell--compact .app-sidebar, .app-shell--compact .app-header { display: none; }
+.app-shell--compact .app-content { padding: 20px; }
+
 /* Page and section layout. Panels are layout, not floating cards. */
 .workbench-page { display: grid; gap: 24px; min-width: 0; }
 .page-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px; }

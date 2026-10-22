@@ -2,6 +2,7 @@ pydantic>=2.12,<2.13
 PyYAML>=6.0,<7
 fastapi>=0.135,<0.136
 uvicorn>=0.41,<0.42
+wsproto>=1.2,<2
 faster-whisper>=1.1,<2
 pypdf>=5.0,<6
 rapidfuzz>=3.9,<4

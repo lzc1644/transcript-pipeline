@@ -1,0 +1,232 @@
+from __future__ import annotations
+
+import asyncio
+from contextlib import contextmanager
+import json
+import os
+from pathlib import Path
+import secrets
+import time
+from urllib.parse import urlparse
+
+from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import PlainTextResponse
+
+from src.dictation.schemas import CleanupRequest, DraftEditRequest, EditRequest, SessionRequest, load_dictation_settings
+from src.dictation.service import Conflict, DictationService, UploadLimit, WorkerIPCError
+from src.dictation.storage import public_state
+
+COOKIE = "dictation_owner"
+AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".webm", ".mp4"}
+
+
+@contextmanager
+def api_errors():
+    try:
+        yield
+    except KeyError as exc:
+        raise HTTPException(404, "会话或语句不存在") from exc
+    except Conflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except UploadLimit as exc:
+        raise HTTPException(413, str(exc)) from exc
+    except WorkerIPCError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(408, "上传接收超过期限，请重新上传") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+def owner(request):
+    value = request.cookies.get(COOKIE, "")
+    if not value or len(value) > 128:
+        raise HTTPException(401, "请先在本浏览器创建或选择语音会话")
+    return value
+
+
+def validate_origin(connection):
+    origin = connection.headers.get("origin", "")
+    parsed = urlparse(origin)
+    allowed = {s.strip() for s in os.environ.get("TRANSCRIPT_DICTATION_ORIGINS", "").split(",") if s.strip()}
+    host = connection.headers.get("host", "")
+    if origin in allowed:
+        return
+    if parsed.scheme not in {"http", "https"} or parsed.netloc != host:
+        raise HTTPException(403, "语音输入仅允许同源访问")
+
+
+def install_dictation(app, root: Path):
+    service = DictationService(root, recover=False)
+    app.state.dictation = service
+    router = APIRouter(prefix="/api/dictation", tags=["dictation"])
+
+    @router.get("/config")
+    async def config():
+        with api_errors():
+            settings = load_dictation_settings(root)
+            return {"enabled": settings.enabled, "cleanup_model": settings.cleanup_model,
+                    "max_upload_mb": settings.max_upload_mb, "max_upload_minutes": settings.max_upload_minutes}
+
+    @router.post("/sessions")
+    async def create(request: Request, response: Response, body: SessionRequest):
+        validate_origin(request)
+        identifier = owner(request) if request.cookies.get(COOKIE) else secrets.token_urlsafe(32)
+        with api_errors():
+            state = await service.create(identifier, body)
+        response.set_cookie(COOKIE, identifier, httponly=True, samesite="strict",
+                            secure=request.url.scheme == "https", max_age=60 * 60 * 24 * 365)
+        return public_state(state)
+
+    @router.get("/sessions")
+    async def history(request: Request):
+        identifier = request.cookies.get(COOKIE)
+        return service.list(identifier) if identifier else []
+
+    @router.get("/sessions/{sid}")
+    async def snapshot(sid: str, request: Request, response: Response):
+        response.headers["Cache-Control"] = "no-store"
+        with api_errors():
+            return public_state(service.get(sid, owner(request)))
+
+    @router.get("/sessions/{sid}/draft.txt")
+    async def download(sid: str, request: Request):
+        with api_errors():
+            state = service.get(sid, owner(request))
+            return PlainTextResponse(service.storage.render_draft(state), headers={
+                "Content-Disposition": 'attachment; filename="dictation.txt"', "Cache-Control": "no-store"})
+
+    @router.patch("/sessions/{sid}/utterances/{uid}")
+    async def edit(sid: str, uid: str, request: Request, body: EditRequest):
+        validate_origin(request)
+        with api_errors():
+            return service.edit(sid, owner(request), uid, body.revision, body.text, body.discard_document)
+
+    @router.patch("/sessions/{sid}/draft")
+    async def edit_draft(sid: str, request: Request, body: DraftEditRequest):
+        validate_origin(request)
+        with api_errors():
+            return service.edit_draft(sid, owner(request), body.revision, body.text)
+
+    @router.post("/sessions/{sid}/cleanup")
+    async def cleanup(sid: str, request: Request, body: CleanupRequest):
+        validate_origin(request)
+        with api_errors():
+            return await service.cleanup(sid, owner(request), body)
+
+    @router.post("/sessions/{sid}/stop")
+    async def stop(sid: str, request: Request):
+        validate_origin(request)
+        with api_errors():
+            state = service.get(sid, owner(request))
+            runtime = service.runtimes.get(sid)
+            if runtime:
+                await runtime.stop()
+            return public_state(state)
+
+    @router.post("/sessions/{sid}/cancel")
+    async def cancel(sid: str, request: Request):
+        validate_origin(request)
+        with api_errors():
+            return await service.cancel(sid, owner(request))
+
+    @router.delete("/sessions/{sid}")
+    async def delete(sid: str, request: Request):
+        validate_origin(request)
+        with api_errors():
+            await service.delete(sid, owner(request))
+            return {"deleted": True}
+
+    @router.post("/uploads")
+    async def upload(request: Request, response: Response, filename: str, terms: str = "[]", cleanup: bool = True):
+        validate_origin(request)
+        suffix = Path(filename).suffix.lower()
+        if suffix not in AUDIO_EXTENSIONS:
+            raise HTTPException(400, "不支持该录音格式")
+        identifier = owner(request) if request.cookies.get(COOKIE) else secrets.token_urlsafe(32)
+        with api_errors():
+            length = int(request.headers.get("content-length", "0"))
+            body = SessionRequest(terms=json.loads(terms), cleanup=cleanup)
+            state = await service.create(identifier, body, upload_name="upload" + suffix, start=False)
+            await service.receive_upload(state["id"], identifier, request.stream(), length)
+        response.set_cookie(COOKIE, identifier, httponly=True, samesite="strict",
+                            secure=request.url.scheme == "https", max_age=60 * 60 * 24 * 365)
+        return public_state(state)
+
+    @router.websocket("/sessions/{sid}/stream")
+    async def stream(websocket: WebSocket, sid: str):
+        try:
+            validate_origin(websocket)
+            identifier = owner(websocket)
+            state = service.get(sid, identifier)
+            runtime = service.runtimes.get(sid)
+            if not runtime or runtime.attached:
+                raise HTTPException(409, "会话不存在或已在其他窗口监听")
+        except (HTTPException, KeyError, Conflict):
+            await websocket.close(code=1008)
+            return
+        runtime.attached, runtime.ever_attached, runtime.disconnected_at = True, True, None
+        await websocket.accept()
+
+        async def transmit():
+            sequence = state["event_sequence"]
+            await websocket.send_json({"type": "session.snapshot", "snapshot": public_state(state)})
+            while True:
+                runtime.changed.clear()
+                for event in list(runtime.events):
+                    if event["event_sequence"] > sequence:
+                        outgoing = dict(event)
+                        if event["type"] not in {"audio.ack", "asr.partial"}:
+                            outgoing["snapshot"] = public_state(state)
+                        await websocket.send_json(outgoing)
+                        sequence = event["event_sequence"]
+                if runtime.task and runtime.task.done():
+                    await websocket.send_json({"type": "session.snapshot", "snapshot": public_state(state)})
+                    return
+                await runtime.changed.wait()
+
+        async def receive():
+            while True:
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    return
+                if message.get("bytes") is not None:
+                    await runtime.accept_audio(message["bytes"])
+                elif message.get("text"):
+                    if len(message["text"]) > 1024:
+                        raise ValueError("控制消息过长")
+                    command = json.loads(message["text"])
+                    if not isinstance(command, dict):
+                        raise ValueError("控制消息必须是 JSON 对象")
+                    if command.get("type") == "stop":
+                        await runtime.stop()
+                    elif command.get("type") == "cancel":
+                        await service.cancel(sid, identifier)
+                        return
+                    elif command.get("type") != "ping":
+                        raise ValueError("不支持的控制消息")
+
+        tx, rx = asyncio.create_task(transmit()), asyncio.create_task(receive())
+        try:
+            done, pending = await asyncio.wait([tx, rx], return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                if task.exception():
+                    raise task.exception()
+        except (ValueError, Conflict) as exc:
+            await websocket.send_json({"type": "session.error", "error": str(exc)})
+            await runtime.stop(str(exc))
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            for task in (tx, rx):
+                task.cancel()
+            await asyncio.gather(tx, rx, return_exceptions=True)
+            runtime.attached = False
+            runtime.disconnected_at = time.monotonic()
+            try:
+                await websocket.close()
+            except (RuntimeError, WebSocketDisconnect):
+                pass
+
+    app.include_router(router)
+    return service

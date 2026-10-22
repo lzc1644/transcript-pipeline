@@ -9,9 +9,13 @@
 
 两者共用现有 Dockerfile、Compose、`trans` 服务与数据/模型缓存结构，不使用 Docker Desktop。Ubuntu 入口不代表完全不用 Docker 的 Linux 安装方案。以下驱动与网络说明仍针对 **WSL2**，不要在 Ubuntu 套用 Windows portproxy / Hyper-V 配置。
 
+## 内网麦克风与 HTTPS
+
+一个镜像、一个 `trans` 容器同时提供8080 HTTP与8443 HTTPS，不再需要HTTPS sidecar/overlay。浏览器从内网 IP 使用麦克风需要可信 HTTPS，访问设备首次导入本地 CA 后即可听写。镜像文件导入、证书信任、旧双容器迁移和升级见 [HTTPS.md](HTTPS.md)。日常只需 `docker compose build trans && docker compose up -d --no-build --wait trans`。
+
 ## WSL2 原生 Docker 部署
 
-一个 Compose 服务 `trans`：Node 22 多阶段构建 Vue，Python 3.12 slim 非 root 运行一个 Uvicorn worker；FastAPI 在容器 `8000` 同时提供 `/api/*`、Vue 页面和静态资源。不使用 Docker Desktop、Nginx、数据库或本机 codex-lb 容器；原来的 `./start_web.sh` / Vite 开发方式不变。**仅适用于可信局域网，默认无认证、无 HTTPS，不要映射公网。**
+一个 Compose 服务 `trans`：Node 22 多阶段构建 Vue，Python 3.12 slim 非 root 运行 Supervisor，统一管理一个 Uvicorn worker和内置Caddy。FastAPI 在容器 `8000` 提供 `/api/*`、Vue 页面和静态资源，Caddy在8443提供HTTPS/WSS。不使用 Docker Desktop、Nginx、数据库或本机 codex-lb 容器；原来的 `./start_web.sh` / Vite 开发方式不变。**仅适用于可信局域网，没有登录认证，不要映射公网。**
 
 ## 前置条件和危险操作边界
 
@@ -38,6 +42,8 @@ bash scripts/deploy_docker_wsl2.sh           # 人工确认后安装缺失的 Do
 # 由管理员事先授权时也可显式使用 --yes；不在自动化里无意跳过确认
 ```
 
+Compose 还默认传入 `DICTATION=1`，在独立 CPU 环境安装网页听写依赖；准备权重见 [DICTATION.md](DICTATION.md)。
+
 Compose 和部署脚本默认 `ASR_BACKENDS=qwen`：保留 Whisper，并在独立 Python 环境安装两款 Qwen3-ASR 的依赖，不改变默认转录模型。首次构建会下载较大的 PyTorch 等依赖，但不下载模型权重；首次转录仍可能下载权重。可用 `ASR_BACKENDS=whisper bash scripts/deploy_docker_wsl2.sh` 构建精简版，或选择 `funasr` / `all`。脚本在使用 sudo 时也会保留此选项。仅设置宿主环境或重启旧容器不会安装依赖，必须重新构建并创建容器；先确认没有运行中任务。
 
 WSL2 脚本与原生 Linux 入口默认使用 `TRANSCRIPT_PROFILE=wsl2_gpu_high_accuracy`，包括 sudo 路径；项目 `.env` 中的 `local_cpu` 不再意外覆盖脚本默认值。显式导出的 profile 和 Web 已保存设置仍可覆盖默认值。更新已有 `trans` 前须人工确认任务已结束，`healthy` 不代表任务空闲；健康启动最多等待 150 秒。镜像构建失败时不会执行容器更新。
@@ -62,7 +68,7 @@ curl --retry 8 --retry-delay 2 --retry-connrefused --fail http://127.0.0.1:8080/
 
 如果 GPU 尚未就绪，可以仅在独立临时目录做 **CPU 接口验收**：通过一次性 Compose override 清除设备 reservation、设 `TRANSCRIPT_PROFILE=local_cpu` 并将数据挂到独立目录；勿改默认 `compose.yaml` 以伪造 GPU 成功。镜像构建、无 GPU 的健康/上传测试不等于 GPU 验收。
 
-镜像的 Node stage 执行 `npm ci && npm run build`，运行镜像不包含 Node 开发依赖。基础镜像锁定 Node 22 和 Python 3.12 bookworm 的 digest；`docker/constraints.txt` 固定 CTranslate2 4.8.2、cuBLAS-cu12 12.9.2.10、CUDA NVRTC-cu12 12.9.86、cuDNN-cu12 9.26.0.51；这些是本次构建验证的 Linux x86_64 Python wheels，不代表当前硬件已完成推理验收。基础 Whisper 环境不装 PyTorch；Compose 默认启用的 Qwen worker 在独立环境安装 PyTorch。镜像不装 Linux NVIDIA 驱动或完整 CUDA 工具链。运行镜像包含 `ffmpeg`、`poppler-utils`、`curl`、`ca-certificates`、`libgomp1`。日志 `json-file` 每文件最多 10 MiB、保留 3 个；`stop_grace_period: 30s`，`init: true`。视频/PDF 临时工作文件在容器可写层或项目路径，需为 Docker 存储预留空间；不默认使用大容量 tmpfs。
+镜像的 Node stage 执行 `npm ci && npm run build`，运行镜像不包含 Node 开发依赖。基础镜像锁定 Node 22 和 Python 3.12 bookworm 的 digest；`docker/constraints.txt` 固定 CTranslate2 4.8.2、cuBLAS-cu12 12.9.2.10、CUDA NVRTC-cu12 12.9.86、cuDNN-cu12 9.26.0.51；这些是本次构建验证的 Linux x86_64 Python wheels，不代表当前硬件已完成推理验收。基础 Whisper 环境不装 PyTorch；Compose 默认启用的 Qwen worker 在独立环境安装 PyTorch。镜像不装 Linux NVIDIA 驱动或完整 CUDA 工具链。运行镜像包含 `ffmpeg`、`poppler-utils`、`curl`、`ca-certificates`、`libgomp1`。日志 `json-file` 每文件最多 10 MiB、保留 3 个；`stop_grace_period: 160s`，`init: true`。视频/PDF 临时工作文件在容器可写层或项目路径，需为 Docker 存储预留空间；不默认使用大容量 tmpfs。
 
 ## 存储与权限
 
@@ -70,6 +76,7 @@ curl --retry 8 --retry-delay 2 --retry-connrefused --fail http://127.0.0.1:8080/
 | --- | --- | --- |
 | 宿主 `./data` ↔ `/app/data` | 上传、任务、中间结果、输出，包含 `data/jobs/frontend-settings.json` | bind mount；`down`/重建不删除 |
 | Compose 命名卷 `transcript-pipeline_model-cache` ↔ `/home/app/.cache/transcript-pipeline` | `profile.cache_dir` 指定的目录；其下 `faster-whisper/` 是 `asr.model_cache_subdir`，保存模型 | `down`/重建不删除；`down -v` 删除 |
+| `transcript-pipeline_https-data` ↔ `/data`，`https-config` ↔ `/config` | Caddy CA私钥/证书及自动配置 | 重建保留；不可删除CA卷，否则设备需重新信任 |
 | `/home/app` | 容器固定 HOME，进程以非 root `app` 运行 | 未单独挂载，非模型缓存内容不保证持久 |
 
 只设置 `HF_HOME` 不会持久化本项目的模型：真实路径由当前 profile 的 `cache_dir` 加 `asr.model_cache_subdir` 决定。**自定义 profile 若改了缓存路径，须同步修改 Compose 卷挂载**。设置页保存的 profile 优先于环境 `TRANSCRIPT_PROFILE=wsl2_gpu_high_accuracy`；启动后检查 `/api/frontend-settings` 返回的 `profile`，默认模型为 `large-v3-turbo`。不要把曾在宿主 `~/.cache/transcript-pipeline` 下载的模型直接当作容器命名卷已缓存；需要时先评估只读迁移或重新下载，避免误覆盖。
@@ -130,4 +137,4 @@ services:
 5. 用同一短样例改 `--model large-v3-turbo` 做默认模型/profile 验收，并再次执行确认模型已在卷中、没有重复下载（比对缓存文件/下载日志）。若用户在前端另存了 profile，先核对实际 profile。
 6. 使用项目现有转录入口对**隔离数据目录**运行（例如 `scripts/02_transcribe.py`，按其参数使用容器内路径/profile），检查 JSON 的 `segments`、`device=cuda`、`compute_type=float16` 和 TXT 实际内容；勿重跑用户完整资料或覆盖已有上游产物。
 
-停止/异常退出：`ThreadPoolExecutor.shutdown(wait=False)` 不会杀死运行中的线程；30 秒仅是停止宽限，超时容器会被强制终止。原有任务状态修正会在下一次查询时把不在进程内的 `pending/running` 标成 `failed`（参考 OCR 可 `partial`），保留已有结果但**不保证自动续跑或自动重试远端/GPU 作业**。须在独立数据目录测试实际长任务的 SIGTERM 与强制退出、恢复后状态及输出；勿使用真实付费任务来造故障。`unhealthy` 本身不触发 Compose 的 restart policy。权限失败、GPU 缺失和远端不可达各自查看任务错误和容器日志，避免用 `/api/health` 成功来推断业务可用。
+停止/异常退出：镜像与Compose统一检查HTTP和按CA验证的HTTPS。Supervisor统一管理API/TLS，任一意外退出会关闭同伴，由Docker按策略重启整个容器。Uvicorn先给HTTP请求5秒等待，然后进入Service关闭；听写后台和runtime同时取消，等待真实HTTP线程（最大120秒）及worker退出。Supervisor API预算145秒、Docker总宽限160秒，`docker run`同样应设置 `--stop-timeout 160`；超限才强杀。旧批处理的 `ThreadPoolExecutor.shutdown(wait=False)` 不会主动杀死运行中的线程；原有任务状态修正会在下一次查询时把不在进程内的 `pending/running` 标成 `failed`（参考 OCR 可 `partial`），保留已有结果但**不保证自动续跑或自动重试远端/GPU 作业**。须在独立数据目录测试实际长任务的 SIGTERM 与强制退出、恢复后状态及输出；勿使用真实付费任务来造故障。`unhealthy` 本身不触发 Compose 的 restart policy。权限失败、GPU 缺失和远端不可达各自查看任务错误和容器日志，避免用 `/api/health` 成功来推断业务可用。

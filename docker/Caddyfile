@@ -1,0 +1,12 @@
+{
+	admin off
+	auto_https disable_redirects
+	skip_install_trust
+	default_sni {$HTTPS_DEFAULT_SNI:localhost}
+}
+
+{$HTTPS_ADDRESSES:https://localhost:8443} {
+	tls internal
+	# Preserve Host and let Caddy forward HTTPS scheme and WebSocket upgrades.
+	reverse_proxy 127.0.0.1:8000
+}

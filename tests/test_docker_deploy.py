@@ -36,6 +36,52 @@ def test_compose_uses_only_trans_service_and_preserves_gpu_volume() -> None:
     assert "./data:/app/data" in service["volumes"]
     assert "model-cache:/home/app/.cache/transcript-pipeline" in service["volumes"]
     assert service["build"]["args"]["ASR_BACKENDS"] == "${ASR_BACKENDS:-qwen}"
+    assert service["build"]["args"]["DICTATION"] == "${DICTATION:-1}"
+    assert service["healthcheck"]["test"] == ["CMD", "/bin/sh", "/app/docker/healthcheck.sh"]
+    assert service["stop_grace_period"] == "160s"
+    assert "https-data:/data" in service["volumes"]
+    assert "https-config:/config" in service["volumes"]
+    assert "${DOCKER_BIND_IP:-0.0.0.0}:${HTTPS_PORT:-8443}:8443" in service["ports"]
+
+
+def test_runtime_copies_assign_non_root_ownership_even_for_private_host_files() -> None:
+    source = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    runtime = source.split("FROM ${PYTHON_IMAGE} AS app", 1)[1]
+    copies = [line for line in runtime.splitlines() if line.startswith("COPY ")]
+    for path in ("api_server.py", "config/settings.yaml", "config/prompts/", "config/glossaries/",
+                 "scripts/", "src/", "requirements-dictation.txt", "/frontend/dist/"):
+        line = next(line for line in copies if path in line.split())
+        assert "--chown=app:app" in line, f"{path} must be accessible with host 0600/0700 modes"
+    assert "USER app" in runtime
+
+
+def test_single_image_owns_http_tls_health_and_composable_shutdown_budget() -> None:
+    from configparser import ConfigParser
+    from src.dictation.schemas import DictationSettings
+
+    cfg = ConfigParser(interpolation=None)
+    cfg.read(ROOT / "docker/supervisord.conf")
+    command = cfg["program:api"]["command"]
+    assert "--workers 1" in command and "--timeout-graceful-shutdown 5" in command
+    assert cfg["program:api"].getint("stopwaitsecs") == 145
+    assert cfg["program:api"].getboolean("killasgroup")
+    assert not cfg["program:api"].getboolean("stopasgroup")
+    assert cfg["program:api"]["autorestart"] == cfg["program:https"]["autorestart"] == "false"
+    assert "PROCESS_STATE_FATAL" in cfg["eventlistener:service_exit"]["events"]
+    assert "PROCESS_STATE_EXITED" in cfg["eventlistener:service_exit"]["events"]
+    maximum_remote = DictationSettings.model_json_schema()["properties"]["cleanup_timeout_seconds"]["maximum"]
+    assert 5 + maximum_remote + 2 * (3 + 5) <= cfg["program:api"].getint("stopwaitsecs")
+    assert cfg["program:api"].getint("stopwaitsecs") + cfg["program:https"].getint("stopwaitsecs") < 160
+    health = (ROOT / "docker/healthcheck.sh").read_text()
+    assert "8000/api/health" in health and "8443/api/health" in health
+    assert "--cacert /data/caddy/pki/authorities/local/root.crt" in health
+    assert "--insecure" not in health
+    caddy = (ROOT / "docker/Caddyfile").read_text(encoding="utf-8")
+    assert "tls internal" in caddy and "reverse_proxy 127.0.0.1:8000" in caddy
+    assert "default_sni" in caddy and "admin off" in caddy and "on_demand" not in caddy
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    assert 'CMD ["/app/.venv/bin/supervisord"' in dockerfile
+    assert "COPY --from=https-binary /usr/bin/caddy /usr/local/bin/caddy" in dockerfile
 
 
 def test_deploy_rejects_invalid_asr_backend_before_host_changes() -> None:
