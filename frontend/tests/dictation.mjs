@@ -94,7 +94,7 @@ try {
   });
   await check('whole-document diff preview → apply → save → GET/TXT consistency', async () => {
     await page.getByRole('button', { name: '整理全文', exact: true }).click();
-    await page.getByRole('region', { name: '全文整理差异预览' }).waitFor();
+    await page.getByRole('region', { name: '全文整理差异预览' }).waitFor({ timeout: 130000 });
     await page.getByRole('button', { name: '确认应用全文稿' }).click();
     await page.getByRole('button', { name: '编辑全文', exact: true }).click();
     await page.getByRole('textbox', { name: '编辑全文', exact: true }).fill('人工全文：不是不能做，是现在不做。');

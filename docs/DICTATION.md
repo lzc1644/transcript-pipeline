@@ -5,11 +5,12 @@
 ## 开始使用
 
 1. 点击「开始听写」，允许麦克风权限。等状态显示「正在听音」再讲话。
-2. 下方临时区显示当前句预览；停顿后正文先显示 Qwen 最终识别，再提交整理结果。
+2. 文字框内显示当前句预览和已完成正文；停顿后先显示 Qwen 最终识别，再提交逐句整理结果。框内滚动，录音/复制按钮不随文字增长下移；浏览旧句时暂停自动跟随，可点「回到最新」。
 3. 点击「停止」立即释放麦克风。页面继续完成已收到的尾部；整理失败时原始识别仍可编辑、复制和下载 TXT。
 4. 「设置」提供少量术语和整理开关。术语只作为最终识别与整理参考，不强制替换，也不继承读书会词表或书名。
 5. 「上传录音」跳过实时预览，使用同一套分段、最终识别和整理。默认最多 100 MB、30 分钟；超限或损坏文件明确失败。
 6. 「历史结果」只列本浏览器拥有的会话。删除需确认，先停止接收、推理和整理，再删除音频与文字。
+7. 停止并处理完成后，点击「整理全文」使用 Luna high 整体整理当前正文（含人工修改）。先展示差异，确认后才应用；已应用/编辑的全文也可再次整理。失败时保留原稿，可重试。
 
 「紧凑小窗」打开同一个会话的结果视图，使用相同浏览器凭据。原窗口继续拥有麦克风；小窗可以查看、编辑、复制或停止。不要在录音时关闭原录音窗口；断开超过宽限期后服务端会结束会话。没有会话时也可先开小窗，再直接在小窗开始听写。
 
@@ -19,7 +20,11 @@
 
 - CPU：`csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en`，INT8，sherpa-onnx 真正增量识别。与批处理 SeACo Paraformer 是不同模型。
 - GPU：注册表中的 Qwen3-ASR 0.6B 固定 revision，每个会话加载一次。只对完整短句识别，不加载 ForcedAligner，不用第一遍文字提示第二遍。
-- HTTP 网关：`gpt-6-luna`，显式 `reasoning.effort=none`，只整理最终 ASR。整句 JSON 接收完整并校验后才提交；不执行转录中的指令，不自动切供应商。
+- HTTP 网关：`gpt-6-luna`。逐句显式 `reasoning.effort=low`；手动全文整理显式 `high`。只处理最终识别/当前正文，不再重跑 ASR。完整 JSON 校验后才提交，不执行转录中的指令，不自动切供应商。
+
+两套提示词分开维护：逐句只轻度修复当前句，全文结合上下文恢复断句、段落和高把握的同音错字；均保留数字、否定、条件、主体、专名与中英混说，不总结或补造事实。疑似听错无法唯一判断时保留原表达并标记复核。
+
+全文默认120秒**总期限**，输出预算16K–32K（包含推理与正文）；逐句默认20秒、4096输出token。普通正文不超过12000字符时一次整体请求；更长正文由 Cleanup 明确分块，界面注明分块及段数，所有块共享同一个120秒期限。任一块超时、截断或缺少completed事件时不发布部分建议。超时返回504，网关/格式错误返回502并附中文原因；原稿和TXT不变。相同会话的全文整理 single-flight，主窗/小窗重复点击返回409，原请求实际退出前不会放行；不同会话仍共享全局并发2。
 
 LLM 仍可能出错，`needs_review` 是建议而不是置信度。数字、否定、主体、条件和中英混说应人工核对。固定规则要求保留中英混说，不把英文翻译成中文。跨句改口不会静默重写较早正文。
 
@@ -35,7 +40,7 @@ LLM 仍可能出错，`needs_review` 是建议而不是置信度。数字、否�
 
 Qwen 环境默认 `.venv/asr-py312/bin/python`，也可由 `TRANSCRIPT_ASR_PYTHON` 指定；模型缓存沿用当前 profile 的 `cache_dir/asr-models/hf`。首次使用前按既有 ASR 文档准备 Qwen 0.6B 的固定 revision。听写启动使用 `local_files_only=True` / `HF_HUB_OFFLINE=1`，不会边录音边下载。
 
-网关地址与鉴权通过现有网页运行设置或配置指定的环境变量解析；临时测试密钥可只放进启动进程的环境，勿写入源码或测试产物。听写冻结网关地址和模型配置，不继承阶段 6 的 `high/xhigh` 或校对系统指令。两个推理 worker 不需要访问远端 LLM。
+网关地址与鉴权通过现有网页运行设置或配置指定的环境变量解析；临时测试密钥可只放进启动进程的环境，勿写入源码或测试产物。听写冻结网关地址和模型配置，不继承阶段 6 的模型、推理配置或校对系统指令，逐句low/全文high由听写独立设置。两个推理 worker 不需要访问远端 LLM。
 
 完成前端构建后，按现有方法启动服务，或本机单进程运行：
 
@@ -87,9 +92,9 @@ services:
 
 运行 `export DICTATION_CONFIG_FILE=/absolute/path/dictation.json` 后，`docker compose up -d --no-build --wait trans` 才会应用挂载。不要挂整个 `config/` 覆盖镜像默认配置。原生 Linux 部署脚本显式只使用基础 Compose，不读取本机 override；自定义配置应使用这里的手工 Compose 命令部署。配置在会话创建时读取，新会话才使用新参数；既有会话配置保持冻结。
 
-`enabled=false` 阻止新会话，不影响读书会流水线。还可配置 `cpu_python`、`final_python`、`model_dir`、`cleanup_model`、`cleanup_timeout_seconds`、`pre_ms`、`silence_ms`、`tail_ms`、`target_seconds`、`hard_seconds`。默认分别为 250ms 前留、700ms 静音、150ms 尾留、20s 软目标、25s 硬上限。硬切分标记需复核，不当作自然句界。
+`enabled=false` 阻止新会话，不影响读书会流水线。还可配置 `cpu_python`、`final_python`、`model_dir`、`cleanup_model`、`cleanup_timeout_seconds`、`document_cleanup_model`、`document_cleanup_timeout_seconds`、`pre_ms`、`silence_ms`、`tail_ms`、`target_seconds`、`hard_seconds`。默认分别为 250ms 前留、700ms 静音、150ms 尾留、20s 软目标、25s 硬上限。硬切分标记需复核，不当作自然句界。
 
-首版受测的生产整理配置是 Luna `none`；Gemini 对照脚本不自动改运行默认值。不要把其他模型直接填进 `cleanup_model` 并假定它支持 `none`。
+当前逐句为 Luna `low`，全文为 Luna `high`（早期 `none` 实测仅保留作历史基线）。旧会话没有全文参数时采用 Luna high / 120秒；旧配置快照保留创建时值，本轮之后的手工重试使用新的专用提示词与low/high策略，实际参数记在每次结果的metrics。Gemini 对照脚本不自动改运行默认值，也不假定其他模型支持相同推理参数。
 
 ## 状态、数据与唯一正文
 
@@ -140,11 +145,11 @@ ffmpeg -nostdin -n -f s16le -ar 16000 -ac 1 -i /path/to/source.pcm recovered.wav
 
 变更请求和 WebSocket 校验 Origin；默认同源，可用 `TRANSCRIPT_DICTATION_ORIGINS` 添加精确来源。反向代理需保留 Host，支持 WebSocket upgrade 与长连接；远程浏览器使用 HTTPS/WSS。Vite 开发代理已启用 WebSocket 并保留 Host。
 
-ACK 表示 PCM 与接收位置已持久化。128 包有限恢复窗口内重复包必须字节相同，不能补接有缺口音频。队列超过2秒告警，超过5秒停止新增采音。IPC 写锁与 drain 合用3秒期限；stop 后 CPU 收尾另有10秒期限。卡死会结束本会话并保留音频，不让 GPU 永久占用。Qwen 与旧批量 ASR 共用 `_asr-gpu.lock`，worker 真正退出后才释放；远端整理不持 GPU。上传接收另有300秒总期限。听写整理对所有网关（含localhost/127.0.0.1/`.local`）强制使用既有curl `--max-time`：默认20秒、最大120秒为传输总期限，持续SSE滴流也不能无限延长。缺少curl时明确失败，不回退urllib；旧批处理HTTP策略不变。删除/关闭会先占有生命周期，拒绝新工作，取消并等待已登记上传、推理和有界远端请求退出。
+ACK 表示 PCM 与接收位置已持久化。128 包有限恢复窗口内重复包必须字节相同，不能补接有缺口音频。队列超过2秒告警，超过5秒停止新增采音。IPC 写锁与 drain 合用3秒期限；stop 后 CPU 收尾另有10秒期限。卡死会结束本会话并保留音频，不让 GPU 永久占用。Qwen 与旧批量 ASR 共用 `_asr-gpu.lock`，worker 真正退出后才释放；远端整理不持 GPU。上传接收另有300秒总期限。听写整理对所有网关（含localhost/127.0.0.1/`.local`）强制使用既有curl `--max-time`：逐句默认20秒、全文默认120秒，两者配置上限均为120秒；全文多块共用该总期限，持续SSE滴流也不能无限延长。缺少curl时明确失败，不回退urllib；旧批处理HTTP策略不变。删除/关闭会先占有生命周期，拒绝新工作，取消并等待已登记上传、推理和有界远端请求退出。
 
 ## 本机实测与尚未完成的验收
 
-2026-10-21，i5-12400 / RTX 3060 Ti，真实录音按1倍速度回放600秒。接收9,600,000个样本、7,500包；84句全部生成独立 ASR 与整理产物，区间有序无重叠，最大音频积压16ms，未持续增长。以下为**服务端样本轴到结果提交**的计时，未测物理麦克风到浏览器绘制的完整延迟：
+2026-10-21，以下为早期逐句 Luna none 的历史基线：i5-12400 / RTX 3060 Ti，真实录音按1倍速度回放600秒。接收9,600,000个样本、7,500包；84句全部生成独立 ASR 与整理产物，区间有序无重叠，最大音频积压16ms，未持续增长。以下为**服务端样本轴到结果提交**的计时，未测物理麦克风到浏览器绘制的完整延迟：
 
 | 指标 | 样本数 | P50 | P95 |
 |---|---:|---:|---:|
@@ -156,11 +161,15 @@ ACK 表示 PCM 与接收位置已持久化。128 包有限恢复窗口内重复�
 
 CPU worker 峰值 RSS 约390 MiB；4线程预览累计约2334 CPU秒/600墙钟秒，不承诺低 CPU 占用。Qwen 的 PyTorch 峰值 allocated 约1.75 GiB，不是全部显存用量；实测 `aligner_loaded=false`。84句中40句被整理模型建议复核，该标记不能代替人工判定。没有人工参考稿，未计算 CER。
 
-同源六条关键文本的 HTTP 对照：Luna `none` P95约5.79秒，Flash-Lite `minimal` 约2.73秒；六例的数字、否定和条件均保留，Flash-Lite 有两例缺末尾句号。它已能通过当前网关的结构化输出请求，但样本不足以建立完整保真结论，本轮保持用户指定的 Luna 默认。Gemini 3.8 通道仅公布 `-high` 别名，请求 `low` 能返回，原生 LOW 是否被转发仍未证实。三种模型的实际回报 ID 与 token usage 已通过既有 transport observer 真实读取；不保存原始 HTTP 响应或密钥。
+同源六条关键文本的 HTTP 对照：Luna `none` P95约5.79秒，Flash-Lite `minimal` 约2.73秒；六例的数字、否定和条件均保留，Flash-Lite 有两例缺末尾句号。它已能通过当前网关的结构化输出请求，但样本不足以建立完整保真结论，该轮保持 Luna none；后续按用户要求改为逐句low/全文high，不能沿用这组none计时代表当前延迟。Gemini 3.8 通道仅公布 `-high` 别名，请求 `low` 能返回，原生 LOW 是否被转发仍未证实。三种模型的实际回报 ID 与 token usage 已通过既有 transport observer 真实读取；不保存原始 HTTP 响应或密钥。
 
 已用 Chrome 虚拟麦克风加载真实录音，实际跑通 AudioWorklet、短断线补传、CPU/GPU/LLM、停止释放、编辑/复制、全文建议应用、紧凑小窗和上传/历史/删除；检查了390px截图与动态展开边界。它验证网页采音路径，不替代物理设备和本人口音验收。
 
-本地证据：`tmp/dictation-ten-minute-real-02/{summary.json,artifact-check.json,001.json}`、`tmp/dictation-browser-05/`、`tmp/dictation-llm-compare-02/results.json`、`tmp/dictation-llm-usage-real-01/results.json`。测试录音及证据不纳入 Git。
+2026-10-22 更新为逐句low / 全文high后，复用此前失败的1866字符正文快照（不改原会话）做单次整体请求，43.35秒成功完成，needs_review=true；疑似听错的词仍需人工复核。另两条语义样例的high用时3.83/4.30秒，low用时2.95/3.15秒，数字、否定、条件、英文和引用指令均保留。仅为小样例，不代表延迟分位数或转录准确率。证据 `tmp/dictation-{high,low}-real-02/results.json`。
+
+更新后的单容器可信HTTPS浏览器实测7项通过（含真实录音虚拟麦克风、WSS、low逐句整理、high全文预览/应用和上传）。60句加超长临时预览的布局测试通过，正文/差异均内部滚动，翻看旧句不被自动滚动抢走，390px手机与540px小窗的下方操作按钮保持可用。证据 `tmp/dictation-high-docker-browser-01/report.json`、`tmp/dictation-layout-high-04/`。
+
+本地历史证据：`tmp/dictation-ten-minute-real-02/{summary.json,artifact-check.json,001.json}`、`tmp/dictation-browser-05/`、`tmp/dictation-llm-compare-02/results.json`、`tmp/dictation-llm-usage-real-01/results.json`。测试录音及证据不纳入 Git。
 
 ## 可重放验证
 

@@ -311,7 +311,7 @@ Markdown 与 TXT 同时落盘，不再重组正文结构；TXT 由 Markdown 去�
 
 ## 独立工具：网页语音输入（用户已批准）
 
-独立模块按选型验证 → 核心服务 → 网页听写 → 上传/历史推进，不改变上述读书会阶段或默认模型。主路线为 CPU Streaming Paraformer → GPU Qwen3-ASR 0.6B（无对齐器）→ Luna `none`。设置、接口、状态与验证方式见 [DICTATION.md](DICTATION.md)；工程和实测记录见 `codestable/issues/2046-o-two-pass-dictation.md`。物理麦克风、约100条人工对照与完整质量验收需要真实材料，不由单元测试替代。
+独立模块按选型验证 → 核心服务 → 网页听写 → 上传/历史推进，不改变上述读书会阶段或默认模型。主路线为 CPU Streaming Paraformer → GPU Qwen3-ASR 0.6B（无对齐器）→ Luna `low` 逐句整理；停止后使用 Luna `high` 对当前完整正文做差异预览式整理，无需重跑 ASR。设置、接口、状态与验证方式见 [DICTATION.md](DICTATION.md)；工程和实测记录见 `codestable/issues/2046-o-two-pass-dictation.md`。物理麦克风、约100条人工对照与完整质量验收需要真实材料，不由单元测试替代。
 
 ## 阶段推进规则
 

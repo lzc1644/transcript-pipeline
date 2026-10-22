@@ -162,3 +162,28 @@ A→D 的工程实现已完成。入口 `/dictation`，使用说明与当前契�
 真实隔离Docker验证使用localhost网关每50ms滴流（不发送completed），配置8秒；同时发送未结束上传并对Supervisor容器发TERM。**8.090秒退出、code0、160个SSE块、Uvicorn shutdown complete、无Supervisor killing**，原稿/partial上传保留，GPU锁可重获，见 `tmp/dictation-drip-term/{report.json,container.log}`。该网关进程与测试容器同时结束，TERM报告中的peer-disconnected观测未落盘；实际socket断开与线程返回由独立回归明确断言，不拿该缺失观测冒充通过。
 
 使用同一单镜像入口更新运行服务和导出文件，保留上一镜像tag/归档供恢复；按用户既有授权追加修复commit，不改写原提交，不push或关闭事项。使用说明同步明确：最大120秒是所有听写网关的传输总期限，而非仅公网curl-first地址的条件性保证。
+
+## 全文500、low/high提示词与限高文字框（2026-10-22）
+
+用户反馈实时听写的全文整理500及长语句挤走操作按钮；后续明确要求优化两套提示词，逐句从none改为low，全文使用high。仍在本事项中完成，不重跑用户原音频、不扩展旧读书会流水线。
+
+### 原因与实现
+
+- 生产日志明确：该次全文整理沿用逐句20秒期限，curl (28)在收到231020字节后超时，CodexLBClientError未映射HTTP，直接变成500；不是可据此推断的模型识别失败。
+- `Cleanup.__call__` 为逐句Luna low / 4096输出预算；`Cleanup.document` 为全文Luna high / 独立16K–32K输出预算、默认120秒总期限。两套专用提示词分别界定逐句轻改和整体断句分段；允许有充分上下文证据的同音错字修复，保留数字、主体、否定、条件、专名、中英混说，不总结、猜造或执行转录指令。当前实测仍有疑似听错未修，high不是ASR准确率保证。
+- 普通正文≤12000字符一次整体请求；超长才在Cleanup内分块并注明strategy/chunk_count，所有块共享**同一个总期限**，不是每块120秒。任一截断/错误不返回部分全文。Service仅提供Storage.render_draft快照、版本检查、生命周期与建议提交，不塞入高推理payload/分块策略。
+- 全文超时返回504、网关/格式错误返回502和中文原因，保存document_cleanup_error；重试成功清除错误，原稿和TXT不改。已应用/手工编辑的全文也可再次预览；应用后明确消费建议，结果与原文相同时也不留下旧预览。
+- 完成审阅发现主窗/小窗可并发两次全文。Service新增按sid的single-flight集合：在首次await前占有，直到真实外部线程退出后的finally才释放；第二次409。不同sid仍保留全局并发2。新增旧请求失败/取消但线程未退出时的竞争回归，独立会话可先成功，新建议不被旧失败污染。
+- 前端正文和临时预览合入限高内部滚动框，下面录音/复制/全文按钮不随文字长度下移。接近底部时跟随最新，向上浏览或编辑时不抢滚动，可主动回到最新；差异预览也限高内部滚动。增加Luna high处理中反馈、中文失败/重试及已应用全文再次预览。
+
+### 验证与实际产物
+
+- `.venv/bin/python -m pytest` **771 passed / 44.99s**（`tmp/dictation-high-full-pytest-final.log`）；补充同文应用边界后的document定向10 passed；前端类型检查/build、selection与diff检查通过。
+- 新测试断言实际全文payload包含合并当前正文及人工修改、high、独立预算；逐句payload为low；合法JSON但response.incomplete不发布；网关/超时HTTP错误可重试；分块共享总deadline；同sid单飞直到真实线程返回。
+- 真实脚本 `probe_dictation_cleanup.py --document` 读取原失败的1866字符正文副本，不修改原会话，单次high **43.35秒**完成，strategy=whole、reported_model=gpt-6-luna、needs_review=true。两条语义样例high为3.83/4.30秒、low为2.95/3.15秒，关键数字、否定、条件、顺序、英文和引用指令保持。没有据此报告CER或延迟P95。`tmp/dictation-{high,low}-real-02/results.json`；首轮提示词验证记录在real-01，仅作历史对照。
+- 真实隔离容器的全文high入口，localhost网关每50ms持续滴流且不完成，配置8秒总期限，与未结束上传并发TERM：**8.083秒正常退出/code0**，Uvicorn shutdown complete，无Supervisor强杀，原稿/partial上传保留，GPU锁可重获。`tmp/dictation-high-term/report.json`。网关与容器同停，未用未落盘的peer-disconnected标记证明连接退出；独立滴流回归仍明确检查真实socket和线程返回。
+- Playwright合成长会话（60句+超长partial）验证内部滚动、向上阅读不抢滚动、回到最新、下方按钮位置、失败重试及已应用全文再次整理；390px手机和540px紧凑窗无水平溢出，已查看实际截图。`tmp/dictation-layout-high-04/`。此测试不冒充真实ASR/LLM。
+- 部署前确认0活动听写、0运行批处理，再更新唯一trans容器；原CA/数据/模型卷保留。新镜像可信HTTPS真实浏览器 **7项全部通过，0页面异常**（WSS重连、双遍+low、编辑复制、high全文预览/应用、共享小窗、上传历史删除、权限拒绝）；`tmp/dictation-high-docker-browser-01/report.json`。
+- 单镜像归档已更新并实际docker load验证：`tmp/releases/transcript-pipeline-single-20261022.tar.gz`，约6.0GiB，仍用single-20261022标签；旧版归档和before-luna-low-high标签保留供恢复。未把录音、会话或凭据加入Git/镜像。按此前授权追加补丁commit，不push、不关闭事项。
+
+本轮两个用户问题与所提并发边界已修复。当前仍需人工确认实际录音中的疑似错词/专名；物理设备、约100条人工对照和原实时延迟目标仍是后续质量验收，不由此次小样本和虚拟麦克风替代。

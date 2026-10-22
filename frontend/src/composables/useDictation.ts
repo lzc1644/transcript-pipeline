@@ -8,7 +8,8 @@ export interface Utterance {
 export interface DictationSession {
   id: string; status: string; phase: string; revision: number; event_sequence: number; next_sequence: number; samples: number;
   created_at: string; mode: string; utterances: Utterance[]; draft_text: string; error?: string;
-  document_text?: string; document_suggestion?: { id: string; original: string; text: string };
+  document_text?: string; document_cleanup_error?: string;
+  document_suggestion?: { id: string; original: string; text: string; metrics?: { strategy: string; chunk_count: number } };
   config: { cleanup_model: string; terms: string[]; cleanup: boolean };
 }
 const activeStates = ["created", "preparing", "listening", "draining"];
@@ -19,6 +20,7 @@ export function useDictation() {
   const history = ref<DictationSession[]>([]);
   const error = ref("");
   const busy = ref(false);
+  const cleanupScope = ref<string | null>(null);
   const level = ref(0);
   const connection = ref("");
   const capturing = ref(false);
@@ -244,9 +246,11 @@ export function useDictation() {
     const token = selection.token();
     const body = { scope, utterance_id: utteranceId, revision: session.value.revision, suggestion_id: session.value.document_suggestion?.id };
     busy.value = true;
+    cleanupScope.value = scope;
+    error.value = "";
     try {
       apply(await api(`/sessions/${token.id}/cleanup`, { method: "POST", body: JSON.stringify(body) }), token);
-    } finally { busy.value = false; }
+    } finally { busy.value = false; cleanupScope.value = null; }
   }
   async function remove(id: string) {
     if (session.value?.id === id) await releaseAudio();
@@ -269,6 +273,6 @@ export function useDictation() {
     void releaseAudio();
     socket?.close();
   });
-  return { session, history, error, busy, level, connection, capturing, active, partial, start, stop, cancel, upload,
+  return { session, history, error, busy, cleanupScope, level, connection, capturing, active, partial, start, stop, cancel, upload,
     select, refresh, loadHistory, edit, editDraft, cleanup, remove };
 }

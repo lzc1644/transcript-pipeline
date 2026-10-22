@@ -36,7 +36,10 @@ def root(tmp_path):
 
 
 def fake_cleanup(*args, **kwargs):
-    return lambda text, context, terms: {"text": text + "。", "needs_review": False, "metrics": {}}
+    def call(text, context, terms):
+        return {"text": text + "。", "needs_review": False, "metrics": {}}
+    call.document = call
+    return call
 
 
 async def completed(service):
@@ -136,6 +139,7 @@ def test_document_cleanup_detects_concurrent_utterance_cleanup(root):
                 release.wait(2)
                 return {"text": "旧全文建议", "needs_review": False}
             return {"text": "新逐句稿", "needs_review": False}
+        call.document = call
         return call
     async def run():
         service = DictationService(root, cleanup_factory=factory)
@@ -366,10 +370,13 @@ def dripping_gateway():
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Connection", "close")
             self.end_headers()
-            if self.path == "/complete":
+            if self.path in {"/complete", "/incomplete"}:
                 response = {"type": "response.completed", "response": {"status": "completed", "model": "local-test",
                     "usage": {"input_tokens": 7, "output_tokens": 5}, "output": [{"type": "message", "content": [
                         {"type": "output_text", "text": '{"text":"原稿。","needs_review":false}'}]}]}}
+                if self.path == "/incomplete":
+                    response["type"] = "response.incomplete"
+                    response["response"].update(status="incomplete", incomplete_details={"reason": "max_output_tokens"})
                 self.wfile.write(("data: " + json.dumps(response) + "\n\n").encode())
                 return
             started.set()

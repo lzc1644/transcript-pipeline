@@ -6,7 +6,7 @@ import { useDictation, type Utterance } from "../composables/useDictation";
 
 const route = useRoute(), router = useRouter(), message = useMessage();
 const d = useDictation();
-const { session, history, error, busy, level, connection, capturing, active, partial } = d;
+const { session, history, error, busy, cleanupScope, level, connection, capturing, active, partial } = d;
 const tab = ref("live");
 const terms = ref("");
 const enableCleanup = ref(true);
@@ -15,6 +15,20 @@ const uploadInput = ref<HTMLInputElement | null>(null);
 const editing = ref<{ id: string; revision: number; text: string } | null>(null);
 const draftEditing = ref<{ revision: number; text: string } | null>(null);
 const compact = computed(() => route.query.compact === "1");
+const paperBody = ref<HTMLElement | null>(null);
+const followLatest = ref(true);
+function trackScroll() {
+  const body = paperBody.value;
+  if (body) followLatest.value = body.scrollHeight - body.scrollTop - body.clientHeight < 48;
+}
+function showLatest() {
+  followLatest.value = true;
+  if (paperBody.value) paperBody.value.scrollTop = paperBody.value.scrollHeight;
+}
+watch(() => [session.value?.id, session.value?.revision, partial.value.map(u => u.preview).join("\n")], (value, old) => {
+  if (value[0] !== old?.[0]) followLatest.value = true;
+  if (followLatest.value && !editing.value && !draftEditing.value) showLatest();
+}, { flush: "post" });
 watch(() => session.value?.id, id => {
   if (id && session.value) {
     terms.value = session.value.config.terms.join("\n");
@@ -93,8 +107,8 @@ onMounted(() => action(async () => {
     <section v-if="settingsOpen" class="dictation-settings" aria-label="听写设置">
       <label for="dictation-terms">少量术语 <span>每行一个或逗号分隔，最多50项</span></label>
       <textarea id="dictation-terms" v-model="terms" :disabled="active" rows="3" placeholder="WebSocket&#10;项目专名" />
-      <label class="dictation-inline"><input type="checkbox" v-model="enableCleanup" :disabled="active" />使用轻度整理（Luna · none）</label>
-      <p>CPU 流式 Paraformer → GPU Qwen 0.6B → Luna。开始后配置固定；术语仅用于最终识别和整理，不强制替换。密钥沿用服务端运行设置。</p>
+      <label class="dictation-inline"><input type="checkbox" v-model="enableCleanup" :disabled="active" />使用逐句轻度整理（Luna · low）</label>
+      <p>CPU 流式 Paraformer → GPU Qwen 0.6B → Luna low。停止后可用 Luna high 整体整理全文，再预览确认。术语仅作参考，不强制替换。密钥沿用服务端运行设置。</p>
     </section>
     <p v-if="error" class="dictation-error" role="alert">{{ error }}</p>
 
@@ -116,7 +130,8 @@ onMounted(() => action(async () => {
 
     <template v-else>
       <section class="dictation-paper" aria-label="已完成正文">
-        <div class="dictation-paper__heading"><span>已完成正文</span><span>{{ completed.length }} 句</span></div>
+        <div class="dictation-paper__heading"><span>已完成正文 · {{ completed.length }} 句</span><n-button v-if="!followLatest" text size="small" @click="showLatest">回到最新</n-button><span v-else>自动跟随最新</span></div>
+        <div ref="paperBody" class="dictation-paper__body" role="region" aria-label="听写文字" tabindex="0" @scroll="trackScroll">
         <div v-if="!completed.length && session?.document_text === undefined" class="dictation-empty">
           <div class="dictation-mic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg></div>
           <h3>{{ active ? '准备好后，请自然说话' : '把想说的话，留成文字' }}</h3>
@@ -138,9 +153,10 @@ onMounted(() => action(async () => {
             <details v-if="u.raw_text !== u.text || u.suggestion" class="dictation-original"><summary>原始识别 / 整理建议</summary><p>原始识别：{{ u.raw_text }}</p><p v-if="u.suggestion">迟到建议（未覆盖编辑）：{{ u.suggestion }}</p></details>
           </article>
         </template>
-      </section>
-      <section v-if="partial.length" class="dictation-preview" aria-label="临时识别">
-        <div v-for="u in partial" :key="u.id"><span>{{ states[u.status] }}</span><p>{{ u.preview || '已检测到语音，正在识别……' }}</p><small v-if="u.status === 'asr_failed'">{{ u.error }}；预览未进入正文和复制内容。</small></div>
+        <section v-if="partial.length" class="dictation-preview" aria-label="临时识别">
+          <div v-for="u in partial" :key="u.id"><span>{{ states[u.status] }}</span><p>{{ u.preview || '已检测到语音，正在识别……' }}</p><small v-if="u.status === 'asr_failed'">{{ u.error }}；预览未进入正文和复制内容。</small></div>
+        </section>
+        </div>
       </section>
       <section class="dictation-controls" aria-label="录音控制">
         <div class="dictation-listening" role="status"><span class="dictation-indicator" :class="{ 'is-on': capturing }" aria-hidden="true" /><strong>{{ session?.phase || '准备开始' }}</strong><span class="dictation-time">{{ duration }}</span><meter min="0" max="1" :value="level" aria-label="麦克风音量" /></div>
@@ -151,13 +167,16 @@ onMounted(() => action(async () => {
           <n-button :disabled="!session?.draft_text" @click="copy">复制已完成文字</n-button>
           <a v-if="session?.draft_text" class="dictation-download" :href="`/api/dictation/sessions/${session.id}/draft.txt`">下载 TXT</a>
           <n-button v-if="active" quaternary @click="action(d.cancel)">取消后续处理</n-button>
-          <n-button v-if="session?.draft_text && !active" quaternary :disabled="busy" @click="action(() => d.cleanup('document'))">整理全文</n-button>
+          <n-button v-if="session?.draft_text && !active" quaternary :loading="cleanupScope === 'document'" :disabled="busy" @click="action(() => d.cleanup('document'))">整理全文</n-button>
         </div>
+        <p v-if="cleanupScope === 'document'" class="dictation-status" role="status">Luna high 正在整体整理，最多等待120秒；确认前不会修改正文。</p>
+        <p v-if="session?.document_cleanup_error && !error && cleanupScope !== 'document'" class="dictation-error" role="alert">{{ session.document_cleanup_error }}</p>
         <p v-if="session?.status === 'preparing'" class="dictation-status">模型准备期间请稍候；开始听音后再说话。</p>
         <p v-if="session?.status === 'draining'" class="dictation-status">麦克风已释放；最后几句仍在处理，原始识别可随时复制。</p>
       </section>
-      <section v-if="session?.document_suggestion && session.document_text === undefined" class="dictation-diff" aria-label="全文整理差异预览">
-        <h3>全文整理预览</h3><p>确认前不会修改正文。请核对数字、否定与专有名词。</p>
+      <section v-if="session?.document_suggestion" class="dictation-diff" aria-label="全文整理差异预览">
+        <h3>全文整理预览 · Luna high</h3><p>确认前不会修改正文。请核对数字、否定与专有名词。</p>
+        <p v-if="session.document_suggestion.metrics?.strategy === 'chunked'">长文超过单次处理范围，已分 {{ session.document_suggestion.metrics.chunk_count }} 段整理，请额外核对段落衔接。</p>
         <div class="dictation-diff__columns"><div><h4>当前正文</h4><pre>{{ session.document_suggestion.original }}</pre></div><div><h4>整理建议</h4><pre>{{ session.document_suggestion.text }}</pre></div></div>
         <n-button :disabled="busy" @click="action(() => d.cleanup('apply'))">确认应用全文稿</n-button>
       </section>
@@ -176,8 +195,9 @@ onMounted(() => action(async () => {
 .dictation-settings p, .dictation-upload p { margin: 0; color: var(--text-secondary); font-size: 13px; }
 .dictation-settings textarea, .dictation-editor { width: 100%; padding: 12px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-raised); color: var(--text-primary); resize: vertical; }
 .dictation-error { padding: 12px 16px; border-left: 3px solid var(--color-error); background: var(--color-error-bg); color: var(--color-error); margin: 0; overflow-wrap: anywhere; }
-.dictation-paper { background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 8px; padding: 24px 28px; min-height: 280px; }
-.dictation-paper__heading { display: flex; justify-content: space-between; color: var(--text-muted); font-size: 12px; margin-bottom: 20px; }
+.dictation-paper { background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 8px; padding: 20px 24px; height: clamp(240px, 45dvh, 440px); display: flex; flex-direction: column; min-height: 0; }
+.dictation-paper__heading { display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; color: var(--text-muted); font-size: 12px; margin-bottom: 16px; }
+.dictation-paper__body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; scrollbar-gutter: stable; padding-right: 8px; }
 .dictation-empty { display: grid; place-items: center; text-align: center; padding: 20px 0 36px; }
 .dictation-empty h3 { font-size: 20px; font-weight: 550; margin: 16px 0 4px; }.dictation-empty p { color: var(--text-secondary); margin: 0 0 16px; }.dictation-empty small { color: var(--text-muted); }
 .dictation-mic { width: 48px; height: 48px; padding: 12px; border-radius: 50%; color: var(--primary); background: var(--primary-alpha-10); }.dictation-mic svg { width: 24px; height: 24px; }
@@ -185,13 +205,13 @@ onMounted(() => action(async () => {
 .dictation-sentence, .dictation-whole { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 18px; line-height: 1.9; margin: 0 0 12px; }
 .dictation-utterance__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; color: var(--text-muted); font-size: 12px; }
 .dictation-original { margin-top: 12px; font-size: 13px; color: var(--text-secondary); }.dictation-original summary { cursor: pointer; }.dictation-original p { white-space: pre-wrap; }
-.dictation-preview { padding: 0 4px; color: var(--text-secondary); }.dictation-preview span { font-size: 12px; color: var(--text-muted); }.dictation-preview p { margin: 4px 0; font-size: 17px; overflow-wrap: anywhere; }
+.dictation-preview { padding: 16px 0 0; border-top: 1px dashed var(--border-subtle); color: var(--text-secondary); }.dictation-preview span { font-size: 12px; color: var(--text-muted); }.dictation-preview p { margin: 4px 0; font-size: 17px; overflow-wrap: anywhere; }
 .dictation-controls { padding: 20px 0; border-top: 1px solid var(--border-strong); }.dictation-listening { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }.dictation-listening strong { font-size: 13px; font-weight: 500; }.dictation-time { font-variant-numeric: tabular-nums; color: var(--text-muted); margin-left: auto; }.dictation-listening meter { width: 72px; }
 .dictation-indicator { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }.dictation-indicator.is-on { background: var(--color-success); }
 .dictation-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 20px; }.dictation-download { padding: 8px 0; text-underline-offset: 4px; }
 .dictation-status { font-size: 12px; color: var(--text-secondary); margin: 12px 0 0; overflow-wrap: anywhere; }.dictation-upload { display: grid; gap: 16px; padding: 24px 0; }.dictation-upload h3 { margin: 0; }
 .dictation-history article { display: flex; gap: 20px; justify-content: space-between; padding: 20px 0; border-bottom: 1px solid var(--border-subtle); }.dictation-history p { color: var(--text-secondary); margin: 4px 0; }.dictation-excerpt { font-size: 13px; overflow-wrap: anywhere; }
-.dictation-diff { padding-top: 20px; border-top: 1px solid var(--border-strong); }.dictation-diff__columns { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }.dictation-diff pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 16px; background: var(--surface-subtle); }.dictation-diff h4 { margin-bottom: 8px; }
-.is-compact .dictation-paper { padding: 20px; min-height: 180px; }.is-compact .page-heading h2 { font-size: 20px; }
+.dictation-diff { padding-top: 20px; border-top: 1px solid var(--border-strong); }.dictation-diff__columns { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }.dictation-diff pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 16px; background: var(--surface-subtle); max-height: 30dvh; overflow-y: auto; overscroll-behavior-y: contain; }.dictation-diff h4 { margin-bottom: 8px; }
+.is-compact .dictation-paper { padding: 16px; height: clamp(200px, 45dvh, 380px); }.is-compact .page-heading h2 { font-size: 20px; }
 @media(max-width:600px) { .dictation-paper { padding: 20px; }.dictation-diff__columns { grid-template-columns: 1fr; }.dictation-history article { flex-direction: column; }.dictation-sentence { font-size: 17px; } }
 </style>

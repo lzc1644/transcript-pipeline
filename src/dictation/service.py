@@ -15,7 +15,8 @@ from uuid import uuid4
 import wave
 
 from src.config_loader import load_settings
-from src.dictation.cleanup import Cleanup, document_chunks
+from src.codex_lb_client import CodexLBClientError
+from src.dictation.cleanup import Cleanup
 from src.dictation.schemas import SessionRequest, load_dictation_settings
 from src.dictation.storage import ACTIVE, Storage, atomic_json, public_state
 
@@ -36,6 +37,12 @@ class UploadLimit(ValueError):
 
 class WorkerIPCError(RuntimeError):
     pass
+
+
+class CleanupFailed(RuntimeError):
+    def __init__(self, message, *, timed_out=False):
+        super().__init__(message)
+        self.timed_out = timed_out
 
 
 class Worker:
@@ -464,6 +471,7 @@ class DictationService:
         self.states = {}
         self.projections = {}
         self.background = {}
+        self.document_cleanups = set()
         self.deleting = set()
         self.closing = False
         self.gate = asyncio.Lock()
@@ -542,6 +550,7 @@ class DictationService:
                      "revision": 0, "event_sequence": 0, "samples": 0, "next_sequence": 0, "packets": {},
                      "utterances": [], "metrics": {}, "worker_config": config,
                      "config": {k: config[k] for k in ("terms", "cleanup", "cleanup_model", "reasoning_effort",
+                         "document_cleanup_model", "document_reasoning_effort",
                          "streaming_model_id", "streaming_revision", "qwen_model", "qwen_revision",
                          "max_upload_mb", "max_upload_minutes", "segmentation")}}
             if upload_name:
@@ -613,7 +622,9 @@ class DictationService:
 
     def cleaner(self, state):
         cfg = state["worker_config"]
-        kwargs = {"project_root": self.root} if self.cleanup_factory is Cleanup else {}
+        kwargs = {"project_root": self.root,
+                  "document_model": cfg.get("document_cleanup_model", "gpt-6-luna"),
+                  "document_timeout": cfg.get("document_cleanup_timeout_seconds", 120)} if self.cleanup_factory is Cleanup else {}
         return self.cleanup_factory(self.gateway(state), cfg["cleanup_model"], cfg["cleanup_timeout_seconds"], **kwargs)
 
     async def external(self, function, *args):
@@ -720,14 +731,21 @@ class DictationService:
 
     async def cleanup(self, sid, owner, request):
         self.get(sid, owner)
+        document = request.scope == "document"
+        if document and sid in self.document_cleanups:
+            raise Conflict("本会话已有全文整理正在执行，请等待完成；原稿仍可使用")
         if sum(len(group) for group in self.background.values()) >= 2:
             raise Conflict("已有整理/上传正在执行或队列已满，请等待；原始文字仍可用")
         task = asyncio.current_task()
         self.background.setdefault(sid, set()).add(task)
+        if document:
+            self.document_cleanups.add(sid)
         try:
             return await self._cleanup(sid, owner, request)
         finally:
             self.background[sid].discard(task)
+            if document:
+                self.document_cleanups.discard(sid)
 
     async def _cleanup(self, sid, owner, request):
         state = self.get(sid, owner)
@@ -740,6 +758,7 @@ class DictationService:
                 raise Conflict("正文或建议版本已变化，请重新预览差异")
             state["document_text"] = suggestion["text"]
             state["document_revision"] = state["revision"] + 1
+            state.pop("document_suggestion", None)
             self.commit(state, event="document.applied")
             return public_state(state)
         if request.scope == "document":
@@ -748,16 +767,28 @@ class DictationService:
                 raise Conflict("没有可整理的已完成文字")
             content_revision = state.get("content_revision", 0)
             cfg = state["worker_config"]
-            cleaner = self.cleaner(state)
-            output, context = [], []
-            for chunk in document_chunks(original):
-                result = await self.external(cleaner, chunk, context[-2:], cfg["terms"])
-                output.append(result["text"])
-                context.append(chunk)
+            state.pop("document_cleanup_error", None)
+            state.pop("document_suggestion", None)
+            self.commit(state, event="document.started")
+            try:
+                cleaner = self.cleaner(state)
+                result = await self.external(cleaner.document, original, [], cfg["terms"])
+            except (CodexLBClientError, ValueError, TimeoutError) as exc:
+                timed_out = isinstance(exc, TimeoutError) or "curl: (28)" in str(exc) or "timed out" in str(exc).lower()
+                if timed_out:
+                    message = f"全文整理超过{cfg.get('document_cleanup_timeout_seconds', 120)}秒总期限；原稿未改动，可重试。"
+                elif isinstance(exc, ValueError) or any(mark in str(exc) for mark in ("SSE", "response.incomplete", "未完整结束", "未找到 output_text")):
+                    message = "全文整理返回内容不完整或格式无效；原稿未改动，请重试。"
+                else:
+                    message = "全文整理网关连接失败或返回错误；请检查网关设置后重试。原稿未改动。"
+                state["document_cleanup_error"] = message
+                self.commit(state, event="document.failed")
+                raise CleanupFailed(message, timed_out=timed_out) from exc
             if state.get("content_revision", 0) != content_revision:
                 raise Conflict("整理期间正文已修改，未应用迟到结果，请重新预览")
             state["document_suggestion"] = {"id": uuid4().hex, "original": original,
-                "text": "\n".join(output), "base_content_revision": content_revision}
+                "text": result["text"], "needs_review": result["needs_review"],
+                "metrics": result.get("metrics", {}), "base_content_revision": content_revision}
             self.storage.artifact(sid, "cleaned", "document-" + state["document_suggestion"]["id"], state["document_suggestion"])
             self.commit(state, event="document.suggested")
             return public_state(state)

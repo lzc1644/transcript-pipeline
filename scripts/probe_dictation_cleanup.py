@@ -17,7 +17,7 @@ from src.dictation.cleanup import Cleanup, INSTRUCTIONS, OUTPUT_FORMAT, UsageTra
 from src.web.frontend_settings import load_frontend_settings
 from scripts.probe_dictation import percentile
 
-CANDIDATES = {"gpt-6-luna": "none", "gemini-3.5-flash-lite": "minimal", "gemini-3.8-flash-high": "low"}
+CANDIDATES = {"gpt-6-luna": "low", "gemini-3.5-flash-lite": "minimal", "gemini-3.8-flash-high": "low"}
 
 
 def main():
@@ -25,7 +25,10 @@ def main():
     parser.add_argument("--manifest", required=True, type=Path, help="JSON list of {text, expected?}")
     parser.add_argument("--models", nargs="+", choices=list(CANDIDATES), default=list(CANDIDATES))
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--document", action="store_true", help="Use the production Luna high whole-document strategy")
     args = parser.parse_args()
+    if args.document and args.models != ["gpt-6-luna"]:
+        parser.error("--document requires --models gpt-6-luna")
     args.output.mkdir(parents=True, exist_ok=False)
     loaded = load_settings(project_root=ROOT)
     frontend = load_frontend_settings(ROOT)
@@ -37,17 +40,27 @@ def main():
     for model in args.models:
         for sample in json.loads(args.manifest.read_text()):
             started = time.monotonic()
-            record = {"requested_model": model, "channel": "http-responses", "reasoning_effort": CANDIDATES[model],
+            record = {"requested_model": model, "channel": "http-responses", "reasoning_effort": "high" if args.document else CANDIDATES[model],
                       "input": sample["text"], "expected": sample.get("expected"),
                       "actual_model_reported": None, "input_tokens": None, "output_tokens": None}
             if model.startswith("gemini-3.8"):
                 record["channel_caveat"] = "Only -high alias is advertised by the gateway; LOW forwarding is not assumed verified."
             usage = UsageTrace()
             try:
-                response = client.codex_responses_text({"model": model, "reasoning": {"effort": CANDIDATES[model]},
+                if args.document or model == "gpt-6-luna":
+                    cleaner = Cleanup(gateway, project_root=ROOT)
+                    function = cleaner.document if args.document else cleaner
+                    result = function(sample["text"], [], sample.get("terms", []))
+                    requests = result["metrics"].get("requests", [result["metrics"]])
+                    usage.metadata.update(reported_model=requests[-1]["reported_model"],
+                        input_tokens=sum(r["input_tokens"] for r in requests) if all(type(r["input_tokens"]) is int for r in requests) else None,
+                        output_tokens=sum(r["output_tokens"] for r in requests) if all(type(r["output_tokens"]) is int for r in requests) else None)
+                    record.update(status="ok", result=result)
+                else:
+                    response = client.codex_responses_text({"model": model, "reasoning": {"effort": CANDIDATES[model]},
                     "instructions": INSTRUCTIONS, "input": json.dumps({"current_text": sample["text"], "context": [], "terms": []}, ensure_ascii=False),
-                    "stream": True, "store": False, "max_output_tokens": 2048, "text": OUTPUT_FORMAT}, request_trace=usage)
-                record.update(status="ok", result=validate_cleanup(response))
+                        "stream": True, "store": False, "max_output_tokens": 4096, "text": OUTPUT_FORMAT}, request_trace=usage)
+                    record.update(status="ok", result=validate_cleanup(response))
             except Exception as exc:
                 record.update(status="invalid_response" if isinstance(exc, ValueError) else "unavailable", error=str(exc))
                 if isinstance(exc, ValueError) and "response" in locals():

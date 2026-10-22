@@ -52,6 +52,8 @@ class DictationSettings(StrictModel):
     model_dir: str = "data/models/dictation"
     cleanup_model: str = "gpt-6-luna"
     cleanup_timeout_seconds: int = Field(default=20, ge=1, le=120)
+    document_cleanup_model: str = "gpt-6-luna"
+    document_cleanup_timeout_seconds: int = Field(default=120, ge=1, le=120)
     max_upload_mb: int = Field(default=100, ge=1, le=1000)
     max_upload_minutes: int = Field(default=30, ge=1, le=120)
     idle_seconds: int = Field(default=60, ge=10, le=600)
@@ -72,7 +74,7 @@ class DictationSettings(StrictModel):
             "qwen_model": get_candidate("qwen3-asr-0.6b").model,
             "qwen_revision": get_candidate("qwen3-asr-0.6b").revision,
             "qwen_cache": str(loaded.resolve_path(loaded.active_profile.cache_dir) / loaded.settings.asr.backend_cache_subdir),
-            "reasoning_effort": "none", "segmentation": {k: getattr(self, k) for k in
+            "reasoning_effort": "low", "document_reasoning_effort": "high", "segmentation": {k: getattr(self, k) for k in
                 ("pre_ms", "silence_ms", "tail_ms", "target_seconds", "hard_seconds")},
         }
 

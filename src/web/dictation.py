@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebS
 from fastapi.responses import PlainTextResponse
 
 from src.dictation.schemas import CleanupRequest, DraftEditRequest, EditRequest, SessionRequest, load_dictation_settings
-from src.dictation.service import Conflict, DictationService, UploadLimit, WorkerIPCError
+from src.dictation.service import CleanupFailed, Conflict, DictationService, UploadLimit, WorkerIPCError
 from src.dictation.storage import public_state
 
 COOKIE = "dictation_owner"
@@ -30,6 +30,8 @@ def api_errors():
         raise HTTPException(409, str(exc)) from exc
     except UploadLimit as exc:
         raise HTTPException(413, str(exc)) from exc
+    except CleanupFailed as exc:
+        raise HTTPException(504 if exc.timed_out else 502, str(exc)) from exc
     except WorkerIPCError as exc:
         raise HTTPException(503, str(exc)) from exc
     except TimeoutError as exc:

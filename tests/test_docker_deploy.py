@@ -69,7 +69,9 @@ def test_single_image_owns_http_tls_health_and_composable_shutdown_budget() -> N
     assert cfg["program:api"]["autorestart"] == cfg["program:https"]["autorestart"] == "false"
     assert "PROCESS_STATE_FATAL" in cfg["eventlistener:service_exit"]["events"]
     assert "PROCESS_STATE_EXITED" in cfg["eventlistener:service_exit"]["events"]
-    maximum_remote = DictationSettings.model_json_schema()["properties"]["cleanup_timeout_seconds"]["maximum"]
+    properties = DictationSettings.model_json_schema()["properties"]
+    maximum_remote = max(properties[name]["maximum"] for name in
+                         ("cleanup_timeout_seconds", "document_cleanup_timeout_seconds"))
     assert 5 + maximum_remote + 2 * (3 + 5) <= cfg["program:api"].getint("stopwaitsecs")
     assert cfg["program:api"].getint("stopwaitsecs") + cfg["program:https"].getint("stopwaitsecs") < 160
     health = (ROOT / "docker/healthcheck.sh").read_text()
