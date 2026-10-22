@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import shutil
 import struct
@@ -14,7 +15,9 @@ import numpy as np
 import pytest
 
 from src.dictation.audio import RATE, Segmenter, SegmentConfig
-from src.dictation.cleanup import document_chunks, validate_cleanup
+from src.codex_lb_client import CodexLBClientError, should_use_curl_first
+from src.dictation.cleanup import Cleanup, SessionGatewayClient, document_chunks, validate_cleanup
+from src.schemas import CodexLBSettings
 from src.dictation.schemas import CleanupRequest, SessionRequest
 from src.dictation.service import Conflict, DictationService, Runtime
 from src.dictation.storage import Storage, public_state
@@ -349,6 +352,111 @@ def test_cleanup_failure_preserves_raw_and_manual_copy(root):
         assert state["utterances"][0]["raw_text"] == "原稿"
         assert state["utterances"][0]["status"] == "cleanup_failed"
     asyncio.run(run())
+
+
+@pytest.fixture
+def dripping_gateway():
+    started, disconnected, stop = threading.Event(), threading.Event(), threading.Event()
+    stats = {"chunks": 0}
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            if self.path == "/complete":
+                response = {"type": "response.completed", "response": {"status": "completed", "model": "local-test",
+                    "usage": {"input_tokens": 7, "output_tokens": 5}, "output": [{"type": "message", "content": [
+                        {"type": "output_text", "text": '{"text":"原稿。","needs_review":false}'}]}]}}
+                self.wfile.write(("data: " + json.dumps(response) + "\n\n").encode())
+                return
+            started.set()
+            try:
+                # Never send response.completed; safety cap avoids hanging the
+                # suite if a regression restores urllib's inactivity timeout.
+                for _ in range(150):
+                    if stop.wait(.02):
+                        break
+                    self.wfile.write(b'data: {"type":"response.output_text.delta","delta":"x"}\n\n')
+                    self.wfile.flush()
+                    stats["chunks"] += 1
+            except (BrokenPipeError, ConnectionResetError):
+                disconnected.set()
+        def log_message(self, *args):
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server.server_port, started, disconnected, stats
+    finally:
+        stop.set()
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1"])
+def test_cleanup_has_total_deadline_for_local_sse_that_never_completes(dripping_gateway, monkeypatch, host):
+    port, started, disconnected, stats = dripping_gateway
+    monkeypatch.setenv("DICTATION_DEADLINE_TEST_KEY", "local-test-only")
+    gateway = CodexLBSettings(base_url=f"http://{host}:{port}", base_url_env="", api_key_env="DICTATION_DEADLINE_TEST_KEY")
+    assert not should_use_curl_first(gateway.base_url)  # Batch policy stays unchanged.
+    cleaner = Cleanup(gateway, timeout=.35)
+    before = time.monotonic()
+    with pytest.raises(CodexLBClientError, match="curl"):
+        cleaner("原稿", [], [])
+    assert time.monotonic() - before < 1.5
+    assert started.is_set() and stats["chunks"] >= 3
+    assert disconnected.wait(1)  # The actual connection, not just its awaiter, closed.
+
+
+def test_close_waits_for_real_dripping_http_thread_then_preserves_raw(root, dripping_gateway, monkeypatch):
+    port, started, disconnected, stats = dripping_gateway
+    monkeypatch.setenv("DICTATION_DEADLINE_TEST_KEY", "local-test-only")
+    gateway = CodexLBSettings(base_url=f"http://127.0.0.1:{port}", base_url_env="", api_key_env="DICTATION_DEADLINE_TEST_KEY")
+    cleaner = Cleanup(gateway, timeout=.6)
+    returned = threading.Event()
+    def factory(*args):
+        def call(*args):
+            try:
+                return cleaner(*args)
+            finally:
+                returned.set()
+        return call
+    async def run():
+        service = DictationService(root, cleanup_factory=factory)
+        state = await completed(service)
+        task = asyncio.create_task(service.cleanup(state["id"], "owner", CleanupRequest(scope="failed")))
+        assert await asyncio.to_thread(started.wait, 2)
+        closing = asyncio.create_task(service.close())
+        await asyncio.sleep(.05)
+        assert not closing.done() and not returned.is_set()
+        await asyncio.wait_for(closing, 2)
+        assert returned.is_set() and task.cancelled()
+        assert service.storage.load(state["id"])["utterances"][0]["text"] == "原稿"
+    asyncio.run(run())
+    assert stats["chunks"] >= 3 and disconnected.wait(1)
+
+
+def test_cleanup_curl_keeps_completed_output_and_provider_usage(dripping_gateway, monkeypatch):
+    port, *_ = dripping_gateway
+    monkeypatch.setenv("DICTATION_DEADLINE_TEST_KEY", "local-test-only")
+    gateway = CodexLBSettings(base_url=f"http://127.0.0.1:{port}", base_url_env="", api_key_env="DICTATION_DEADLINE_TEST_KEY",
+                             codex_responses_path="/complete")
+    result = Cleanup(gateway, timeout=1)("原稿", [], [])
+    assert result["text"] == "原稿。" and not result["needs_review"]
+    assert result["metrics"]["reported_model"] == "local-test"
+    assert result["metrics"]["input_tokens"] == 7 and result["metrics"]["output_tokens"] == 5
+
+
+@pytest.mark.parametrize("timeout", [None, 0])
+def test_dictation_curl_cannot_disable_its_total_deadline(timeout):
+    client = SessionGatewayClient(CodexLBSettings(), timeout_seconds=timeout, credential="local-test-only")
+    with pytest.raises(ValueError, match="总请求期限"):
+        client.codex_responses_text({"stream": True})
 
 
 def test_cleanup_usage_observer_records_provider_metadata_without_raw_files():

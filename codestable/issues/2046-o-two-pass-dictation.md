@@ -150,3 +150,15 @@ A→D 的工程实现已完成。入口 `/dictation`，使用说明与当前契�
 - 文档已收口到“一个镜像、一个trans、一次up”，提供docker load、等价docker run、原双容器一次迁移、关机预算和证书信任；不再要求维护overlay。按用户本轮授权保存Git commit，事项保持open。
 
 当前后续动作：访问设备信任原公开CA后试录；网关负责人恢复该地址连通性后再重跑全文整理。物理麦克风、100条人工标注与Luna延迟目标仍是原有验收缺口。
+
+## 修复本地SSE滴流突破关机期限（2026-10-22）
+
+完成审阅发现：旧 `SessionGatewayClient` 沿用批处理策略，本地/`.local`网关走urllib，socket inactivity timeout无法限制不断发送SSE但不完成的请求。35秒后自然结束的验证没有证明总期限，145/160秒预算在该配置下可能强杀API。
+
+最小修复仅在 `src/dictation/cleanup.py` 的 SessionGatewayClient 覆盖SSE发送：构造相同请求，直接复用 `read_http_response_with_curl` 与严格SSE提取器，所有听写网关均应用curl `--max-time`总期限，禁止None/0关闭期限。不增加新传输，不改 `src/codex_lb_client.py` 或旧批处理默认策略；原始ASR/失败保留和provider usage保持不变。
+
+新增6项回归：localhost和127.0.0.1持续合法delta、永不completed时在0.35秒期限附近退出，实际服务端连接断开；Service关闭等待真实HTTP线程返回而非只取消await，并保留原稿；正常completed结果及usage保留；None/0期限拒绝。定向41 passed；全量 `.venv/bin/python -m pytest` **761 passed / 43.04s**，日志 `tmp/dictation-curl-deadline-{tests,full-pytest}.log`。
+
+真实隔离Docker验证使用localhost网关每50ms滴流（不发送completed），配置8秒；同时发送未结束上传并对Supervisor容器发TERM。**8.090秒退出、code0、160个SSE块、Uvicorn shutdown complete、无Supervisor killing**，原稿/partial上传保留，GPU锁可重获，见 `tmp/dictation-drip-term/{report.json,container.log}`。该网关进程与测试容器同时结束，TERM报告中的peer-disconnected观测未落盘；实际socket断开与线程返回由独立回归明确断言，不拿该缺失观测冒充通过。
+
+使用同一单镜像入口更新运行服务和导出文件，保留上一镜像tag/归档供恢复；按用户既有授权追加修复commit，不改写原提交，不push或关闭事项。使用说明同步明确：最大120秒是所有听写网关的传输总期限，而非仅公网curl-first地址的条件性保证。

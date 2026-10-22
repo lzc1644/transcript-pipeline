@@ -103,7 +103,7 @@ Dockerfile 与 Compose 都使用 `/bin/sh /app/docker/healthcheck.sh`，检查 H
 关机预算统一为：
 
 - Uvicorn 现有 HTTP 请求最多等待 **5秒**，随后取消慢上传等请求并进入 lifespan shutdown。
-- Service 同时取消后台工作与 runtime，等待已经开始的真实 HTTP 线程退出；支持的远端请求期限最大 **120秒**。
+- Service 同时取消后台工作与 runtime，等待已经开始的真实 HTTP 线程退出。听写整理始终调用 curl `--max-time`，包括 localhost、127.0.0.1 和 `.local` 网关；这是覆盖持续SSE滴流的**传输总期限**，配置最大 **120秒**，不是socket静默超时。不回退到urllib；旧批处理的HTTP策略不变。
 - 两个 worker 各有 **3+5秒** 退出余量；GPU 锁实际退出后才释放。
 - Supervisor 给 API **145秒**，Compose / `docker run --stop-timeout` 给整个容器 **160秒**。
 
@@ -126,4 +126,4 @@ docker compose exec trans /app/.venv/bin/supervisorctl -c /app/docker/supervisor
 
 CA 私钥只在 `transcript-pipeline_https-data` 卷中。**不要 `down -v` 或删除 CA 卷**，否则已安装的信任会失效；卷备份含私钥，按凭据保护。HTTPS 没有增加登录认证，仅用于可信内网，禁止直接暴露公网。
 
-2026-10-22 验证包括：原CA通过单容器HTTPS校验；真实录音虚拟麦克风与WSS；API/TLS生命周期联动；35秒慢HTTP请求与未结束上传并发时TERM约35秒后正常退出、原稿/部分上传保留、GPU锁可重获，无Supervisor强杀。证据 `tmp/dictation-single-term/report.json` 与 `tmp/dictation-single-lifecycle.log`。物理设备和人工转录质量验收仍按听写文档执行。
+2026-10-22 验证包括：原CA通过单容器HTTPS校验；真实录音虚拟麦克风与WSS；API/TLS生命周期联动；35秒慢HTTP请求与未结束上传并发时TERM约35秒后正常退出、原稿/部分上传保留、GPU锁可重获，无Supervisor强杀。证据 `tmp/dictation-single-term/report.json` 与 `tmp/dictation-single-lifecycle.log`。另用localhost网关每50ms持续发送合法SSE delta、永不完成，配置8秒总期限；并发未结束上传时TERM约8.090秒正常退出（code0），收到了160个滴流块，原稿/部分上传保留、锁可重获，无Supervisor强杀，见 `tmp/dictation-drip-term/report.json`。回归还独立验证实际连接断开、HTTP线程返回以及完整响应的usage保留。物理设备和人工转录质量验收仍按听写文档执行。

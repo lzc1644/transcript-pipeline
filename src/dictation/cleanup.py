@@ -5,8 +5,12 @@ import json
 import os
 from pathlib import Path
 import time
+from urllib.request import Request
 
-from src.codex_lb_client import CodexLBClient, iter_sse_blocks
+from src.codex_lb_client import (
+    CodexLBClient, endpoint_url, extract_event_stream_text, iter_sse_blocks,
+    read_http_response_with_curl,
+)
 
 INSTRUCTIONS = """你是语音输入的轻度文字整理器。将当前转录整理为自然、可阅读的文字。
 补充标点，删除无意义口头语和机械重复，处理明确的口误自我纠正。
@@ -75,6 +79,25 @@ class SessionGatewayClient(CodexLBClient):
         if self.credential:
             return self.credential
         return super().api_key
+
+    def post_event_stream(self, path, payload, *, label, request_trace=None):
+        # Dictation shutdown owns the real HTTP thread, not just its awaiter.
+        # urllib's socket timeout does not bound an endlessly dripping SSE body;
+        # use curl's total --max-time even for loopback/.local gateways. Leave
+        # the batch client's default transport selection unchanged.
+        if self.timeout_seconds is None or self.timeout_seconds <= 0:
+            raise ValueError("听写整理必须配置有限的总请求期限")
+        request = Request(
+            endpoint_url(self.base_url, path),
+            data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            method="POST",
+            headers={"Authorization": f"Bearer {self.api_key}", "Accept": "text/event-stream",
+                     "Content-Type": "application/json",
+                     "User-Agent": "codex_cli_rs/0.130.0 transcript-pipeline"},
+        )
+        stream_text = read_http_response_with_curl(
+            request, label=label, timeout_seconds=self.timeout_seconds, request_trace=request_trace)
+        return extract_event_stream_text(stream_text, require_completed=self.require_stream_completed)
 
 
 class Cleanup:
