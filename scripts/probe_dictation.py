@@ -32,7 +32,7 @@ async def replay(args):
     args.output.mkdir(parents=True, exist_ok=False)
     manifest = json.loads(args.manifest.read_text())
     # A probe must never reconcile another running Web server's sessions.
-    service = DictationService(ROOT, recover=False)
+    service = DictationService(args.project_root.resolve() if args.project_root else ROOT, recover=False)
     reports = []
     try:
         for item in manifest:
@@ -73,7 +73,9 @@ async def replay(args):
                             break  # E.g. automatic idle stop; report actual received coverage.
                 await runtime.stop()
             await asyncio.wait_for(asyncio.shield(runtime.task), 180)
-            report = {"source": str(source), "candidate": args.candidate, "realtime": args.realtime,
+            report = {"sample_id": item.get("id"), "recording_group": item.get("recording_group"),
+                      "split": item.get("split"), "categories": item.get("categories", []),
+                      "source": str(source), "candidate": args.candidate, "realtime": args.realtime,
                       "reference": item.get("reference"), "session_directory": str(service.storage.path(state["id"])),
                       "received_audio_seconds": state["samples"] / 16000,
                       "result": public_state(state)}
@@ -94,6 +96,7 @@ async def replay(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--project-root", type=Path, help="existing isolated project root with code/models and shared GPU lock; no session recovery")
     parser.add_argument("--manifest", required=True, type=Path, help="JSON array: [{path, reference?}]")
     parser.add_argument("--candidate", choices=["dual", "final"], default="dual")
     parser.add_argument("--realtime", action="store_true", help="1x audio sample-clock replay, required for realtime latency claims")

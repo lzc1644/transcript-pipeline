@@ -41,7 +41,8 @@ def cpu_worker(config):
             return
         finishing = operation == "stop"
         raw = base64.b64decode(command.get("pcm", ""), validate=True)
-        for event in segmenter.feed(raw, finish=finishing):
+        events = segmenter.pause() if operation == "pause" else segmenter.feed(raw, finish=finishing)
+        for event in events:
             if event["type"] == "start":
                 utterance += 1
                 last_text = ""
@@ -62,6 +63,11 @@ def cpu_worker(config):
             return
         emit({"type": "processed", "samples": segmenter.position,
               "last_voice_sample": segmenter.last_activity})
+        if operation == "pause":
+            if asr:
+                asr.reset()
+            last_text, last_update = "", 0
+            emit({"type": "paused", "samples": segmenter.position})
 
 
 def final_worker(config):

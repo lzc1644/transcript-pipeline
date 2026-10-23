@@ -10,7 +10,7 @@ import time
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 
 from src.dictation.schemas import CleanupRequest, DraftEditRequest, EditRequest, SessionRequest, load_dictation_settings
 from src.dictation.service import CleanupFailed, Conflict, DictationService, UploadLimit, WorkerIPCError
@@ -68,7 +68,11 @@ def install_dictation(app, root: Path):
         with api_errors():
             settings = load_dictation_settings(root)
             return {"enabled": settings.enabled, "cleanup_model": settings.cleanup_model,
-                    "max_upload_mb": settings.max_upload_mb, "max_upload_minutes": settings.max_upload_minutes}
+                    "max_upload_mb": settings.max_upload_mb, "max_upload_minutes": settings.max_upload_minutes,
+                    "cleanup_timeout_seconds": settings.cleanup_timeout_seconds,
+                    "document_cleanup_timeout_seconds": settings.document_cleanup_timeout_seconds,
+                    "decode_timeout_seconds": settings.decode_timeout_seconds,
+                    "upload_receive_timeout_seconds": service.UPLOAD_RECEIVE_TIMEOUT_SECONDS}
 
     @router.post("/sessions")
     async def create(request: Request, response: Response, body: SessionRequest):
@@ -81,9 +85,15 @@ def install_dictation(app, root: Path):
         return public_state(state)
 
     @router.get("/sessions")
-    async def history(request: Request):
+    async def history(request: Request, response: Response):
         identifier = request.cookies.get(COOKIE)
-        return service.list(identifier) if identifier else []
+        if not identifier:
+            # Establish ownership before an upload: a lost response must not
+            # make the newly created session invisible to this browser.
+            identifier = secrets.token_urlsafe(32)
+            response.set_cookie(COOKIE, identifier, httponly=True, samesite="strict",
+                                secure=request.url.scheme == "https", max_age=60 * 60 * 24 * 365)
+        return service.list(identifier)
 
     @router.get("/sessions/{sid}")
     async def snapshot(sid: str, request: Request, response: Response):
@@ -97,6 +107,18 @@ def install_dictation(app, root: Path):
             state = service.get(sid, owner(request))
             return PlainTextResponse(service.storage.render_draft(state), headers={
                 "Content-Disposition": 'attachment; filename="dictation.txt"', "Cache-Control": "no-store"})
+
+    @router.get("/sessions/{sid}/utterances/{uid}/audio")
+    async def utterance_audio(sid: str, uid: str, request: Request):
+        with api_errors():
+            state = service.get(sid, owner(request))
+            if not uid.isascii() or not uid.isdecimal() or not any(u["id"] == uid for u in state["utterances"]):
+                raise KeyError("语句不存在")
+            directory = service.storage.path(sid) / "audio"
+            path = directory / f"{uid}.wav"
+            if directory.is_symlink() or path.is_symlink() or not path.is_file():
+                raise KeyError("语句音频不存在")
+            return FileResponse(path, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
     @router.patch("/sessions/{sid}/utterances/{uid}")
     async def edit(sid: str, uid: str, request: Request, body: EditRequest):
@@ -124,6 +146,29 @@ def install_dictation(app, root: Path):
             runtime = service.runtimes.get(sid)
             if runtime:
                 await runtime.stop()
+            return public_state(state)
+
+    @router.post("/sessions/{sid}/pause")
+    async def pause_file(sid: str, request: Request):
+        validate_origin(request)
+        with api_errors():
+            state = service.get(sid, owner(request))
+            runtime = service.runtimes.get(sid)
+            if runtime and runtime.task and not runtime.task.done():
+                if state["mode"] == "upload" and not runtime.file_work_remaining():
+                    await asyncio.gather(asyncio.shield(runtime.task), return_exceptions=True)
+                else:
+                    runtime.pause_file()
+            return public_state(state)
+
+    @router.post("/sessions/{sid}/resume")
+    async def resume_file(sid: str, request: Request):
+        validate_origin(request)
+        with api_errors():
+            state = service.get(sid, owner(request))
+            runtime = service.runtimes.get(sid)
+            if runtime and runtime.task and not runtime.task.done():
+                runtime.resume_file()
             return public_state(state)
 
     @router.post("/sessions/{sid}/cancel")
@@ -202,6 +247,10 @@ def install_dictation(app, root: Path):
                         raise ValueError("控制消息必须是 JSON 对象")
                     if command.get("type") == "stop":
                         await runtime.stop()
+                    elif command.get("type") == "pause":
+                        await runtime.pause(command.get("next_sequence"), command.get("samples"))
+                    elif command.get("type") == "resume":
+                        await runtime.resume(command.get("next_sequence"), command.get("samples"))
                     elif command.get("type") == "cancel":
                         await service.cancel(sid, identifier)
                         return

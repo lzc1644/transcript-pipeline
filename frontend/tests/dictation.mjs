@@ -7,6 +7,9 @@ import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 
 const root = resolve(import.meta.dirname, '../..');
+if (process.env.DICTATION_TEST_ALLOW_CLEANUP !== '1') {
+  throw new Error('此完整链路测试会实际调用远端整理。取得费用授权后设置 DICTATION_TEST_ALLOW_CLEANUP=1；免付费暂停验收使用 dictation-pause.mjs。');
+}
 const output = resolve(root, process.env.DICTATION_TEST_OUTPUT || 'tmp/dictation-browser-01');
 await mkdir(output, { recursive: false });
 // Set an explicit target to verify an already-deployed Docker service. Each run
@@ -14,7 +17,7 @@ await mkdir(output, { recursive: false });
 const external = process.env.DICTATION_TEST_BASE_URL;
 const base = (external || 'http://127.0.0.1:8021').replace(/\/$/, '');
 const log = external ? null : await open(`${output}/server.log`, 'w');
-const server = external ? null : spawn(`${root}/.venv/bin/python`, ['-m','uvicorn','api_server:app','--host','127.0.0.1','--port','8021'],
+const server = external ? null : spawn(`${root}/.venv/bin/python`, ['scripts/serve_dictation_test.py','--root',`${output}/project`,'--port','8021'],
   { cwd: root, env: process.env, stdio: ['ignore', log.fd, log.fd] });
 let browser;
 const errors = [], results = [];
@@ -58,12 +61,12 @@ try {
     const response = await created;
     assert.equal(response.status(), 200, await response.text());
     sid = (await response.json()).id;
-    await page.waitForFunction(() => document.querySelector('.dictation-indicator')?.classList.contains('is-on'));
+    await page.waitForFunction(() => document.querySelector('.dictation-dock__signal')?.classList.contains('is-on'));
     await page.waitForTimeout(4000);
     await page.evaluate(() => window.__dictationSockets.at(-1).close());
     await page.waitForFunction(() => window.__dictationSockets.length >= 2 && window.__dictationSockets.at(-1).readyState === WebSocket.OPEN);
     await page.waitForTimeout(7000);
-    await page.getByRole('button', { name: '停止', exact: true }).click();
+    await page.getByRole('button', { name: '结束听写', exact: true }).click();
     await page.waitForFunction(() => window.__dictationTracks.length > 0 && window.__dictationTracks.every(track => track.readyState === 'ended'));
     let state;
     for (let attempt = 0; attempt < 600; attempt++) {
@@ -94,7 +97,7 @@ try {
   });
   await check('whole-document diff preview → apply → save → GET/TXT consistency', async () => {
     await page.getByRole('button', { name: '整理全文', exact: true }).click();
-    await page.getByRole('region', { name: '全文整理差异预览' }).waitFor({ timeout: 130000 });
+    await page.getByRole('region', { name: '全文整理差异预览' }).waitFor({ timeout: 3610000 });
     await page.getByRole('button', { name: '确认应用全文稿' }).click();
     await page.getByRole('button', { name: '编辑全文', exact: true }).click();
     await page.getByRole('textbox', { name: '编辑全文', exact: true }).fill('人工全文：不是不能做，是现在不做。');
@@ -123,7 +126,7 @@ try {
     await popup.close();
   });
   await check('real WAV upload → Qwen → cleanup → historical result', async () => {
-    await page.getByRole('button', { name: '上传录音', exact: true }).click();
+    await page.getByRole('button', { name: '导入音频', exact: true }).click();
     await page.getByLabel('选择录音文件').setInputFiles(sample);
     let uploadComplete = false;
     for (let attempt = 0; attempt < 600; attempt++) {
@@ -148,11 +151,11 @@ try {
     const rows = page.locator('.dictation-history article');
     const before = await rows.count();
     page.once('dialog', dialog => dialog.dismiss());
-    await rows.first().getByRole('button', { name: '删除', exact: true }).click();
+    await rows.first().getByRole('button', { name: '删除服务器录音', exact: true }).click();
     assert.equal(await rows.count(), before);
     const deleted = page.waitForResponse(r => r.request().method() === 'DELETE' && r.url().includes('/api/dictation/sessions/'));
     page.once('dialog', dialog => dialog.accept());
-    await rows.first().getByRole('button', { name: '删除', exact: true }).click();
+    await rows.first().getByRole('button', { name: '删除服务器录音', exact: true }).click();
     assert.equal((await deleted).status(), 200);
     await page.waitForFunction(count => document.querySelectorAll('.dictation-history article').length === count, before - 1);
   });

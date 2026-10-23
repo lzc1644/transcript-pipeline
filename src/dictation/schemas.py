@@ -51,11 +51,12 @@ class DictationSettings(StrictModel):
     final_python: str = ".venv/asr-py312/bin/python"
     model_dir: str = "data/models/dictation"
     cleanup_model: str = "gpt-6-luna"
-    cleanup_timeout_seconds: int = Field(default=20, ge=1, le=120)
+    cleanup_timeout_seconds: int = Field(default=3600, ge=1, le=3600)
     document_cleanup_model: str = "gpt-6-luna"
-    document_cleanup_timeout_seconds: int = Field(default=120, ge=1, le=120)
-    max_upload_mb: int = Field(default=100, ge=1, le=1000)
-    max_upload_minutes: int = Field(default=30, ge=1, le=120)
+    document_cleanup_timeout_seconds: int = Field(default=3600, ge=1, le=3600)
+    decode_timeout_seconds: int = Field(default=900, ge=1, le=3600)
+    max_upload_mb: int = Field(default=512, ge=1, le=1000)
+    max_upload_minutes: int = Field(default=240, ge=1, le=240)
     idle_seconds: int = Field(default=60, ge=10, le=600)
     disconnect_seconds: int = Field(default=10, ge=1, le=60)
     pre_ms: int = Field(default=250, ge=0, le=500)

@@ -34,7 +34,7 @@ try {
       if (body.scope === 'document') {
         documentRequests++;
         await new Promise(r => setTimeout(r, 150));
-        if (documentRequests === 1) return route.fulfill({ status: 504, json: { detail: '全文整理超过120秒总期限；原稿未改动，可重试。' } });
+        if (documentRequests === 1) return route.fulfill({ status: 504, json: { detail: '全文整理超过3600秒总期限；原稿未改动，可重试。' } });
         state.document_suggestion = { id: String(documentRequests), original: draft(), text: draft() + '\n整体整理末尾。', metrics: { strategy: 'whole', chunk_count: 1 } };
       } else if (body.scope === 'apply') {
         state.document_text = state.document_suggestion.text;

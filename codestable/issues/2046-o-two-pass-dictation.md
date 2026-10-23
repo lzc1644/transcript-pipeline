@@ -187,3 +187,109 @@ A→D 的工程实现已完成。入口 `/dictation`，使用说明与当前契�
 - 单镜像归档已更新并实际docker load验证：`tmp/releases/transcript-pipeline-single-20261022.tar.gz`，约6.0GiB，仍用single-20261022标签；旧版归档和before-luna-low-high标签保留供恢复。未把录音、会话或凭据加入Git/镜像。按此前授权追加补丁commit，不push、不关闭事项。
 
 本轮两个用户问题与所提并发边界已修复。当前仍需人工确认实际录音中的疑似错词/专名；物理设备、约100条人工对照和原实时延迟目标仍是后续质量验收，不由此次小样本和虚拟麦克风替代。
+
+## 语音输入优化 A → B → C（2026-10-23，实施中）
+
+用户批准按三个独立验收批次连续推进，仍禁止自动 commit/push、部署/重启、模型下载、付费整理、新跑旧用户录音或关闭事项。基线 HEAD 为 `8dd129d`，开始时工作区无改动。本节的 A/B/C 与最初模块选型阶段编号不同。
+
+- **A（工程/公开音频验收通过）**：应用级唯一采音拥有者；查看历史与活动会话分离；WS 有序音频边界暂停、CPU 收尾但不退出；用户主动继续；站内底部常驻面板。
+- **B（工程/公开音频与格式验收通过）**：复用采音的 IndexedDB 本地草稿、WAV 试听/下载/转写；上传进度/取消，文件转写暂停生产者及新 ASR/整理派发。
+- **C（工程完成，人工质量材料/准确率验收未完成）**：设备、试音、句子回听与术语；人工参考基线、单变量对照；分别报告工程完成、质量评测与准确率改善。
+
+### A 的实现约束与验收
+
+暂停先关闭本地麦克风、flush 尾包，再在同一 WS 发送 `{type:pause,next_sequence,samples}`。服务端核对持久接收位置，进入 pausing；CPU 提交 `boundary=pause` 并重置非连续 VAD/预览状态后确认 paused。继续先申请麦克风但不发布，收到服务端 resume 确认后按连续样本位置采音。暂停不插静音、不重置句号或包号，保留模型/GPU 锁；断线宽限期仍适用。停止/取消/删除高于迟到继续。
+
+目标布局：站内所有页面底部停靠 `[状态 · 有效时长 · 音量 · 收起] / [暂停或继续] [结束] [复制正文] [正文]`；收起仍保留状态和暂停操作。内容按面板实际高度留白；390px 换行并考虑安全区。语音页和面板共享控制器，不产生第二路采音。小窗可查看/复制/结束，不能冒充原窗口采音拥有者。
+
+关键风险与证据：
+1. 音频完整性/可靠性：尾包、短句、多次暂停、重复命令、暂停/结束/取消/删除竞争、70秒暂停及断线超时；检查 source.pcm、样本轴、句子 WAV，不以识别词语代替。
+2. 采音生命周期/可靠性：权限迟到、拒绝、设备失效、旧 Worklet/WS 回调；跨三站内页面不换 session、不重建 mic/socket；暂停不自动恢复。
+3. 交互能力：真实桌面/390px/长正文/收起态布局与点击；正文投影、人工编辑和复制回归。
+4. 兼容性/信息安全性：ACTIVE 与重启中断涵盖新增状态；旧字段缺省；同源、所有权、重复包、GPU 锁与唯一正文保持。
+
+验收命令：`.venv/bin/python -m pytest`、前端 build、dictation-state、隔离真实浏览器/模型样例。证据放 `tmp/dictation-optimization/`，不提交私人材料。
+
+### A 执行结果
+
+- PcmCapture 唯一管理硬件/lease、尾包协议；App provide/inject 唯一控制器拥有 WS、重连、活动任务和独立历史选择。浮动面板只消费同一控制器，ResizeObserver 提交实际面板高度留白。路由卸载不关闭采音；pagehide 不自动恢复。
+- Runtime/CPU 新增 pausing/paused 和非EOF pause；验证下一包/样本边界，提交尾句后清理VAD/预览上下文，位置与句号不重置。重复命令幂等；暂停不自动完成、不触发无音频/静音检查，断线仍有宽限期限。停止/取消/删除及重启中断覆盖新增活动状态。
+- 每段采音独立墙钟映射，前后结果均按原始所属样本段计时，暂停空档不污染后续延迟。模型/GPU锁在暂停期间保留。原始音频/ASR/整理与Storage正文投影保持。
+- 两项架构反馈已落地：上传成功登记不依赖当前历史选择；创建代次与采音控制代次分开，已完成历史无权取消新上传。stop/cancel 必须显式传会话ID，页面历史动作不隐式操作另一活动任务。
+
+验证：全量 `.venv/bin/python -m pytest` **787 passed / 47.57s**，`a-pytest-01.log`；新增暂停协议/CPU/短尾/20循环/竞争/重启/延迟/WS共16项。前端build、dictation-state通过。`a-ownership-02/report.json` 的四项所有权状态测试与 `a-layout-01/report.json` 的长正文/编辑/全文建议/390px/540px回归通过；这些为合成状态证据。
+
+真实免付费运行 `a-real-02/report.json` 通过：公开官方0.wav经Chrome虚拟麦克风、Worklet、WS、实际CPU/GPU；三路由切换保持mic/context/socket/session不变；70.5秒暂停零新增音频；20次继续/暂停；拒绝和迟到权限；暂停中短断线及超宽限期中断。主测试148475样本/123个唯一包，全部去重包PCM与source.pcm逐字节相同，句子WAV也与实际样本范围相同；21个暂停边界，实际ASR1句（短循环主要覆盖采音压力，不冒充20句语义测试）；final延迟0.587秒，暂停累计73.27秒，最大积压16ms。未调用远端整理、未碰用户历史音频、生产容器未修改。
+
+首轮 `a-real-01` 已通过70.5秒暂停，但在切换窄屏后立即量布局，早于ResizeObserver/Vue提交，检查失败；等待真实尺寸/留白稳定后 `a-real-02` 通过。截图中桌面路由过渡尚未结束，已补针对目标组件过渡结束的等待，继续保留真实候选的最终截图验证。未将失败轮记为全通过。
+
+按REVIEW_CHECKLIST自评：批准A范围、项目.venv、旧JSON可读、无上游回写；自动化和真实公开音频证明暂停及跨页控制。个人物理麦克风/设备拔插和本人口音仍需人工验收，虚拟麦克风不替代该证据。最终 `a-real-03` 再次完整通过同一路径（含70.5秒、20循环、错误恢复），桌面与390px展开/收起截图已读取，正文和操作区不被面板遮挡；`a-ownership-03` 和state测试再次通过。A工程与公开真实音频链路验收通过，个人物理设备仍为独立人工依赖。按既有授权进入B，C尚未开始。
+
+### B
+
+仅复用A的PcmCapture与现有上传/Runtime链路；新增IndexedDB本地草稿的独立生命周期，不把草稿ID冒充服务器会话ID。录音时不调用模型；本地保存/读取/WAV导出互相有明确完成边界。文件转写采用Runtime统一派发门控；在途操作完成后才确认暂停，保留文件游标/分段状态/队列；EOF/满队列/取消不互锁。界面区分实际上传字节、解码阶段、实际转写位置与整理任务计数。B完成与真实样例验收后才进入C。
+
+### B 执行结果
+
+本地草稿独立保存在IndexedDB，约1秒块与样本位置事务一致，内存/写入积压5秒有界；暂停释放麦克风、保存尾块，结束等事务完成后提供PCM16 WAV；刷新只打开已保存部分。提交先single-flight占有并冻结样本版本，再走现有受限上传；失败/未知响应保留草稿，后者须检查历史再确认重试。明确本地/服务器删除范围。模型忙可本地录音，录音自身没有推理生命周期。
+
+Runtime文件派发gate约束audio/asr/cleanup，保留在途操作的期限；EOF和满队列时仍可暂停，取消/结束不互锁；实际ASR位置/失败与整理计数单独公开，不用入队进度冒充识别进度。文件暂停不插人工边界，恢复不重做已提交句子，重启仍中断而非承诺精确续跑。
+
+两项后续架构反馈已修复并补测：
+- PcmCapture lease显式owner=live/local；prepare/start/stop核对owner，旧live终止快照不能释放local采音。普通轮询与延迟终止快照期间本地硬件/界面都持续录音。
+- 等待文件gate时不持全局cleanup slot；取得slot后无await复核gate、登记inflight再创建请求。paused文件等待期间两项独立手工整理可同时取得全部两个槽，且文件零新派发。模型/GPU锁仍按产品决策保留。
+
+验证与真实证据：
+- 全量`.venv/bin/python -m pytest` **794 passed / 48.22s**（`b-pytest-01.log`）；随后增加实际loopback HTTP滴流文件暂停用例，文件定向**8 passed**。真实curl在途退出后才paused，失败原稿保留。前端build/state通过，新增storage/ownership浏览器及既有长正文布局通过。
+- `b-real-03`：实际公开音频虚拟麦克风录制**2,894,335样本/约180.90秒**、三次暂停；试听/下载成功、录音阶段服务器会话目录为空；WAV数据与上传decoded/source.pcm逐字节相同，实际Qwen **36个唯一分句/0失败**，无跳读或重复ID。文件暂停后无新增ASR产物/样本；继续完成。GPU忙时另一条本地录音不被文件完成状态释放。刷新恢复已保存数据，无自动开麦。
+- 03轮接着测格式时遇到Chrome inspector响应体逐出，脚本整体failed；不重跑已成立的三分钟录音证据。补测驱动改为读取owned history API，等待disabled文件输入解禁（04轮因程序强制写disabled输入未触发上传而超时）；`b-formats-05` **WAV/MP3/M4A实际解码+Qwen均成功**。01轮宿主无ffmpeg预处理失败，改用已安装PyAV编码并停止自己的孤立测试进程，没有安装软件或碰运行容器。
+- `b-drafts-03`：真实IndexedDB与采音的配额/积压/限长/刷新/WAV检查通过；上传为合成HTTP失败，双击提交只有一请求。此前02轮暴露IDB回调同步throw冒泡，现事务abort消化异常并保留有效前缀，0 pageerror。`b-ownership-02`五项通过（含上述旧live/local串扰），`b-layout-01`长稿/人工编辑/全文建议/390px/540px回归通过。已读取本地录音390px和恢复草稿截图。
+
+B工程与公开真实音频/格式链路可用；未调用付费整理供应商，实际供应商语义与个人物理设备仍是人工/费用依赖，不以loopback模拟网关代替质量结论。按REVIEW_CHECKLIST：本阶段范围、.venv、原JSON兼容、新字段缺省、无用户历史回写、无部署/下载/commit/push。进入C工程切片；人工参考与准确率改善验收尚未具备材料。
+
+### C 执行结果：工程完成，质量评测未完成
+
+设备列表/本地试音/明确选择保存，exact设备申请、无输入提示和设备失效停止路径已补；录音中禁用切换。原句通过受会话所有权保护的WAV接口回听，支持Range，拒绝未知uid/任意路径/符号链接；全文显示原始分句列表，不虚构逐字对齐。常用术语本浏览器增删/主动选用、人工改词后明确加入，50项/80字去重与会话快照不变。
+
+后续架构反馈：回放不能由各页面按钮包装独自保护。新增应用级DictationPlayback唯一播放所有者，所有播放入口claim互斥；PcmCapture.prepare/start调用beforeCapture统一stop，覆盖dock和页面的实时/本地继续。原句/草稿播放后点击dock继续的实际麦克风申请发生前，播放器已经paused；state检查也覆盖两个播放器互斥。
+
+新增`score_dictation.py`只读probe产物、无需模型/网络。保留原始参考/输出、模型/词表/分段/整理配置、S/D/I/CER、字面术语/数字/否定/条件、失败/缺失/重复ID/静音、分项延迟/资源；数字小数点/负号不被过度归一化，1500不因包含于15000而通过数字检查。显式tuning/holdout及recording_group防近似片段泄漏，缺失产物不丢弃；整理语义留给人工而非CER判好坏。probe新增sample身份与可选隔离root，不改默认调用/供应商。
+
+验证：全量`.venv/bin/python -m pytest` **799 passed / 50.25s**（`c-pytest-01.log`）；build/state通过。`c-real-03`真实公开音频/CPU/GPU验证设备选择、词表冻结、原句回听、人工修改、明确加词、两种回放→dock继续、刷新无自动开麦；390px截图已读取。`c-ownership-01`、`c-drafts-01`和`c-layout-01`全部通过，分别为合成HTTP/状态、真实存储故障和长稿布局证据。
+
+`probe_dictation.py`真实1x公开0.wav：`c-probe-02`完成10.053125秒/160850样本/2句，最大积压16ms，无远端整理；原固定模型和默认分段不变。`c-score-02`明确samples=1、scored_samples=0、human_semantic_reviewed=0、holdout=0、CER=null（尚无人工参考），没有把评测脚本存在说成准确率提高。首轮相对root令worker找不到配置，已resolve绝对路径；失败轮`c-score-failed-start`保留missing_reports=1。早期C浏览器测试未展开details而不能填词表，修正驱动后03轮通过，不掩盖01/02失败记录。
+
+质量报告与可复现用法：`docs/DICTATION_QUALITY.md`。按REVIEW_CHECKLIST自评：阶段工程及真实公开样例通过、范围和旧JSON兼容、未回写上游；付费整理/个人设备/人工参考约100条仍是明确依赖。**A/B工程和公开音频验收通过，C工程完成；人工质量评测未完成，准确率改善未证实。**不改默认模型/语言/分段/供应商，不下载/部署/重启/commit/push/关闭事项。
+
+最终收口：`final-pytest.log` **799 passed / 49.52s**，前端类型检查/build、state通过；`final-a-regression`再次实际验证70.5秒与20循环，`c-real-final`再次通过设备/词表/原句及两种回放→dock继续。补充文件提前结束不能误报全文件100%的断言，数字字面检查区分负数/百分比；设备选择排除可漂移的系统default/communications别名。仍有既有frontend大chunk提示和FastAPI测试依赖弃用警告，不影响本轮功能验收。
+
+下一步由用户/人工标注者提供新设备/口音录音及忠实参考，按recording_group约70%调参/30%留出，先定位采音/切分错误，再做少量单变量候选；远端整理或较大模型另需调用/资源授权。没有材料前保留原默认值，不为了完成指标制造改善。
+
+### 本轮文件清单
+
+- 应用/视图：`frontend/src/App.vue`、`frontend/src/views/DictationView.vue`；新增`frontend/src/components/DictationDock.vue`、`RecordingDraftPane.vue`。
+- 控制/音频：修改`frontend/src/composables/useDictation.ts`、`frontend/public/dictation-worklet.js`；新增同目录`dictationCapture.ts`、`dictationDrafts.ts`、`dictationPlayback.ts`、`dictationTerms.ts`。
+- 服务端：`src/dictation/{audio,service,storage,worker}.py`、`src/web/dictation.py`。
+- 脚本：修改`scripts/probe_dictation.py`；新增`scripts/serve_dictation_test.py`、`scripts/score_dictation.py`。
+- Python验证：修改`tests/test_dictation.py`；新增`tests/test_dictation_pause.py`、`tests/test_dictation_file_pause.py`、`tests/test_dictation_quality.py`。
+- 浏览器/状态验证：修改`frontend/tests/dictation-state.mjs`、`dictation.mjs`；新增同目录`dictation-ownership.mjs`、`dictation-pause.mjs`、`dictation-drafts.mjs`、`dictation-recording.mjs`、`dictation-proofreading.mjs`。
+- 文档：`docs/DICTATION.md`、`docs/PIPELINE_PLAN.md`、本事项；新增`docs/DICTATION_QUALITY.md`。测试音频、私人材料、凭据及模型不进入Git。
+
+## 后续请求：录音4小时，Luna校对3600秒
+
+用户先提出12h，随后明确收窄为4h，并要求不用过度测试。本轮仅调整语音输入容量/期限和直接关联的导出资源边界，不改模型、提示词、供应商，不部署/重启/提交/关闭事项。
+
+- 本地录音/导入默认240分钟、512 MiB；4h PCM为460,800,000字节，WAV为460,800,044字节。Luna逐句及全文默认/允许上限3600秒，长文所有块仍共用一个总期限；旧自动任务保留冻结值，手动重试采用当前期限且不改旧快照，metrics记录实际期限。
+- 文件解码归Runtime、用独立`decode_timeout_seconds`默认900秒/上限3600秒，替换固定120秒；修正解码回复恰在轮询间隔迟到时不能越过期限。上传接收独立1800秒、XHR多等10秒。前端显示实际服务器限制与校对期限。
+- 架构反馈已落实在DraftStore.wav：约4 MiB PCM分批只读事务转Blob，最终只组合Blob部分；不一次累积所有PCM ArrayBuffer；组装single-flight，播放/提交前释放旧URL，失败保留完整已保存草稿。仍受浏览器Blob临时盘/存储配额约束，没有在各按钮添加4h特判。
+- 未来部署模板的Supervisor3650秒/Compose3670秒优雅退出预算与3600秒远端期限匹配；停止/删除可能等待在途校对接近1小时。未修改正在运行的容器。
+
+验证：`.venv/bin/python -m pytest` **810 passed / 50.58s**，前端类型检查/build、state通过。本地实际HTTP/curl验证新期限传递，不做1小时空等或付费调用。可控时钟验证独立解码期限与旧120秒边界、手动重试当前期限及旧快照保持。
+
+容量真实数据边界`capacity-4h-01`：14,400个一秒PCM块/230,400,000样本；第二批Blob失败受控且完整草稿可重试；完整WAV组装、跨批/尾部标记、14400秒媒体时长、近EOF播放、460,800,044字节下载通过。后续完整HTTP上传时浏览器关闭，**整轮仍记录failed，原因未确认**；没有宣布完整4h上传/服务端PyAV4h解码/持续采音4h/ASR4h验收。按用户要求停止追加大文件/长时验证，后续完整HTTP测试改为显式opt-in，本轮不重跑。
+
+本轮相关文件：`src/dictation/{schemas,cleanup,service}.py`、`src/web/dictation.py`；`frontend/src/composables/{dictationDrafts,useDictation}.ts`、`frontend/src/views/DictationView.vue`、`frontend/src/components/RecordingDraftPane.vue`；`compose.yaml`、`docker/supervisord.conf`；`tests/test_dictation.py`、`tests/test_dictation_document.py`、`tests/test_docker_deploy.py`，新增`tests/test_dictation_limits.py`；`frontend/tests/{dictation,dictation-layout}.mjs`，新增`dictation-capacity.mjs`；`docs/DICTATION.md`、`docs/DICTATION_QUALITY.md`及本事项。按REVIEW_CHECKLIST检查了批准范围、兼容及失败保留，下一步如要网页生效需用户授权部署。
+
+## 发布授权（2026-10-23）
+
+用户随后明确要求「先保存一个commit，然后部署」。本轮全部语音输入改动保存为一个commit后更新现有单容器，不push、不关闭事项、不调用付费服务、不追加长时测试。部署前只读核对：无pending/running/活动听写任务、无识别worker或在途校对HTTP，现有容器healthy、GPU profile和原HTTPS地址/持久卷保持。发布后的实际commit、构建日志及健康/配置结果记录在`tmp/deploy/dictation-4h-<commit>/`；部署不改变质量报告中的未完成验收结论。

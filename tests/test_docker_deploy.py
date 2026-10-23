@@ -38,7 +38,7 @@ def test_compose_uses_only_trans_service_and_preserves_gpu_volume() -> None:
     assert service["build"]["args"]["ASR_BACKENDS"] == "${ASR_BACKENDS:-qwen}"
     assert service["build"]["args"]["DICTATION"] == "${DICTATION:-1}"
     assert service["healthcheck"]["test"] == ["CMD", "/bin/sh", "/app/docker/healthcheck.sh"]
-    assert service["stop_grace_period"] == "160s"
+    assert service["stop_grace_period"] == "3670s"
     assert "https-data:/data" in service["volumes"]
     assert "https-config:/config" in service["volumes"]
     assert "${DOCKER_BIND_IP:-0.0.0.0}:${HTTPS_PORT:-8443}:8443" in service["ports"]
@@ -63,7 +63,7 @@ def test_single_image_owns_http_tls_health_and_composable_shutdown_budget() -> N
     cfg.read(ROOT / "docker/supervisord.conf")
     command = cfg["program:api"]["command"]
     assert "--workers 1" in command and "--timeout-graceful-shutdown 5" in command
-    assert cfg["program:api"].getint("stopwaitsecs") == 145
+    assert cfg["program:api"].getint("stopwaitsecs") == 3650
     assert cfg["program:api"].getboolean("killasgroup")
     assert not cfg["program:api"].getboolean("stopasgroup")
     assert cfg["program:api"]["autorestart"] == cfg["program:https"]["autorestart"] == "false"
@@ -73,7 +73,7 @@ def test_single_image_owns_http_tls_health_and_composable_shutdown_budget() -> N
     maximum_remote = max(properties[name]["maximum"] for name in
                          ("cleanup_timeout_seconds", "document_cleanup_timeout_seconds"))
     assert 5 + maximum_remote + 2 * (3 + 5) <= cfg["program:api"].getint("stopwaitsecs")
-    assert cfg["program:api"].getint("stopwaitsecs") + cfg["program:https"].getint("stopwaitsecs") < 160
+    assert cfg["program:api"].getint("stopwaitsecs") + cfg["program:https"].getint("stopwaitsecs") < 3670
     health = (ROOT / "docker/healthcheck.sh").read_text()
     assert "8000/api/health" in health and "8443/api/health" in health
     assert "--cacert /data/caddy/pki/authorities/local/root.crt" in health

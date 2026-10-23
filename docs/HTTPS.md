@@ -69,7 +69,7 @@ docker compose up -d --no-build --wait trans
 
 ```bash
 docker run -d --name transcript-pipeline --init --restart unless-stopped \
-  --gpus all --stop-timeout 160 --cap-drop ALL --security-opt no-new-privileges:true \
+  --gpus all --stop-timeout 3670 --cap-drop ALL --security-opt no-new-privileges:true \
   -p 8080:8000 -p 8443:8443 \
   -e TRANSCRIPT_PROFILE=wsl2_gpu_high_accuracy \
   -e 'HTTPS_ADDRESSES=https://192.168.0.252:8443 https://localhost:8443' \
@@ -103,9 +103,9 @@ Dockerfile 与 Compose 都使用 `/bin/sh /app/docker/healthcheck.sh`，检查 H
 关机预算统一为：
 
 - Uvicorn 现有 HTTP 请求最多等待 **5秒**，随后取消慢上传等请求并进入 lifespan shutdown。
-- Service 同时取消后台工作与 runtime，等待已经开始的真实 HTTP 线程退出。听写整理始终调用 curl `--max-time`，包括 localhost、127.0.0.1 和 `.local` 网关；这是覆盖持续SSE滴流的**传输总期限**，配置最大 **120秒**，不是socket静默超时；全文high的所有块也共用同一个120秒预算。不回退到urllib；旧批处理的HTTP策略不变。
+- Service 同时取消后台工作与 runtime，等待已经开始的真实 HTTP 线程退出。听写整理始终调用 curl `--max-time`，包括 localhost、127.0.0.1 和 `.local` 网关；这是覆盖持续SSE滴流的**传输总期限**，配置最大 **3600秒**，不是socket静默超时；全文high的所有块也共用同一个3600秒预算。不回退到urllib；旧批处理的HTTP策略不变。
 - 两个 worker 各有 **3+5秒** 退出余量；GPU 锁实际退出后才释放。
-- Supervisor 给 API **145秒**，Compose / `docker run --stop-timeout` 给整个容器 **160秒**。
+- Supervisor 给 API **3650秒**，Compose / `docker run --stop-timeout` 给整个容器 **3670秒**。在途校对不返回时，停止可能接近1小时；空闲服务不会等待满该期限。
 
 超出预算才有强杀兜底；旧读书会任务仍不承诺自动续跑，不要为测试强停真实付费任务。
 

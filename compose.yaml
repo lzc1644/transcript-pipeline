@@ -13,8 +13,8 @@ services:
         DICTATION: ${DICTATION:-1}
     init: true
     restart: unless-stopped
-    # 5s request drain + up to 120s remote exit + 16s worker closure, with margin.
-    stop_grace_period: 160s
+    # 5s request drain + up to 3600s dictation HTTP exit + 16s worker closure, with margin.
+    stop_grace_period: 3670s
     environment:
       - HOME=/home/app
       - TRANSCRIPT_PROFILE=${TRANSCRIPT_PROFILE:-wsl2_gpu_high_accuracy}

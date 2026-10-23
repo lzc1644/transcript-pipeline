@@ -1,17 +1,63 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { NButton, useMessage } from "naive-ui";
 import { useDictation, type Utterance } from "../composables/useDictation";
+import RecordingDraftPane from "../components/RecordingDraftPane.vue";
+import { validateTerms } from "../composables/dictationTerms";
 
 const route = useRoute(), router = useRouter(), message = useMessage();
 const d = useDictation();
-const { session, history, error, busy, cleanupScope, level, connection, capturing, active, partial } = d;
+const { session, recordingSession, history, error, busy, cleanupScope, level, connection, captureAction, active, recognizing, partial } = d;
+const viewingOwnedTask = computed(() => recognizing.value && session.value?.id === recordingSession.value?.id);
 const tab = ref("live");
+watch(() => route.query.mode, value => { if (value === 'record' || value === 'live') tab.value = value; }, { immediate: true });
 const terms = ref("");
 const enableCleanup = ref(true);
 const settingsOpen = ref(false);
+const savedTerms = ref<string[]>([]), chosenTerms = ref<string[]>([]), newTerm = ref("");
+try {
+  const stored = JSON.parse(localStorage.getItem('dictation:terms') ?? '[]');
+  if (!Array.isArray(stored) || !stored.every(value => typeof value === 'string')) throw new Error('invalid terms');
+  savedTerms.value = validateTerms(stored);
+} catch { error.value = '常用术语库无法读取，请检查浏览器存储；当前会话词表未改动。'; }
+function storeTerms(values: string[]) {
+  const validated = validateTerms(values);
+  localStorage.setItem('dictation:terms', JSON.stringify(validated)); savedTerms.value = validated;
+}
+function addTerm(value: string) {
+  if (!value.trim()) throw new Error('请输入需要保存的正确词，不能留空');
+  storeTerms([...savedTerms.value, value]); newTerm.value = '';
+}
+function saveCorrectTerm() {
+  const value = window.prompt('将正确词加入本浏览器常用术语（1–80字，不自动替换正文）', window.getSelection()?.toString() ?? '');
+  if (value !== null) addTerm(value);
+}
+const audioPlayer = ref<HTMLAudioElement | null>(null), audioURL = ref(''), playingUid = ref<string | null>(null);
+let playbackGeneration = 0;
+function stopPlayback() { ++playbackGeneration; d.playback.release(audioPlayer.value); audioPlayer.value?.pause(); audioURL.value = ''; playingUid.value = null; }
+function claimPlayback() { if (audioPlayer.value) void action(async () => d.playback.claim(audioPlayer.value!, () => { playingUid.value = null; })); }
+const audioUtterances = computed(() => session.value?.utterances.filter(u => u.end_sample !== undefined && u.end_sample !== null) ?? []);
+async function listen(u: Utterance) {
+  if (d.capturing.value || d.local.capturing.value) throw new Error('请先暂停采音再回听，避免把播放声录入');
+  if (playingUid.value === u.id && audioPlayer.value && !audioPlayer.value.paused) { audioPlayer.value.pause(); playingUid.value = null; return; }
+  stopPlayback(); const generation = playbackGeneration;
+  audioURL.value = `/api/dictation/sessions/${session.value!.id}/utterances/${encodeURIComponent(u.id)}/audio`;
+  playingUid.value = u.id; await nextTick();
+  if (generation === playbackGeneration && audioPlayer.value) await d.playback.play(audioPlayer.value, () => { playingUid.value = null; });
+}
+watch(() => session.value?.id, stopPlayback);
+watch(tab, stopPlayback);
+onBeforeUnmount(stopPlayback);
+async function trial() { stopPlayback(); tab.value = 'record'; await nextTick(); await d.local.begin(); }
 const uploadInput = ref<HTMLInputElement | null>(null);
+const uploadLimit = computed(() => {
+  const config = d.serverConfig.value;
+  if (!config?.max_upload_mb || !config.max_upload_minutes) return '正在读取服务器限制';
+  const minutes = config.max_upload_minutes;
+  return `最多 ${config.max_upload_mb} MiB、${minutes % 60 ? `${minutes}分钟` : `${minutes / 60}小时`}`;
+});
+const documentTimeout = computed(() => d.serverConfig.value?.document_cleanup_timeout_seconds ?? session.value?.config.document_cleanup_timeout_seconds ?? 3600);
 const editing = ref<{ id: string; revision: number; text: string } | null>(null);
 const draftEditing = ref<{ revision: number; text: string } | null>(null);
 const compact = computed(() => route.query.compact === "1");
@@ -34,7 +80,7 @@ watch(() => session.value?.id, id => {
     terms.value = session.value.config.terms.join("\n");
     enableCleanup.value = session.value.config.cleanup;
   }
-});
+}, { immediate: true });
 const completed = computed(() => session.value?.utterances.filter(u => !!u.raw_text) ?? []);
 const duration = computed(() => {
   const seconds = Math.floor((session.value?.samples ?? 0) / 16000);
@@ -69,8 +115,9 @@ async function saveDraft() {
 async function uploadChanged(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0];
   if (file) {
+    const submittedTab = tab.value;
     await d.upload(file, termList(), enableCleanup.value);
-    if (!error.value) tab.value = "live";
+    if (!error.value && tab.value === submittedTab) tab.value = "live";
   }
   if (uploadInput.value) uploadInput.value.value = "";
 }
@@ -79,7 +126,7 @@ async function select(id: string) {
   editing.value = null; draftEditing.value = null; tab.value = "live";
 }
 function removeSession(id: string) {
-  if (window.confirm('删除这次会话的音频和全部文字？此操作不能撤销。')) void action(() => d.remove(id));
+  if (window.confirm('删除这次服务器会话的音频和全部文字？本地录音草稿不会删除。此操作不能撤销。')) void action(() => d.remove(id));
 }
 function smallWindow() {
   if (compact.value) { void router.replace({ query: { ...route.query, compact: undefined } }); return; }
@@ -90,7 +137,7 @@ function smallWindow() {
   if (!opened) void router.replace({ query: { ...route.query, compact: "1" } });
 }
 onMounted(() => action(async () => {
-  await d.loadHistory();
+  await Promise.all([d.loadHistory(), d.loadConfig()]);
   if (typeof route.query.session === "string") await d.select(route.query.session);
 }));
 </script>
@@ -102,29 +149,52 @@ onMounted(() => action(async () => {
       <div class="dictation-inline"><n-button size="small" @click="smallWindow">{{ compact ? '普通视图' : '紧凑小窗' }}</n-button><n-button size="small" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen">设置</n-button></div>
     </div>
     <nav class="dictation-tabs" aria-label="语音输入方式">
-      <button v-for="item in [{id:'live',text:'实时听写'},{id:'upload',text:'上传录音'},{id:'history',text:'历史结果'}]" :key="item.id" :aria-current="tab === item.id ? 'page' : undefined" @click="tab = item.id; if(item.id === 'history') action(d.loadHistory)">{{ item.text }}</button>
+      <button v-for="item in [{id:'live',text:'实时听写'},{id:'record',text:'录音转写'},{id:'upload',text:'导入音频'},{id:'history',text:'历史结果'}]" :key="item.id" :aria-current="tab === item.id ? 'page' : undefined" @click="tab = item.id; if(item.id === 'history') action(d.loadHistory)">{{ item.text }}</button>
     </nav>
     <section v-if="settingsOpen" class="dictation-settings" aria-label="听写设置">
+      <label for="dictation-microphone">麦克风</label>
+      <div class="dictation-inline">
+        <select id="dictation-microphone" :value="d.selectedDeviceId.value" :disabled="d.capturing.value || d.local.capturing.value || !!captureAction || d.deviceBusy.value || d.local.busy.value" @change="action(async () => d.chooseMicrophone(($event.target as HTMLSelectElement).value))">
+          <option value="" disabled>请列出并选择麦克风</option>
+          <option v-if="d.selectedDeviceId.value && !d.microphoneDevices.value.some(item => item.deviceId === d.selectedDeviceId.value)" :value="d.selectedDeviceId.value">已保存的麦克风（列出设备以确认）</option>
+          <option v-for="device in d.microphoneDevices.value" :key="device.deviceId" :value="device.deviceId">{{ device.label || '未命名麦克风' }}</option>
+        </select>
+        <n-button :loading="d.deviceBusy.value" :disabled="d.capturing.value || d.local.capturing.value || !!captureAction || d.local.busy.value" @click="action(d.listMicrophones)">授权并列出设备</n-button>
+        <n-button :disabled="d.ownsCapture.value || d.local.active.value || d.local.busy.value || !!captureAction || d.deviceBusy.value" @click="action(trial)">本地试音（录音后试听）</n-button>
+      </div>
+      <p>首次选择后保存到本浏览器；设备不可用时请重新选择，不会悄悄切换。录音中请先暂停，再切换设备。试音只保存本地草稿，不调用识别或整理。</p>
       <label for="dictation-terms">少量术语 <span>每行一个或逗号分隔，最多50项</span></label>
       <textarea id="dictation-terms" v-model="terms" :disabled="active" rows="3" placeholder="WebSocket&#10;项目专名" />
       <label class="dictation-inline"><input type="checkbox" v-model="enableCleanup" :disabled="active" />使用逐句轻度整理（Luna · low）</label>
+      <details><summary>本浏览器的常用术语（主动选用，不自动改写已有会话）</summary>
+        <div class="dictation-inline"><input v-model="newTerm" aria-label="新常用术语" placeholder="一个正确词或项目名" /><n-button @click="action(async () => addTerm(newTerm))">保存常用术语</n-button></div>
+        <div v-for="term in savedTerms" :key="term" class="dictation-inline"><label><input v-model="chosenTerms" type="checkbox" :value="term" />{{ term }}</label><n-button text size="small" :aria-label="`删除常用术语${term}`" @click="action(async () => { storeTerms(savedTerms.filter(value => value !== term)); chosenTerms = chosenTerms.filter(value => value !== term); })">移除</n-button></div>
+        <n-button :disabled="active || !chosenTerms.length" @click="terms = validateTerms(chosenTerms).join('\n')">用于下次识别</n-button>
+      </details>
       <p>CPU 流式 Paraformer → GPU Qwen 0.6B → Luna low。停止后可用 Luna high 整体整理全文，再预览确认。术语仅作参考，不强制替换。密钥沿用服务端运行设置。</p>
     </section>
     <p v-if="error" class="dictation-error" role="alert">{{ error }}</p>
+    <p v-if="d.inputWarning.value" class="dictation-status" role="status">{{ d.inputWarning.value }}</p>
 
-    <section v-if="tab === 'upload'" class="dictation-upload">
+    <RecordingDraftPane v-if="tab === 'record'" :terms="termList()" :cleanup="enableCleanup" @history="tab = 'history'; action(d.loadHistory)" />
+    <section v-else-if="tab === 'upload'" class="dictation-upload">
       <h3>从一段录音开始</h3>
-      <p>支持 WAV、MP3、M4A、AAC、FLAC、OGG、WebM / MP4 音轨。默认最多100 MB、30分钟。</p>
+      <p>支持 WAV、MP3、M4A、AAC、FLAC、OGG、WebM / MP4 音轨。{{ uploadLimit }}。</p>
       <p>保留原始识别与整理稿。整理失败时可只重试整理，无需重新转录。</p>
-      <input ref="uploadInput" aria-label="选择录音文件" type="file" accept="audio/*,.mp4,.webm" :disabled="active || busy" @change="uploadChanged" />
-      <p v-if="busy" role="status">正在上传录音……</p>
+      <input ref="uploadInput" aria-label="选择录音文件" type="file" accept="audio/*,.mp4,.webm" :disabled="recognizing || active || busy || !!captureAction" @change="uploadChanged" />
+      <div v-if="d.uploadProgress.value" role="status">
+        <p>上传 {{ d.uploadProgress.value.loaded }} / {{ d.uploadProgress.value.total }} 字节</p>
+        <progress :value="d.uploadProgress.value.loaded" :max="d.uploadProgress.value.total" aria-label="实际上传进度" />
+        <n-button @click="d.cancelUpload">取消上传</n-button>
+      </div>
+      <div v-if="d.uploadUncertain.value"><p>提交结果不明确，请先检查历史，不会自动重新上传。</p><n-button @click="tab = 'history'; action(d.loadHistory)">检查历史</n-button><n-button @click="d.confirmUploadChecked">已检查，允许手动重试</n-button></div>
     </section>
 
     <section v-else-if="tab === 'history'" class="dictation-history" aria-label="听写历史">
       <p v-if="!history.length">本浏览器还没有语音输入记录。</p>
       <article v-for="item in history" :key="item.id">
         <div><strong>{{ new Date(item.created_at).toLocaleString() }}</strong><p>{{ item.mode === 'upload' ? '上传录音' : '实时听写' }} · {{ item.phase }}</p><p class="dictation-excerpt">{{ item.draft_text.slice(0, 120) || '没有已完成文字' }}</p></div>
-        <div class="dictation-inline"><n-button :disabled="capturing" @click="action(() => select(item.id))">打开</n-button><n-button type="error" quaternary @click="removeSession(item.id)">删除</n-button></div>
+        <div class="dictation-inline"><n-button @click="action(() => select(item.id))">打开</n-button><n-button type="error" quaternary @click="removeSession(item.id)">删除服务器录音</n-button></div>
       </article>
     </section>
 
@@ -142,40 +212,50 @@ onMounted(() => action(async () => {
           <p class="dictation-status">全文稿已应用 · 后台逐句整理不会覆盖它</p>
           <textarea v-if="draftEditing" v-model="draftEditing.text" class="dictation-editor" aria-label="编辑全文" rows="12" />
           <p v-else class="dictation-whole">{{ session.draft_text }}</p>
+          <details v-if="audioUtterances.length" class="dictation-original"><summary>原始分句音频（全文稿未逐句对齐）</summary><div v-for="u in audioUtterances" :key="u.id"><n-button text size="small" @click="action(() => listen(u))">{{ playingUid === u.id ? '暂停回听' : `听原始分句 ${u.id}` }}</n-button></div></details>
           <div class="dictation-inline"><template v-if="draftEditing"><n-button @click="action(saveDraft)">保存全文</n-button><n-button quaternary @click="draftEditing = null">取消编辑</n-button></template><n-button v-else @click="draftEditing = { revision: session.revision, text: session.draft_text }">编辑全文</n-button></div>
         </template>
         <template v-else>
           <article v-for="u in completed" :key="u.id" class="dictation-utterance">
             <template v-if="editing?.id === u.id"><textarea v-model="editing.text" class="dictation-editor" :aria-label="`编辑第${u.id}句`" rows="3" /><div class="dictation-inline"><n-button @click="action(saveEdit)">保存</n-button><n-button quaternary @click="editing = null">取消编辑</n-button></div></template>
             <p v-else class="dictation-sentence">{{ u.text }}</p>
-            <div class="dictation-utterance__meta"><span>{{ u.edited ? '人工已编辑 · ' : '' }}{{ states[u.status] || u.status }}{{ u.needs_review ? ' · 建议复核' : '' }}</span><n-button v-if="editing?.id !== u.id" text size="small" @click="edit(u)">编辑</n-button><n-button v-if="u.status === 'cleanup_failed'" text size="small" :disabled="active || busy" @click="action(() => d.cleanup('utterance', u.id))">重试整理</n-button></div>
+            <div class="dictation-utterance__meta"><span>{{ u.edited ? '人工已编辑 · ' : '' }}{{ states[u.status] || u.status }}{{ u.needs_review ? ' · 建议复核' : '' }}</span><n-button v-if="editing?.id !== u.id" text size="small" @click="edit(u)">编辑</n-button><n-button text size="small" @click="action(async () => saveCorrectTerm())">存为常用术语</n-button><n-button v-if="u.end_sample != null" text size="small" :disabled="d.capturing.value || d.local.capturing.value" @click="action(() => listen(u))">{{ playingUid === u.id ? '暂停回听' : '听这一句' }}</n-button><n-button v-if="u.status === 'cleanup_failed'" text size="small" :disabled="active || busy" @click="action(() => d.cleanup('utterance', u.id))">重试整理</n-button></div>
             <p v-if="u.error" class="dictation-status">{{ u.error }}</p>
             <details v-if="u.raw_text !== u.text || u.suggestion" class="dictation-original"><summary>原始识别 / 整理建议</summary><p>原始识别：{{ u.raw_text }}</p><p v-if="u.suggestion">迟到建议（未覆盖编辑）：{{ u.suggestion }}</p></details>
           </article>
         </template>
         <section v-if="partial.length" class="dictation-preview" aria-label="临时识别">
-          <div v-for="u in partial" :key="u.id"><span>{{ states[u.status] }}</span><p>{{ u.preview || '已检测到语音，正在识别……' }}</p><small v-if="u.status === 'asr_failed'">{{ u.error }}；预览未进入正文和复制内容。</small></div>
+          <div v-for="u in partial" :key="u.id"><span>{{ states[u.status] }}</span><p>{{ u.preview || '已检测到语音，正在识别……' }}</p><small v-if="u.status === 'asr_failed'">{{ u.error }}；预览未进入正文和复制内容。</small><n-button v-if="u.status === 'asr_failed' && u.end_sample != null" text size="small" :disabled="d.capturing.value || d.local.capturing.value" @click="action(() => listen(u))">听失败分句</n-button></div>
         </section>
         </div>
       </section>
-      <section class="dictation-controls" aria-label="录音控制">
-        <div class="dictation-listening" role="status"><span class="dictation-indicator" :class="{ 'is-on': capturing }" aria-hidden="true" /><strong>{{ session?.phase || '准备开始' }}</strong><span class="dictation-time">{{ duration }}</span><meter min="0" max="1" :value="level" aria-label="麦克风音量" /></div>
+      <audio v-if="audioURL" ref="audioPlayer" :src="audioURL" controls aria-label="原句回听（分句音频，非逐字对齐）" @play="claimPlayback" @pause="playingUid = null" @ended="playingUid = null" @error="error = '无法播放此句音频，请检查会话是否仍存在、音频是否保留；可从原始录音恢复。'; playingUid = null" />
+      <section v-if="!viewingOwnedTask" class="dictation-controls" aria-label="录音控制">
+        <div class="dictation-listening" role="status"><span class="dictation-indicator" aria-hidden="true" /><strong>{{ session?.phase || '准备开始' }}</strong><span class="dictation-time">{{ duration }}</span><meter min="0" max="1" :value="level" aria-label="麦克风音量" /></div>
         <p v-if="connection" class="dictation-status" role="status">{{ connection }}</p>
         <div class="dictation-actions">
-          <n-button v-if="!active" type="primary" :loading="busy" @click="d.start(termList(), enableCleanup)">开始听写</n-button>
-          <n-button v-else type="primary" :disabled="session?.status === 'draining'" @click="action(d.stop)">{{ session?.status === 'draining' ? '正在完成尾部' : '停止' }}</n-button>
+          <n-button v-if="captureAction === 'starting' && !recognizing" @click="action(() => d.stop(null))">结束准备</n-button>
+          <n-button v-else-if="!active" type="primary" :loading="busy" :disabled="recognizing || !!captureAction || d.local.active.value || d.local.busy.value || d.uploadUncertain.value" @click="d.start(termList(), enableCleanup)">开始听写</n-button>
+          <n-button v-else type="primary" :disabled="session?.status === 'draining'" @click="action(() => d.stop(session!.id))">{{ session?.status === 'draining' ? '正在完成尾部' : '停止' }}</n-button>
+          <n-button v-if="recognizing" quaternary @click="d.showRecording">返回活动会话</n-button>
+          <n-button v-if="active && session?.mode === 'upload'" :disabled="!!d.fileAction.value || !['listening','draining','paused'].includes(session.status)" @click="action(() => d.fileControl(session!.id, session!.status === 'paused' ? 'resume' : 'pause'))">{{ session.status === 'paused' ? '继续转写' : '暂停转写' }}</n-button>
           <n-button :disabled="!session?.draft_text" @click="copy">复制已完成文字</n-button>
           <a v-if="session?.draft_text" class="dictation-download" :href="`/api/dictation/sessions/${session.id}/draft.txt`">下载 TXT</a>
-          <n-button v-if="active" quaternary @click="action(d.cancel)">取消后续处理</n-button>
+          <n-button v-if="active" quaternary @click="action(() => d.cancel(session!.id))">取消后续处理</n-button>
           <n-button v-if="session?.draft_text && !active" quaternary :loading="cleanupScope === 'document'" :disabled="busy" @click="action(() => d.cleanup('document'))">整理全文</n-button>
         </div>
-        <p v-if="cleanupScope === 'document'" class="dictation-status" role="status">Luna high 正在整体整理，最多等待120秒；确认前不会修改正文。</p>
+        <p v-if="cleanupScope === 'document'" class="dictation-status" role="status">正在整体整理，最多等待{{ documentTimeout }}秒（总期限）；确认前不会修改正文。</p>
         <p v-if="session?.document_cleanup_error && !error && cleanupScope !== 'document'" class="dictation-error" role="alert">{{ session.document_cleanup_error }}</p>
+        <p v-if="active && session?.mode === 'live'" class="dictation-status">本窗口只查看结果；暂停、继续请返回原录音窗口。这里仍可停止、复制和编辑。</p>
         <p v-if="session?.status === 'preparing'" class="dictation-status">模型准备期间请稍候；开始听音后再说话。</p>
         <p v-if="session?.status === 'draining'" class="dictation-status">麦克风已释放；最后几句仍在处理，原始识别可随时复制。</p>
       </section>
+      <section v-else class="dictation-controls" aria-label="活动会话提示">
+        <p class="dictation-status">当前会话由下方常驻面板控制，切换站内页面不会中断录音。</p>
+        <a v-if="session?.draft_text" class="dictation-download" :href="`/api/dictation/sessions/${session.id}/draft.txt`">下载 TXT</a>
+      </section>
       <section v-if="session?.document_suggestion" class="dictation-diff" aria-label="全文整理差异预览">
-        <h3>全文整理预览 · Luna high</h3><p>确认前不会修改正文。请核对数字、否定与专有名词。</p>
+        <h3>全文整理预览</h3><p>确认前不会修改正文。请核对数字、否定与专有名词。</p>
         <p v-if="session.document_suggestion.metrics?.strategy === 'chunked'">长文超过单次处理范围，已分 {{ session.document_suggestion.metrics.chunk_count }} 段整理，请额外核对段落衔接。</p>
         <div class="dictation-diff__columns"><div><h4>当前正文</h4><pre>{{ session.document_suggestion.original }}</pre></div><div><h4>整理建议</h4><pre>{{ session.document_suggestion.text }}</pre></div></div>
         <n-button :disabled="busy" @click="action(() => d.cleanup('apply'))">确认应用全文稿</n-button>
@@ -186,6 +266,8 @@ onMounted(() => action(async () => {
 
 <style scoped>
 .dictation-page { max-width: 960px; margin: 0 auto; gap: 20px; }
+.dictation-page > audio { width: 100%; max-width: 560px; }
+.dictation-settings select, .dictation-settings input:not([type=checkbox]) { padding: 8px; max-width: 100%; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-raised); color: var(--text-primary); }
 .dictation-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .dictation-tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--border-strong); }
 .dictation-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--text-secondary); padding: 8px 0 12px; cursor: pointer; }

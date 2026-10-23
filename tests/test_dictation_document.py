@@ -39,13 +39,13 @@ def test_whole_document_payload_uses_current_edited_body_high_and_independent_bu
         assert json.loads(payload["input"])["current_text"] == original
         assert payload["model"] == "gpt-6-luna" and payload["reasoning"] == {"effort": "high"}
         assert payload["instructions"] == DOCUMENT_INSTRUCTIONS
-        assert payload["max_output_tokens"] >= 16384 and 119 < timeout <= 120 and strict
+        assert payload["max_output_tokens"] >= 16384 and 3599 < timeout <= 3600 and strict
         assert state["document_suggestion"]["metrics"]["strategy"] == "whole"
         assert Storage.render_draft(state) == original  # Preview is not an implicit apply.
         await service.cleanup(state["id"], "owner", CleanupRequest(scope="utterance", utterance_id="1"))
         payload, timeout, _ = seen[-1]
         assert payload["reasoning"] == {"effort": "low"} and payload["instructions"] == INSTRUCTIONS
-        assert payload["max_output_tokens"] == 4096 and timeout == 20
+        assert payload["max_output_tokens"] == 4096 and timeout == 3600
         assert json.loads(payload["input"])["current_text"] == "原稿"
     asyncio.run(run())
 

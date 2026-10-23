@@ -6,7 +6,11 @@ import {
   NDrawer, NDrawerContent, darkTheme, type GlobalThemeOverrides,
 } from "naive-ui";
 import NavBar from "./components/NavBar.vue";
+import DictationDock from "./components/DictationDock.vue";
+import { provideDictation } from "./composables/useDictation";
 
+provideDictation();
+const dockHeight = ref(0);
 const route = useRoute();
 const drawerOpen = ref(false);
 const menuButton = ref<InstanceType<typeof NButton> | null>(null);
@@ -102,10 +106,11 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
                 <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
               </n-button>
             </header>
-            <main id="main-content" class="app-content" tabindex="-1">
+            <main id="main-content" class="app-content" tabindex="-1" :style="{ paddingBottom: dockHeight ? `${dockHeight + 32}px` : undefined }">
               <router-view v-slot="{ Component }"><transition name="page" mode="out-in"><component :is="Component" /></transition></router-view>
             </main>
           </div>
+          <DictationDock @height="dockHeight = $event" />
           <n-drawer v-model:show="drawerOpen" placement="left" :width="288" :auto-focus="true" :trap-focus="true" :close-on-esc="true" @after-leave="restoreMenuFocus">
             <n-drawer-content title="读书会整理" closable :native-scrollbar="false">
               <div id="mobile-navigation"><NavBar @navigate="drawerOpen = false" /></div>

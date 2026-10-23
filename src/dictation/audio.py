@@ -17,6 +17,10 @@ class SileroVAD:
         options = ort.SessionOptions()
         options.inter_op_num_threads = options.intra_op_num_threads = 1
         self.session = ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
+        self.reset()
+
+    def reset(self):
+        import numpy as np
         self.h = np.zeros((1, 1, 128), dtype=np.float32)
         self.c = self.h.copy()
         self.context = np.zeros((1, 64), dtype=np.float32)
@@ -52,7 +56,18 @@ class Segmenter:
         self.pending = b""
         self.continuation = False
 
-    def feed(self, pcm: bytes, *, finish=False):
+    def pause(self):
+        events = self.feed(b"", finish=True, boundary="pause")
+        # Preserve the sample clock, not acoustic context across a mic gap.
+        self.pre = self.pending = b""
+        self.continuation = False
+        self.last_voice = self.last_activity = self.position
+        reset = getattr(self.vad, "reset", None)
+        if reset:
+            reset()
+        return events
+
+    def feed(self, pcm: bytes, *, finish=False, boundary="stop"):
         import numpy as np
         self.pending += pcm
         events = []
@@ -93,7 +108,7 @@ class Segmenter:
                 self.pre = (self.pre + raw)[-size:] if size else b""
         if finish and self.start is not None:
             events.append({"type": "end", "start": self.start, "end": self.position,
-                           "last_voice": min(self.position, self.last_voice), "boundary": "stop"})
+                           "last_voice": min(self.position, self.last_voice), "boundary": boundary})
             self.start = None
         return events
 

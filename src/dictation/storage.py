@@ -8,7 +8,7 @@ import re
 import shutil
 import wave
 
-ACTIVE = {"created", "preparing", "listening", "draining"}
+ACTIVE = {"created", "preparing", "listening", "pausing", "paused", "draining"}
 
 
 def atomic_json(path: Path, value):
@@ -125,4 +125,10 @@ class Storage:
 def public_state(state):
     return {**{key: value for key, value in state.items() if key not in
                {"owner", "worker_config", "gateway", "packets"}},
-            "draft_text": Storage.render_draft(state)}
+            "draft_text": Storage.render_draft(state),
+            "progress": {"total_samples": state.get("audio_total_samples"),
+                         "transcribed_samples": state.get("asr_processed_samples", 0),
+                         "asr_failed": sum(u["status"] == "asr_failed" for u in state["utterances"]),
+                         "cleanup_total": sum(bool(u.get("raw_text")) for u in state["utterances"]) if state.get("config", {}).get("cleanup") else 0,
+                         "cleanup_done": sum(u["status"] in {"cleaned", "cleanup_failed"} for u in state["utterances"]),
+                         "cleanup_failed": sum(u["status"] == "cleanup_failed" for u in state["utterances"])}}

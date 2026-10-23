@@ -32,6 +32,7 @@ current_text 是本次需要完整整理的正文；结合全文理解句意、�
 提交前核对是否漏掉末尾内容、数字、否定和条件；只输出 JSON 对象，严格包含 text（完整、非空的整理正文）和 needs_review（布尔值）。不要输出思考过程、解释或 Markdown 代码块。"""
 
 DOCUMENT_CHUNK_CHARS = 12000
+DEFAULT_CLEANUP_TIMEOUT_SECONDS = 3600
 
 
 OUTPUT_FORMAT = {"format": {"type": "json_schema", "name": "dictation_cleanup", "strict": True,
@@ -114,8 +115,8 @@ class SessionGatewayClient(CodexLBClient):
 
 
 class Cleanup:
-    def __init__(self, gateway, model="gpt-6-luna", timeout=20, *, project_root: Path | None = None,
-                 document_model="gpt-6-luna", document_timeout=120):
+    def __init__(self, gateway, model="gpt-6-luna", timeout=DEFAULT_CLEANUP_TIMEOUT_SECONDS, *, project_root: Path | None = None,
+                 document_model="gpt-6-luna", document_timeout=DEFAULT_CLEANUP_TIMEOUT_SECONDS):
         # Resolve existing Web credentials through its approved settings API,
         # without mutating os.environ across concurrent requests.
         credential = os.getenv(gateway.api_key_env, "")
@@ -135,7 +136,7 @@ class Cleanup:
         """Whole-body editing normally uses one request; long bodies are explicit chunks.
 
         All chunks share ONE wall-clock budget, so Service.external can still
-        wait for the real thread during shutdown within the 120-second ceiling.
+        wait for the real thread during shutdown within the configured deadline.
         Never return a partial document if any chunk fails or is truncated.
         """
         started = time.monotonic()
@@ -154,7 +155,8 @@ class Cleanup:
                 "needs_review": any(r["needs_review"] for r in results),
                 "metrics": {"model": self.document_model, "reasoning_effort": "high",
                             "strategy": "whole" if len(chunks) == 1 else "chunked",
-                            "chunk_count": len(chunks), "complete_seconds": time.monotonic() - started,
+                            "chunk_count": len(chunks), "timeout_seconds": self.document_timeout,
+                            "complete_seconds": time.monotonic() - started,
                             "requests": [r["metrics"] for r in results]}}
 
     def _request(self, text, context, terms, *, document_timeout=None):
@@ -172,7 +174,7 @@ class Cleanup:
         raw = client.codex_responses_text(payload, request_trace=usage)
         result = validate_cleanup(raw)
         result["metrics"] = {"model": model, "channel": "http-responses", "reasoning_effort": effort,
-                             "complete_seconds": time.monotonic() - started,
+                             "timeout_seconds": client.timeout_seconds, "complete_seconds": time.monotonic() - started,
                              "input_chars": len(payload["input"]), "output_chars": len(raw),
                              **usage.metadata,
                              "token_usage_note": "仅记录网关回报；缺失字段为 null，不估算 token"}

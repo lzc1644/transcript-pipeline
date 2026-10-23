@@ -6,15 +6,37 @@
 
 1. 点击「开始听写」，允许麦克风权限。等状态显示「正在听音」再讲话。
 2. 文字框内显示当前句预览和已完成正文；停顿后先显示 Qwen 最终识别，再提交逐句整理结果。框内滚动，录音/复制按钮不随文字增长下移；浏览旧句时暂停自动跟随，可点「回到最新」。
-3. 点击「停止」立即释放麦克风。页面继续完成已收到的尾部；整理失败时原始识别仍可编辑、复制和下载 TXT。
-4. 「设置」提供少量术语和整理开关。术语只作为最终识别与整理参考，不强制替换，也不继承读书会词表或书名。
-5. 「上传录音」跳过实时预览，使用同一套分段、最终识别和整理。默认最多 100 MB、30 分钟；超限或损坏文件明确失败。
-6. 「历史结果」只列本浏览器拥有的会话。删除需确认，先停止接收、推理和整理，再删除音频与文字。
-7. 停止并处理完成后，点击「整理全文」使用 Luna high 整体整理当前正文（含人工修改）。先展示差异，确认后才应用；已应用/编辑的全文也可再次整理。失败时保留原稿，可重试。
+3. 录音由应用级唯一控制器持有，切到任务列表、设置或历史不会中断。底部常驻面板可「暂停听写 / 继续听写」「结束听写」「复制正文」「正文」；收起后仍保留状态和暂停/继续入口。暂停立即关闭麦克风、保留尾包，不插入静音；只有服务端确认后显示「已暂停」。
+4. 「结束听写」立即释放麦克风，继续完成已收到的尾部。暂停时仍占用模型和 GPU 锁；排队识别/整理可继续，暂停不是释放识别资源。关闭/刷新页面不自动恢复麦克风；断线超过会话宽限期（默认10秒）后结束已接收内容。
+5. 「设置」提供少量术语和整理开关。术语只作为最终识别与整理参考，不强制替换，也不继承读书会词表或书名。
+6. 三个入口分别为「实时听写」「录音转写」「导入音频」，另有服务器历史。「录音转写」先用同一采音引擎录到本浏览器 IndexedDB，不创建服务端会话、不启动 worker、不占 GPU；暂停后继续追加同一草稿，结束后可试听、下载 WAV 或提交既有上传链路。
+7. 「导入音频」显示实际上传字节并可取消；上传完成后可暂停/继续文件转写。默认最多 512 MiB、4 小时；无网络断点续传。解码无假百分比；转写进度按实际已处理音频位置计，整理按当前应整理/已结束任务计，失败单列。
+8. 「历史结果」只列本浏览器拥有的会话。删除需确认，先停止接收、推理和整理，再删除音频与文字。
+9. 停止并处理完成后，点击「整理全文」使用 Luna high 整体整理当前正文（含人工修改）。先展示差异，确认后才应用；已应用/编辑的全文也可再次整理。失败时保留原稿，可重试。
 
-「紧凑小窗」打开同一个会话的结果视图，使用相同浏览器凭据。原窗口继续拥有麦克风；小窗可以查看、编辑、复制或停止。不要在录音时关闭原录音窗口；断开超过宽限期后服务端会结束会话。没有会话时也可先开小窗，再直接在小窗开始听写。
+「紧凑小窗」打开同一个会话的结果视图，使用相同浏览器凭据。原窗口继续拥有麦克风；小窗可以查看、编辑、复制或停止。暂停/继续须返回原录音窗口，小窗不会抢占麦克风。不要在录音时关闭原录音窗口；断开超过宽限期后服务端会结束会话。没有会话时也可先开小窗，再直接在小窗开始听写。
 
 复制是点击当时的**已完成正文快照**，不包含临时预览。整理尚未完成时，复制使用已经完成的原始识别。
+
+## 本地草稿与文件暂停
+
+本地录音以约1秒 PCM 块保存，块和累计样本位置在同一 IndexedDB 事务提交；界面分开显示「已录制」「已保存」。写入积压上限5秒，空间不足或写入失败会停止采音，保留已成功保存部分供试听/下载。结束等尾块事务完成后才提供完整 WAV；默认4小时，16kHz/PCM16/单声道原始音频约460.8 MB（439.5 MiB）。导出由DraftStore分批读取，每批约4 MiB，转成Blob后再组合，不把整段PCM保留在JavaScript数组中；试听、下载、提交共用这一边界，同一草稿不能并发组装。浏览器仍需要足够的IndexedDB、Blob临时磁盘和进程内存，资源失败时保留完整已保存草稿并提示重试。导出下载是恢复路径；转写提交另核对当前服务器时长/大小限制，不静默裁剪。
+
+刷新/意外关闭只恢复已保存草稿，不自动重新开麦；打开上次未结束草稿显示意外中断。提交前冻结音频样本版本，上传失败不删草稿；不明确的响应需先检查服务器历史再确认重试。提交成功记录对应样本版本及服务器会话ID，不自动删除本地草稿。「删除本地草稿」与「删除服务器录音」分别确认、互不代删。本地存储可能被浏览器清理，请下载备份。
+
+实时与本地采音共享一个具有明确 live/local lease 的 PcmCapture；只有所属生命周期能释放该 lease。旧实时会话的轮询/迟到完成不会关掉新的本地录音。文件识别占用GPU时仍可单独本地录音；活动实时听写（包括暂停）不能同时开启本地第二路麦克风。
+
+文件暂停统一约束生产者、新最终 ASR 和新逐句整理请求；已经开始的解码/推理/HTTP在原期限内退出后才显示「已暂停」。暂停保留文件读取位置、分段状态和待处理队列，不制造人工句界；EOF后还有识别/整理时仍可暂停。保留模型和GPU锁，但等待恢复不占空闲的全局HTTP整理槽；取消/结束可以解除等待，不因满队列互锁。服务重启仍标记中断，本阶段不承诺精确跨重启续跑。
+
+## 设备、回听和常用术语
+
+「设置 → 授权并列出设备」可选择麦克风并保存到本浏览器；后续按该exact设备申请，缺失时要求重新选择，不静默切换。录音中不能切换，请先暂停。持续5秒无明显输入会提示检查静音/连接/音量。「本地试音」进入录音草稿，试听仅在本地完成，不调用识别或整理。
+
+每句「听这一句」播放该句真实样本范围；失败分句也可回听。全文稿只提供「原始分句音频」列表，不假装全文/逐字对齐。任一时刻只有一个应用内播放器；页面或面板继续采音前，由应用级协调器统一停止原句/草稿回放，避免录入回放声。
+
+常用术语库保存在本浏览器。主动增删、勾选并「用于下次识别」，或人工改词后通过「存为常用术语」明确输入正确词；不会自动收集全部编辑，不强制替换正文，不修改已有会话冻结词表。数量/长度沿用50项、每项80字限制。
+
+准确率证据和可复现评分方法见 [DICTATION_QUALITY.md](DICTATION_QUALITY.md)。当前设备/回听/术语和评分工程已完成；约100条人工参考、独立留出及个人设备质量验收未完成，**没有宣称准确率已提高**，原默认模型/分段/语言/供应商不变。
 
 ## 三个模型各管一件事
 
@@ -24,7 +46,7 @@
 
 两套提示词分开维护：逐句只轻度修复当前句，全文结合上下文恢复断句、段落和高把握的同音错字；均保留数字、否定、条件、主体、专名与中英混说，不总结或补造事实。疑似听错无法唯一判断时保留原表达并标记复核。
 
-全文默认120秒**总期限**，输出预算16K–32K（包含推理与正文）；逐句默认20秒、4096输出token。普通正文不超过12000字符时一次整体请求；更长正文由 Cleanup 明确分块，界面注明分块及段数，所有块共享同一个120秒期限。任一块超时、截断或缺少completed事件时不发布部分建议。超时返回504，网关/格式错误返回502并附中文原因；原稿和TXT不变。相同会话的全文整理 single-flight，主窗/小窗重复点击返回409，原请求实际退出前不会放行；不同会话仍共享全局并发2。
+Luna逐句和全文校对默认均为3600秒（1小时）**总期限**；这是允许的最长等待，不会强制等待满1小时。全文输出预算仍为16K–32K（包含推理与正文），逐句为4096输出token。普通正文不超过12000字符时一次整体请求；更长正文由 Cleanup 明确分块，界面注明分块及段数，所有块共享同一个3600秒期限。任一块超时、截断或缺少completed事件时不发布部分建议。超时返回504，网关/格式错误返回502并附中文原因；原稿和TXT不变。相同会话的全文整理 single-flight，主窗/小窗重复点击返回409，原请求实际退出前不会放行；不同会话仍共享全局并发2。
 
 LLM 仍可能出错，`needs_review` 是建议而不是置信度。数字、否定、主体、条件和中英混说应人工核对。固定规则要求保留中英混说，不把英文翻译成中文。跨句改口不会静默重写较早正文。
 
@@ -71,8 +93,11 @@ docker compose exec -T trans /app/.venv/bin/python scripts/setup_dictation.py --
   "enabled": true,
   "idle_seconds": 60,
   "disconnect_seconds": 10,
-  "max_upload_mb": 100,
-  "max_upload_minutes": 30
+  "max_upload_mb": 512,
+  "max_upload_minutes": 240,
+  "cleanup_timeout_seconds": 3600,
+  "document_cleanup_timeout_seconds": 3600,
+  "decode_timeout_seconds": 900
 }
 ```
 
@@ -92,13 +117,13 @@ services:
 
 运行 `export DICTATION_CONFIG_FILE=/absolute/path/dictation.json` 后，`docker compose up -d --no-build --wait trans` 才会应用挂载。不要挂整个 `config/` 覆盖镜像默认配置。原生 Linux 部署脚本显式只使用基础 Compose，不读取本机 override；自定义配置应使用这里的手工 Compose 命令部署。配置在会话创建时读取，新会话才使用新参数；既有会话配置保持冻结。
 
-`enabled=false` 阻止新会话，不影响读书会流水线。还可配置 `cpu_python`、`final_python`、`model_dir`、`cleanup_model`、`cleanup_timeout_seconds`、`document_cleanup_model`、`document_cleanup_timeout_seconds`、`pre_ms`、`silence_ms`、`tail_ms`、`target_seconds`、`hard_seconds`。默认分别为 250ms 前留、700ms 静音、150ms 尾留、20s 软目标、25s 硬上限。硬切分标记需复核，不当作自然句界。
+`enabled=false` 阻止新会话，不影响读书会流水线。还可配置 `cpu_python`、`final_python`、`model_dir`、`cleanup_model`、`cleanup_timeout_seconds`、`document_cleanup_model`、`document_cleanup_timeout_seconds`、`decode_timeout_seconds`、`pre_ms`、`silence_ms`、`tail_ms`、`target_seconds`、`hard_seconds`。默认分别为 250ms 前留、700ms 静音、150ms 尾留、20s 软目标、25s 硬上限。硬切分标记需复核，不当作自然句界。
 
-当前逐句为 Luna `low`，全文为 Luna `high`（早期 `none` 实测仅保留作历史基线）。旧会话没有全文参数时采用 Luna high / 120秒；旧配置快照保留创建时值，本轮之后的手工重试使用新的专用提示词与low/high策略，实际参数记在每次结果的metrics。Gemini 对照脚本不自动改运行默认值，也不假定其他模型支持相同推理参数。
+当前逐句为 Luna `low`，全文为 Luna `high`（早期 `none` 实测仅保留作历史基线）。旧会话自动逐句处理仍用创建时冻结的期限；手动逐句重试及「整理全文」使用当前服务器配置（默认3600秒），不回写旧配置快照。缺少全文模型参数时仍采用 Luna high。实际期限记在每次结果的metrics，网页也显示当前校对期限。Gemini 对照脚本不自动改运行默认值，也不假定其他模型支持相同推理参数。
 
 ## 状态、数据与唯一正文
 
-会话：`created → preparing → listening → draining → completed`，另有 `interrupted / failed / cancelled`。句子分为临时识别、最终识别、整理完成，以及最终识别失败、整理失败但原稿可用。
+实时会话：`created → preparing → listening → pausing → paused → listening`（可循环）；只有确认暂停后才能继续。`listening / pausing / paused → draining → completed`，另有 `interrupted / failed / cancelled`。暂停不触发60秒静音或15秒无音频自动结束，但断线宽限期仍生效。服务重启将 pausing/paused 与其他活动会话一样标为 interrupted，保留已有产物，不自动重新开麦。句子分为临时识别、最终识别、整理完成，以及最终识别失败、整理失败但原稿可用。
 
 保存位置：
 
@@ -135,17 +160,38 @@ ffmpeg -nostdin -n -f s16le -ar 16000 -ac 1 -i /path/to/source.pcm recovered.wav
 路由均在 `/api/dictation`：
 
 - `POST /sessions`、`GET /sessions`、`GET /sessions/{id}`。
-- `WS /sessions/{id}/stream`：双向音频与事件。二进制头 `<uint32 sequence, uint64 start_sample>`，后接 16 kHz、单声道、小端 PCM16；正常网络包 80ms。
+- `WS /sessions/{id}/stream`：双向音频与事件。二进制头 `<uint32 sequence, uint64 start_sample>`，后接 16 kHz、单声道、小端 PCM16；正常网络包 80ms，暂停/结束尾包可不足80ms。
+  - 暂停：先关闭本地新增采音并 flush 尾包，再在同一 WS 发送 `{type:"pause",next_sequence,samples}`。服务端校验接收边界，CPU 收尾 `boundary=pause`、重置 VAD/预览但不退出，提交 `session.paused`。不提供可能越过音频的独立 HTTP 实时暂停。
+  - 继续：主动申请麦克风但先不发布音频，发送 `{type:"resume",next_sequence,samples}`，收到最新 listening 确认后开启新采音 lease。样本/包号/句号继续递增；迟到权限、Worklet、连接或终止后的回调不能恢复采音。
+  - `pause_boundaries` 为新增可选字段；旧会话没有该字段也可读取。延迟通过各段采音的样本时钟映射，暂停空档不计入后续语句延迟；`metrics.paused_wall_seconds` 单独记录已结束的暂停时长。
 - `POST /uploads?filename=...&terms=[...]&cleanup=true`：原始文件请求体。
+- `GET /sessions/{id}/utterances/{uid}/audio`：仅按有权限会话和已存在句子读取WAV，拒绝路径/符号链接，支持音频范围读取。
 - `PATCH /sessions/{id}/utterances/{uid}`：`{revision,text,discard_document?}`。
 - `PATCH /sessions/{id}/draft`：`{revision,text}`。
 - `POST /sessions/{id}/cleanup`：`scope=failed|utterance|document|apply`。
+- `POST /sessions/{id}/pause`、`POST /sessions/{id}/resume` 仅用于文件转写（同源/所有权保护）；实时暂停继续仍只走有序WS。
 - `POST /sessions/{id}/stop`、`POST /sessions/{id}/cancel`、`DELETE /sessions/{id}`。
 - `GET /sessions/{id}/draft.txt`。
 
 变更请求和 WebSocket 校验 Origin；默认同源，可用 `TRANSCRIPT_DICTATION_ORIGINS` 添加精确来源。反向代理需保留 Host，支持 WebSocket upgrade 与长连接；远程浏览器使用 HTTPS/WSS。Vite 开发代理已启用 WebSocket 并保留 Host。
 
-ACK 表示 PCM 与接收位置已持久化。128 包有限恢复窗口内重复包必须字节相同，不能补接有缺口音频。队列超过2秒告警，超过5秒停止新增采音。IPC 写锁与 drain 合用3秒期限；stop 后 CPU 收尾另有10秒期限。卡死会结束本会话并保留音频，不让 GPU 永久占用。Qwen 与旧批量 ASR 共用 `_asr-gpu.lock`，worker 真正退出后才释放；远端整理不持 GPU。上传接收另有300秒总期限。听写整理对所有网关（含localhost/127.0.0.1/`.local`）强制使用既有curl `--max-time`：逐句默认20秒、全文默认120秒，两者配置上限均为120秒；全文多块共用该总期限，持续SSE滴流也不能无限延长。缺少curl时明确失败，不回退urllib；旧批处理HTTP策略不变。删除/关闭会先占有生命周期，拒绝新工作，取消并等待已登记上传、推理和有界远端请求退出。
+ACK 表示 PCM 与接收位置已持久化。128 包有限恢复窗口内重复包必须字节相同，不能补接有缺口音频。队列超过2秒告警，超过5秒停止新增采音。IPC 写锁与 drain 合用3秒期限；stop 后 CPU 收尾另有10秒期限。卡死会结束本会话并保留音频，不让 GPU 永久占用。Qwen 与旧批量 ASR 共用 `_asr-gpu.lock`，worker 真正退出后才释放。实时会话最终识别退出后释放GPU，再等待远端整理；文件会话按暂停资源契约保留锁至整理收尾结束。HTTP整理请求本身不使用GPU。上传接收另有1800秒总期限，浏览器等待比它多10秒。文件解码使用独立的`decode_timeout_seconds`，默认900秒、可配1–3600秒，不与Luna校对期限共用。听写整理对所有网关（含localhost/127.0.0.1/`.local`）强制使用既有curl `--max-time`：逐句、全文默认及配置上限均为3600秒；全文多块共用该总期限，持续SSE滴流也不能无限延长。缺少curl时明确失败，不回退urllib；旧批处理HTTP策略不变。删除/关闭会先占有生命周期，拒绝新工作，取消并等待已登记上传、推理和有界远端请求退出。校对卡住时，该等待最长可接近1小时；镜像Supervisor/Compose的优雅关闭预算已同步放宽，避免145/160秒提前强杀。容量验证阶段仅改源码与部署模板，后续经用户授权的发布记录见事项2046。
+
+## 优化 A：暂停与跨页面控制（2026-10-23）
+
+应用级控制器分别持有查看中的会话与本窗口创建的活动任务；浏览/删除旧历史不会丢失新上传任务的控制权。页面与面板共用同一控制器；复制面板正文始终取活动任务的已完成正文，不包含临时预览，也不受当前历史选择影响。面板按实际高度给页面底部留白，390px可换行并考虑安全区。
+
+新增免付费真实链路测试 `frontend/tests/dictation-pause.mjs`：公开录音 → Chrome虚拟麦克风 → 实际Worklet/WS/CPU/GPU。已验证70.5秒暂停无新样本、20次暂停/继续、三路由不重建采音、权限拒绝/迟到、暂停中短重连及超期中断；直接比较发送PCM、source.pcm和句子WAV样本范围，不以识别几个词判完整性。证据 `tmp/dictation-optimization/a-real-03/`（最终截图已检查，02轮的样本完整性证据也保留）。这是实际公开录音链路测试，个人物理设备/口音仍需人工试录；不据此宣称准确率提升。
+
+上传等待期间查看历史、删除上一条已完成实时任务的竞争与显式停止目标，见 `dictation-ownership.mjs`；长正文、编辑、全文建议、390px/540px布局回归见 `dictation-layout.mjs`。两类为合成状态测试，不能替代上述真实音频证据。服务端全量测试787通过，新增暂停协议16项；模型/供应商/默认分段参数均未改变，运行容器未更新。
+
+## 优化 B：录音草稿和文件暂停（2026-10-23）
+
+`tmp/dictation-optimization/b-real-03/` 已实际录制三分钟、暂停三次、试听/下载，保存2,894,335样本（约180.90秒）并证明录音阶段零服务端会话/worker创建；上传后解码PCM与下载WAV数据逐字节一致。实际Qwen处理36个唯一分句，失败0；文件暂停后无新音频输入或ASR产物，继续完成；GPU忙及文件完成时第二条本地录音仍持续。刷新恢复也通过。该脚本随后在格式导入环节遇到Chrome inspector响应体被逐出，**03轮整体标为failed**，不掩盖失败；前述独立检查与产物仍有效。
+
+修正测试驱动为读取已拥有的历史API、等待文件输入真正可用后，`b-formats-05/report.json` 已分别真实导入 WAV/MP3/M4A并完成实际ASR，无整理调用。`b-drafts-03` 覆盖限长/WAV、同一渲染轮重复提交、上传失败、配额回滚、5秒写入积压、刷新恢复；`b-ownership-02` 覆盖旧实时轮询/迟到完成不释放local lease，以及两项上传所有权竞争。上述合成上传/状态用例不冒充真实转写。
+
+服务端文件暂停测试覆盖解码在途、EOF、满队列、取消/结束、全局整理槽公平性、实际loopback HTTP滴流退出后才确认暂停。付费供应商整理未重新调用；HTTP契约和有界退出不等于整理语义质量验收。当前默认模型、分段及供应商保持。
 
 ## 本机实测与尚未完成的验收
 
@@ -188,6 +234,8 @@ node --experimental-strip-types frontend/tests/dictation-state.mjs
   --candidate dual --realtime --output tmp/dictation-replay
 ```
 
+可用 `--project-root <已准备的隔离测试root>` 指定独立数据目录，root会解析为绝对路径；沿用离线模型与原GPU锁，不执行会话恢复。离线评分用 `scripts/score_dictation.py`，清单、规则和当前缺口见 DICTATION_QUALITY.md。
+
 `--candidate final` 走上传式 Qwen 路线，不运行 Paraformer。`--cleanup` 显式启用远端整理、会产生网关调用。`--realtime` 才按1倍样本时钟回放；快速文件处理不能作为实时延迟。长静音会触发产品的自动停止，报告应看实际收到的秒数，不能当十分钟连续讲话验收。运行时仍遵守 GPU 锁，不抢占既有 ASR。
 
 LLM 同源文本对照：
@@ -202,10 +250,25 @@ LLM 同源文本对照：
 真实浏览器集成测试：
 
 ```bash
-node frontend/tests/dictation.mjs
+# 免付费的暂停/跨页真实音频验收：独立数据 + 现有GPU锁 + 离线模型
+node frontend/tests/dictation-pause.mjs
+# 合成状态/布局回归，不调用模型
+node frontend/tests/dictation-ownership.mjs
+node frontend/tests/dictation-layout.mjs
+node frontend/tests/dictation-drafts.mjs
+# 4h数据容量边界（不是连续采音4h），较耗磁盘；按需执行
+node frontend/tests/dictation-capacity.mjs
+# 三分钟录音/试听/下载/实际文件ASR；约需4分钟，无远端整理
+node frontend/tests/dictation-recording.mjs
+# 仅补验导入格式，可复用已有三分钟产物证据
+DICTATION_RECORDING_FORMATS_ONLY=1 node frontend/tests/dictation-recording.mjs
+# 设备/术语/原句回听与回放→采音互斥，实际CPU/GPU但不调用整理
+node frontend/tests/dictation-proofreading.mjs
+# 完整整理链路：取得实际远端调用费用授权后才启用
+DICTATION_TEST_ALLOW_CLEANUP=1 node frontend/tests/dictation.mjs
 ```
 
-默认在独立本机 8021 端口启动当前代码。也可设置 `DICTATION_TEST_BASE_URL=http://127.0.0.1:8080` 直接验证已部署容器，脚本此时不启动/关闭服务。HTTPS 测试还需让 Node 通过 `NODE_EXTRA_CA_CERTS`、Chromium 通过受信任证书库接受同一 CA，不能用忽略证书错误代替。
+测试输出目录必须新建；可通过 `DICTATION_TEST_OUTPUT` 指定。默认通过 `scripts/serve_dictation_test.py` 在独立数据目录启动当前代码，复用离线模型和原GPU文件锁，不恢复正在运行服务的数据。完整整理测试使用本机8021端口；暂停测试使用8023端口。也可设置 `DICTATION_TEST_BASE_URL=http://127.0.0.1:8080` 直接验证已部署容器，脚本此时不启动/关闭服务。HTTPS 测试还需让 Node 通过 `NODE_EXTRA_CA_CERTS`、Chromium 通过受信任证书库接受同一 CA，不能用忽略证书错误代替。
 
 它使用本地真实录音作 Chrome 虚拟麦克风，实际调用 CPU/GPU/网关，检查停止释放、编辑、复制、全文预览/应用、紧凑布局和上传；使用独立浏览器凭据，只编辑/删除自己新建的会话。不是物理麦克风验收，也不应与占用同一 GPU 的测试同时运行。
 

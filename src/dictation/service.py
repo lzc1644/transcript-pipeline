@@ -16,7 +16,7 @@ import wave
 
 from src.config_loader import load_settings
 from src.codex_lb_client import CodexLBClientError
-from src.dictation.cleanup import Cleanup
+from src.dictation.cleanup import Cleanup, DEFAULT_CLEANUP_TIMEOUT_SECONDS
 from src.dictation.schemas import SessionRequest, load_dictation_settings
 from src.dictation.storage import ACTIVE, Storage, atomic_json, public_state
 
@@ -133,8 +133,19 @@ class Runtime:
         self.last_audio_at = time.monotonic()
         self.last_voice_sample = 0
         self.audio_clock = None
+        self.audio_spans = []
+        self.new_audio_span = True
+        self.idle_start_sample = 0
+        self.pausing_started_at = None
+        self.pause_started_at = None
+        self.pause_boundary = None
         self.packet_lock = asyncio.Lock()
         self.cleanup_tasks = []
+        self.dispatch_open = asyncio.Event()
+        self.dispatch_open.set()
+        self.file_inflight = set()
+        self.file_resume_status = "listening"
+        self.file_stopped = False
 
     def emit(self, kind, **data):
         state = self.state
@@ -203,12 +214,20 @@ class Runtime:
                     raise job.exception()
             await core_task
             watchdog.cancel()
-            await self.final.close()
-            self.release_gpu()
+            if state["mode"] == "live":
+                await self.final.close()
+                self.release_gpu()
+            state["phase_key"] = "cleaning"
+            if state["status"] == "draining":
+                state["phase"] = "正在完成逐句整理"
+                self.save()
             await self.cleanup_queue.put(None)
             await asyncio.gather(*self.cleanup_tasks)
+            if state["mode"] == "upload":
+                await self.final.close()
+                self.release_gpu()
             if not self.cancelled:
-                state.update(status="interrupted" if state.get("interrupted") else "completed",
+                state.update(status="interrupted" if state.get("interrupted") else "completed", phase_key="completed",
                              phase="连接中断，已接收音频处理完成" if state.get("interrupted") else "已停止，处理完成")
                 self.save()
                 self.emit("session.completed")
@@ -258,7 +277,7 @@ class Runtime:
                 u = self.utterance(event["utterance_id"])
                 u["preview"] = event["text"]
                 if self.audio_clock is not None and "first_partial_seconds" not in u:
-                    u["first_partial_seconds"] = time.monotonic() - self.audio_clock - u["start_sample"] / RATE
+                    u["first_partial_seconds"] = time.monotonic() - self.sample_time(u["start_sample"], endpoint=False)
                 self.emit("asr.partial", utterance_id=u["id"], text=event["text"], revision=u["revision"])
             elif kind == "utterance.end":
                 u = self.utterance(event["utterance_id"])
@@ -269,16 +288,25 @@ class Runtime:
                 path = self.manager.storage.utterance_audio(self.state["id"], u["id"], u["start_sample"], u["end_sample"])
                 u["endpoint_at"] = time.monotonic()
                 if self.audio_clock is not None:
-                    u["endpoint_latency_seconds"] = u["endpoint_at"] - self.audio_clock - u["last_voice_sample"] / RATE
+                    u["endpoint_latency_seconds"] = u["endpoint_at"] - self.sample_time(u["last_voice_sample"])
                 self.save()
                 self.emit("utterance.pending", utterance_id=u["id"], revision=u["revision"])
                 await self.queue.put((u["id"], path, time.monotonic()))
+            elif kind == "paused":
+                if event["samples"] != self.state["samples"]:
+                    raise RuntimeError("CPU 暂停位置与持久音频不一致，已接收音频保留")
+                if self.state["status"] == "pausing" and not self.cancelled:
+                    self.state.update(status="paused", phase="已暂停 · 麦克风已关闭，识别资源保留")
+                    self.state["pause_boundaries"][-1]["confirmed_at"] = now()
+                    self.save()
+                    self.emit("session.paused")
             elif kind == "drained":
                 self.cpu_drained = True
                 await self.queue.put(None)
                 return
             elif kind == "decoded":
-                self.state["decoded"] = True
+                self.state.update(decoded=True, audio_total_samples=event["samples"])
+                self.save()
             elif kind == "error":
                 raise RuntimeError(event["error"])
 
@@ -286,13 +314,23 @@ class Runtime:
         while True:
             item = await self.queue.get()
             if item is None:
+                if self.state["mode"] == "upload":
+                    self.state["asr_processed_samples"] = min(self.state["samples"], self.state.get("audio_total_samples", self.processed))
+                    self.save()
+                    self.update_file_pause()
                 return
             uid, path, queued = item
             u = self.utterance(uid)
-            await self.final.send({"op": "transcribe", "utterance_id": uid, "path": str(path)})
-            result = await asyncio.wait_for(self.final.read(), 60)
+            await self.begin_dispatch("asr")
+            try:
+                await self.final.send({"op": "transcribe", "utterance_id": uid, "path": str(path)})
+                result = await asyncio.wait_for(self.final.read(), 60)
+            finally:
+                self.end_dispatch("asr")
             if self.cancelled:
                 return
+            if result["type"] in {"final", "failed"}:
+                self.state["asr_processed_samples"] = max(self.state.get("asr_processed_samples", 0), u["end_sample"])
             if result["type"] == "final":
                 u.update(raw_text=result["text"], status="raw", asr_seconds=result["inference_seconds"])
                 if "gpu_peak_allocated_bytes" in result:
@@ -302,12 +340,12 @@ class Runtime:
                     u["text"] = result["text"]
                 u["revision"] += 1
                 if self.audio_clock is not None:
-                    u["final_latency_seconds"] = time.monotonic() - self.audio_clock - u["last_voice_sample"] / RATE
+                    u["final_latency_seconds"] = time.monotonic() - self.sample_time(u["last_voice_sample"])
                 self.manager.storage.artifact(self.state["id"], "asr", uid, result)
                 self.save()
                 self.emit("asr.final", utterance_id=uid, text=result["text"], revision=u["revision"])
                 if self.state["config"]["cleanup"]:
-                    if self.cleanup_queue.full():
+                    if self.cleanup_queue.full() and self.state["mode"] == "live":
                         u.update(status="cleanup_failed", error="整理队列已满，原始文字可用；停止后可重试")
                         self.save()
                     else:
@@ -322,6 +360,7 @@ class Runtime:
                     raise RuntimeError(result["error"])
             else:
                 raise RuntimeError(result.get("error", "最终识别 worker 协议无效"))
+            self.update_file_pause()
 
     async def cleanup_loop(self):
         while True:
@@ -330,6 +369,75 @@ class Runtime:
                 return
             uid, revision = item
             await self.manager.clean_utterance(self.state, uid, revision, self)
+            self.update_file_pause()
+
+    async def wait_dispatch(self):
+        if self.state["mode"] == "upload":
+            while not self.dispatch_open.is_set():
+                await self.dispatch_open.wait()
+        if self.cancelled:
+            raise asyncio.CancelledError
+
+    def try_begin_dispatch(self, stage):
+        if self.cancelled:
+            raise asyncio.CancelledError
+        if self.state["mode"] == "upload":
+            if not self.dispatch_open.is_set():
+                return False
+            self.file_inflight.add(stage)
+        return True
+
+    async def begin_dispatch(self, stage):
+        while True:
+            await self.wait_dispatch()
+            if self.try_begin_dispatch(stage):
+                return
+
+    def end_dispatch(self, stage):
+        self.file_inflight.discard(stage)
+        self.update_file_pause()
+
+    def file_work_remaining(self):
+        return (not self.cpu_drained or bool(self.file_inflight) or
+                any(u["status"] in {"partial", "finalizing", "cleaning"} for u in self.state["utterances"]))
+
+    def update_file_pause(self):
+        if self.state["mode"] != "upload" or self.state["status"] != "pausing" or self.file_inflight:
+            return
+        if not self.file_work_remaining():
+            self.state.update(status=self.file_resume_status, phase="处理已结束，正在提交结果")
+            self.dispatch_open.set()
+        else:
+            self.state.update(status="paused", phase="转写已暂停 · 模型及识别资源保留")
+        self.save()
+        self.emit("session.progress")
+
+    def pause_file(self):
+        if self.state["mode"] != "upload":
+            raise Conflict("实时暂停须在采音窗口通过有序 WebSocket 操作")
+        if self.state["status"] in {"paused", "pausing"} or not self.file_work_remaining():
+            return
+        if self.state["status"] not in {"listening", "draining"} or self.cancelled:
+            raise Conflict("文件尚未准备好或已结束，不能暂停")
+        self.file_resume_status = self.state["status"]
+        self.dispatch_open.clear()
+        self.state.update(status="pausing", phase="正在暂停，等待已开始的解码/识别/整理完成")
+        self.save()
+        self.update_file_pause()
+
+    def resume_file(self):
+        if self.state["mode"] != "upload":
+            raise Conflict("实时继续须返回采音窗口")
+        if self.state["status"] == "listening" or self.state["status"] == "draining":
+            return
+        if self.state["status"] != "paused" or self.cancelled:
+            raise Conflict("只有已确认暂停的文件转写才能继续")
+        self.state.update(status=self.file_resume_status, phase="继续转写录音" if self.file_resume_status == "listening" else "继续完成尾部及整理")
+        if self.draining_started_at is not None:
+            self.draining_started_at = time.monotonic()
+        self.dispatch_open.set()
+        self.save()
+        self.emit("session.resumed")
 
     async def send_cpu(self, command):
         try:
@@ -363,7 +471,7 @@ class Runtime:
                 checkpoints.append({"sample": state["samples"], "seconds": lag})
                 del checkpoints[:-256]
             if lag > 5:
-                await self.stop("处理积压超过5秒，已停止新增采音")
+                await self._stop("处理积压超过5秒，已停止新增采音")
                 raise Conflict("处理积压超过5秒；已接收音频将继续处理")
             if lag > 2:
                 self.emit("session.warning", message="音频积压超过2秒")
@@ -373,19 +481,84 @@ class Runtime:
                 del state["packets"][next(iter(state["packets"]))]
             state["next_sequence"] += 1
             state["samples"] += len(pcm) // 2
+            if state["mode"] == "upload":
+                state["upload_cursor_samples"] = state["samples"]
             self.last_audio_at = time.monotonic()
-            if self.audio_clock is None:
-                self.audio_clock = self.last_audio_at - len(pcm) / 2 / RATE
+            if self.new_audio_span and state["mode"] == "live":
+                clock = self.last_audio_at - len(pcm) / 2 / RATE
+                self.audio_spans.append((start, clock))
+                self.new_audio_span = False
+                if self.audio_clock is None:
+                    self.audio_clock = clock
             self.save()
             await self.send_cpu({"op": "audio", "pcm": base64.b64encode(pcm).decode()})
             return self.emit("audio.ack", sequence=seq, next_sequence=state["next_sequence"], samples=state["samples"])
 
+    def check_boundary(self, next_sequence, samples):
+        if (type(next_sequence) is not int or type(samples) is not int
+                or (next_sequence, samples) != (self.state["next_sequence"], self.state["samples"])):
+            raise Conflict("控制边界与已持久化音频不一致，不能跳过未确认音频")
+        if (self.cancelled or self.manager.closing or self.state["id"] in self.manager.deleting
+                or self.state["mode"] != "live"):
+            raise Conflict("会话不可恢复")
+
+    async def pause(self, next_sequence, samples):
+        async with self.packet_lock:
+            self.check_boundary(next_sequence, samples)
+            if self.state["status"] in {"pausing", "paused"}:
+                self.emit("session." + self.state["status"])
+                return
+            if self.state["status"] != "listening":
+                raise Conflict("会话已停止，不能暂停")
+            self.pause_boundary = (next_sequence, samples)
+            self.pausing_started_at = self.pause_started_at = time.monotonic()
+            self.state.setdefault("pause_boundaries", []).append({"next_sequence": next_sequence,
+                "samples": samples, "requested_at": now()})
+            self.state.update(status="pausing", phase="正在暂停，完成暂停前的尾句")
+            self.save()
+            self.emit("session.pausing")
+            await self.send_cpu({"op": "pause"})
+
+    async def resume(self, next_sequence, samples):
+        async with self.packet_lock:
+            self.check_boundary(next_sequence, samples)
+            if self.state["status"] == "listening" and self.pause_boundary == (next_sequence, samples):
+                self.emit("session.resumed")
+                return
+            if self.state["status"] != "paused":
+                raise Conflict("只有已确认暂停的会话才能继续；请返回录音窗口检查状态")
+            self.state.update(status="listening", phase="正在听音")
+            self.ready_at = self.last_audio_at = time.monotonic()
+            self.idle_start_sample = samples
+            self.new_audio_span = True
+            if self.pause_started_at is not None:
+                metrics = self.state["metrics"]
+                metrics["paused_wall_seconds"] = metrics.get("paused_wall_seconds", 0) + self.last_audio_at - self.pause_started_at
+            self.pause_started_at = None
+            self.state["pause_boundaries"][-1]["resumed_at"] = now()
+            self.save()
+            self.emit("session.resumed")
+
+    def sample_time(self, sample, *, endpoint=True):
+        # Each capture span has its own wall clock. A result finishing after a
+        # later resume still uses the span that actually contained its audio.
+        for start, clock in reversed(self.audio_spans):
+            if sample > start or (not endpoint and sample == start) or start == 0:
+                return clock + (sample - start) / RATE
+        return self.audio_clock + sample / RATE
+
     async def stop(self, reason="正在完成尾部识别和整理"):
+        async with self.packet_lock:
+            await self._stop(reason)
+
+    async def _stop(self, reason):
         if self.state["status"] in {"created", "preparing"}:
             await self.manager.cancel(self.state["id"], self.state["owner"])
             return
-        if self.state["status"] != "listening":
+        if self.state["status"] not in {"listening", "pausing", "paused"} or self.cancelled:
             return
+        self.file_stopped = True
+        self.dispatch_open.set()
         self.state.update(status="draining", phase=reason)
         self.draining_started_at = time.monotonic()
         self.save()
@@ -394,7 +567,7 @@ class Runtime:
 
     def silence_seconds(self):
         # Acoustic activity belongs only to VAD, never delayed ASR text.
-        return max(0, self.processed - self.last_voice_sample) / RATE
+        return max(0, self.processed - max(self.last_voice_sample, self.idle_start_sample)) / RATE
 
     def sample_resources(self):
         for name, worker in (("cpu", self.cpu), ("final", self.final)):
@@ -416,16 +589,31 @@ class Runtime:
             await asyncio.sleep(1)
             self.sample_resources()
             clock = time.monotonic()
+            if self.state["mode"] == "upload" and self.queue.full() and self.draining_started_at is not None:
+                # File backpressure can deliberately block the CPU event reader.
+                self.draining_started_at = clock
             if (self.state["status"] == "draining" and not self.cpu_drained
                     and self.draining_started_at is not None
                     and clock - self.draining_started_at >= self.CPU_DRAIN_TIMEOUT_SECONDS):
                 self.failure = "停止后的 CPU 收尾超过期限，已接收音频保留"
                 self.failure_signal.set()
                 return
-            if self.state["mode"] != "live" or self.state["status"] != "listening":
+            if (self.state["status"] == "pausing" and self.pausing_started_at is not None
+                    and clock - self.pausing_started_at >= self.CPU_DRAIN_TIMEOUT_SECONDS):
+                self.failure = "暂停确认超过期限，已停止接收新音频；原始音频保留"
+                self.failure_signal.set()
+                return
+            if self.state["mode"] != "live":
+                continue
+            cfg = self.state["worker_config"]
+            # Paused is not idle, but a closed browser must still release GPU.
+            if (self.state["status"] in {"listening", "pausing", "paused"} and self.disconnected_at
+                    and clock - self.disconnected_at >= cfg["disconnect_seconds"]):
+                self.state["interrupted"] = True
+                await self.stop("网络中断超出恢复窗口，已停止监听")
+            if self.state["status"] != "listening":
                 continue
             idle = self.silence_seconds()
-            cfg = self.state["worker_config"]
             if not self.ever_attached and self.state["samples"] == 0 and self.ready_at is not None:
                 if clock - self.ready_at >= cfg["disconnect_seconds"]:
                     self.state["interrupted"] = True
@@ -435,34 +623,59 @@ class Runtime:
                 await self.stop("长时间无语音，自动停止监听")
             elif idle >= cfg["idle_seconds"] - 10:
                 self.emit("session.warning", message="10秒内仍无语音将自动停止")
-            if self.disconnected_at and clock - self.disconnected_at >= cfg["disconnect_seconds"]:
-                await self.stop("网络中断超出恢复窗口，已停止监听")
-                self.state["interrupted"] = True
             if clock - self.last_audio_at > 15 and self.attached:
                 await self.stop("未收到麦克风音频，已停止监听")
 
     async def feed_upload(self):
         path = self.manager.storage.path(self.state["id"])
-        await self.send_cpu({"op": "decode", "source": str(path / self.state["upload_name"]),
-                             "destination": str(path / "audio/decoded.wav"),
-                             "max_seconds": self.state["config"]["max_upload_minutes"] * 60})
-        # Decode response is handled by cpu_loop; do not race a second reader.
-        deadline = time.monotonic() + 120
-        while not (path / "audio/decoded.wav").exists() or not self.state.get("decoded"):
-            if time.monotonic() > deadline:
-                raise RuntimeError("录音解码超时")
-            await asyncio.sleep(0.05)
+        await self.begin_dispatch("decode")
+        self.state.update(phase_key="decoding", phase="正在解码录音")
+        self.save()
+        try:
+            await self.send_cpu({"op": "decode", "source": str(path / self.state["upload_name"]),
+                                 "destination": str(path / "audio/decoded.wav"),
+                                 "max_seconds": self.state["config"]["max_upload_minutes"] * 60})
+            # Decode response is handled by cpu_loop; never create a second reader.
+            deadline = time.monotonic() + self.state["worker_config"].get("decode_timeout_seconds", 900)
+            while True:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("录音解码超时")
+                if self.state.get("decoded"):
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            self.end_dispatch("decode")
+        self.state["phase_key"] = "transcribing"
+        if self.state["status"] == "listening":
+            self.state["phase"] = "正在转写录音"
         with wave.open(str(path / "audio/decoded.wav")) as source:
-            while pcm := source.readframes(1280):
-                while self.state["samples"] - self.processed > RATE:
+            while not self.file_stopped:
+                while self.state["samples"] - self.processed > RATE and not self.file_stopped:
                     await asyncio.sleep(0.02)
-                packet = struct.pack("<IQ", self.state["next_sequence"], self.state["samples"]) + pcm
-                await self.accept_audio(packet)
-        await self.stop()
+                await self.begin_dispatch("audio")
+                try:
+                    if self.file_stopped:
+                        break
+                    pcm = source.readframes(1280)
+                    if not pcm:
+                        break
+                    packet = struct.pack("<IQ", self.state["next_sequence"], self.state["samples"]) + pcm
+                    await self.accept_audio(packet)
+                    self.state["upload_cursor_samples"] = source.tell()
+                finally:
+                    self.end_dispatch("audio")
+        async with self.packet_lock:
+            if self.state["status"] in {"pausing", "paused"}:
+                # Natural EOF closes only the CPU input, never the dispatch gate.
+                self.file_resume_status = "draining"
+                self.draining_started_at = time.monotonic()
+                await self.send_cpu({"op": "stop"})
+            else:
+                await self._stop("正在完成尾部识别和整理")
 
 
 class DictationService:
-    UPLOAD_RECEIVE_TIMEOUT_SECONDS = 300
+    UPLOAD_RECEIVE_TIMEOUT_SECONDS = 1800
 
     def __init__(self, root: Path, *, worker_factory=Worker, cleanup_factory=Cleanup, recover=True):
         self.root, self.storage = root, Storage(root)
@@ -551,6 +764,7 @@ class DictationService:
                      "utterances": [], "metrics": {}, "worker_config": config,
                      "config": {k: config[k] for k in ("terms", "cleanup", "cleanup_model", "reasoning_effort",
                          "document_cleanup_model", "document_reasoning_effort",
+                         "cleanup_timeout_seconds", "document_cleanup_timeout_seconds", "decode_timeout_seconds",
                          "streaming_model_id", "streaming_revision", "qwen_model", "qwen_revision",
                          "max_upload_mb", "max_upload_minutes", "segmentation")}}
             if upload_name:
@@ -620,15 +834,29 @@ class DictationService:
         from src.schemas import CodexLBSettings
         return CodexLBSettings.model_validate(state["gateway"])
 
-    def cleaner(self, state):
+    def cleaner(self, state, *, settings=None):
         cfg = state["worker_config"]
+        timeout = settings.cleanup_timeout_seconds if settings else cfg["cleanup_timeout_seconds"]
+        document_timeout = settings.document_cleanup_timeout_seconds if settings else cfg.get(
+            "document_cleanup_timeout_seconds", DEFAULT_CLEANUP_TIMEOUT_SECONDS)
         kwargs = {"project_root": self.root,
                   "document_model": cfg.get("document_cleanup_model", "gpt-6-luna"),
-                  "document_timeout": cfg.get("document_cleanup_timeout_seconds", 120)} if self.cleanup_factory is Cleanup else {}
-        return self.cleanup_factory(self.gateway(state), cfg["cleanup_model"], cfg["cleanup_timeout_seconds"], **kwargs)
+                  "document_timeout": document_timeout} if self.cleanup_factory is Cleanup else {}
+        return self.cleanup_factory(self.gateway(state), cfg["cleanup_model"], timeout, **kwargs)
 
-    async def external(self, function, *args):
-        async with self.cleanup_slots:
+    async def external(self, function, *args, runtime=None):
+        while True:
+            if runtime:
+                await runtime.wait_dispatch()  # Never reserve a global slot while paused.
+            await self.cleanup_slots.acquire()
+            try:
+                if not runtime or runtime.try_begin_dispatch("cleanup"):
+                    break  # Gate recheck and request registration are one event-loop turn.
+            except BaseException:
+                self.cleanup_slots.release()
+                raise
+            self.cleanup_slots.release()
+        try:
             task = asyncio.create_task(asyncio.to_thread(function, *args))
             try:
                 return await asyncio.shield(task)
@@ -636,14 +864,19 @@ class DictationService:
                 # Keep the slot until the bounded transport actually exits.
                 await asyncio.gather(task, return_exceptions=True)
                 raise
+        finally:
+            self.cleanup_slots.release()
+            if runtime:
+                runtime.end_dispatch("cleanup")
 
     async def clean_utterance(self, state, uid, revision, runtime=None):
         u = next(u for u in state["utterances"] if u["id"] == uid)
         context = [v["text"] for v in state["utterances"][:state["utterances"].index(u)] if v.get("raw_text")][-2:]
         cfg = state["worker_config"]
         try:
-            cleaner = self.cleaner(state)
-            result = await self.external(cleaner, u["raw_text"], context, cfg["terms"])
+            # Manual retries use current deadlines without rewriting an old snapshot.
+            cleaner = self.cleaner(state, settings=load_dictation_settings(self.root) if runtime is None else None)
+            result = await self.external(cleaner, u["raw_text"], context, cfg["terms"], runtime=runtime)
             if runtime and runtime.cancelled:
                 return
             self.storage.artifact(state["id"], "cleaned", uid, result)
@@ -657,7 +890,7 @@ class DictationService:
                 u["suggestion"] = result["text"]
             u["revision"] += 1
             if runtime and runtime.audio_clock is not None:
-                u["cleanup_latency_seconds"] = time.monotonic() - runtime.audio_clock - u["last_voice_sample"] / RATE
+                u["cleanup_latency_seconds"] = time.monotonic() - runtime.sample_time(u["last_voice_sample"])
             self.commit(state, event="cleanup.completed", uid=uid)
         except Exception as exc:
             u.update(status="cleanup_failed", error=str(exc), revision=u["revision"] + 1)
@@ -770,13 +1003,14 @@ class DictationService:
             state.pop("document_cleanup_error", None)
             state.pop("document_suggestion", None)
             self.commit(state, event="document.started")
+            settings = load_dictation_settings(self.root)
             try:
-                cleaner = self.cleaner(state)
+                cleaner = self.cleaner(state, settings=settings)
                 result = await self.external(cleaner.document, original, [], cfg["terms"])
             except (CodexLBClientError, ValueError, TimeoutError) as exc:
                 timed_out = isinstance(exc, TimeoutError) or "curl: (28)" in str(exc) or "timed out" in str(exc).lower()
                 if timed_out:
-                    message = f"全文整理超过{cfg.get('document_cleanup_timeout_seconds', 120)}秒总期限；原稿未改动，可重试。"
+                    message = f"全文整理超过{settings.document_cleanup_timeout_seconds}秒总期限；原稿未改动，可重试。"
                 elif isinstance(exc, ValueError) or any(mark in str(exc) for mark in ("SSE", "response.incomplete", "未完整结束", "未找到 output_text")):
                     message = "全文整理返回内容不完整或格式无效；原稿未改动，请重试。"
                 else:

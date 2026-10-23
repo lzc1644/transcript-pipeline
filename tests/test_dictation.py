@@ -321,7 +321,7 @@ def test_upload_limit_rejects_before_worker_and_releases_lock(root):
         async def stream():
             yield b"not read"
         with pytest.raises(UploadLimit):
-            await service.receive_upload(state["id"], "owner", stream(), 101 * 1024 * 1024)
+            await service.receive_upload(state["id"], "owner", stream(), 513 * 1024 * 1024)
         runtime = service.runtimes[state["id"]]
         assert runtime.task is None and runtime.lock_file is None
         assert state["status"] == "failed"
@@ -361,10 +361,11 @@ def test_cleanup_failure_preserves_raw_and_manual_copy(root):
 @pytest.fixture
 def dripping_gateway():
     started, disconnected, stop = threading.Event(), threading.Event(), threading.Event()
-    stats = {"chunks": 0}
+    stats = {"chunks": 0, "requests": 0}
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         def do_POST(self):
+            stats["requests"] += 1
             self.rfile.read(int(self.headers["Content-Length"]))
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")

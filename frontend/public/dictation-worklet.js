@@ -8,8 +8,10 @@ class DictationCapture extends AudioWorkletProcessor {
     this.packet = new Int16Array(1280);
     this.count = 0;
     this.energy = 0;
+    this.accepting = true;
     this.port.onmessage = (event) => {
-      if (event.data === "flush") {
+      if (event.data === "stop" || event.data === "flush") {
+        if (event.data === "stop") this.accepting = false;
         this.send();
         this.port.postMessage({ flushed: true });
       }
@@ -23,6 +25,7 @@ class DictationCapture extends AudioWorkletProcessor {
     this.energy = 0;
   }
   process(inputs) {
+    if (!this.accepting) return false;
     const input = inputs[0]?.[0];
     if (!input) return true;
     for (const value of input) {
