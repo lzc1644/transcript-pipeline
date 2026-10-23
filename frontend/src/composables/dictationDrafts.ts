@@ -11,11 +11,33 @@ export interface RecordingDraft {
   submission?: { status: "uploading" | "submitted" | "failed" | "unknown"; samples: number; sessionId?: string };
 }
 function timestamp() { return new Date().toISOString(); }
+interface DraftLease { id: string; release: () => void }
+const OWNED_ELSEWHERE = "另一窗口正在录音或提交这条草稿，仅可查看；请返回原窗口操作，或在它结束/关闭后重新打开草稿。";
 
 /** Atomic metadata + ordered PCM blocks. No server session and no inference lifecycle. */
 export class DraftStore {
   private db: Promise<IDBDatabase> | null = null;
   private exporting = new Set<string>();
+  private leases = new Map<string, DraftLease>();
+  /** Browser releases the lock on document destruction, never on a guessed heartbeat timeout. */
+  async claim(id: string): Promise<DraftLease | null> {
+    if (!navigator.locks?.request) throw new Error("此浏览器不支持跨窗口录音锁，请使用新版 Chrome / Edge；已保存草稿不会删除。");
+    return new Promise((resolve, reject) => {
+      void navigator.locks.request(`dictation-draft:${id}`, { mode: "exclusive", ifAvailable: true }, async lock => {
+        if (!lock) { resolve(null); return; }
+        await new Promise<void>(release => {
+          const lease = { id, release: () => { if (this.leases.get(id) === lease) this.leases.delete(id); release(); } };
+          this.leases.set(id, lease); resolve(lease);
+        });
+      }).catch(reject);
+    });
+  }
+  private async write<T>(id: string, run: () => Promise<T>) {
+    if (this.leases.has(id)) return run();
+    const lease = await this.claim(id);
+    if (!lease) throw new Error(OWNED_ELSEWHERE);
+    try { return await run(); } finally { lease.release(); }
+  }
   private open() {
     return this.db ??= new Promise((resolve, reject) => {
       const request = indexedDB.open("transcript-dictation-drafts", 1);
@@ -51,33 +73,33 @@ export class DraftStore {
     return value;
   }
   async put(draft: RecordingDraft) {
-    return this.transaction<RecordingDraft>(["drafts"], "readwrite", (tx, result) => {
+    return this.write(draft.id, () => this.transaction<RecordingDraft>(["drafts"], "readwrite", (tx, result) => {
       tx.objectStore("drafts").put(draft); result(draft);
-    });
+    }));
   }
   async update(id: string, change: Partial<RecordingDraft>) {
-    return this.transaction<RecordingDraft>(["drafts"], "readwrite", (tx, result) => {
+    return this.write(id, () => this.transaction<RecordingDraft>(["drafts"], "readwrite", (tx, result) => {
       const request = tx.objectStore("drafts").get(id);
       request.onsuccess = () => {
         if (!request.result) { tx.abort(); return; }
         const value = { ...request.result, ...change, updatedAt: timestamp() };
         tx.objectStore("drafts").put(value); result(value);
       };
-    });
+    }));
   }
   async append(id: string, start: number, pcm: ArrayBuffer) {
-    return this.transaction<RecordingDraft>(["drafts", "chunks"], "readwrite", (tx, result) => {
+    return this.write(id, () => this.transaction<RecordingDraft>(["drafts", "chunks"], "readwrite", (tx, result) => {
       const drafts = tx.objectStore("drafts"), request = drafts.get(id);
       request.onsuccess = () => {
         const value: RecordingDraft = request.result;
-        if (!value || value.samples !== start || pcm.byteLength % 2) { tx.abort(); return; }
+        if (!value || value.status !== "recording" || value.samples !== start || pcm.byteLength % 2) { tx.abort(); return; }
         try {
           tx.objectStore("chunks").add({ id, start, pcm });
           value.samples += pcm.byteLength / 2; value.updatedAt = timestamp();
           drafts.put(value); result(value);
         } catch { tx.abort(); }
       };
-    });
+    }));
   }
   async wav(id: string, maximumBytes: number) {
     if (this.exporting.has(id)) throw new Error("这条草稿正在组装WAV，请等待完成后再试听、下载或提交；草稿保留。");
@@ -127,10 +149,10 @@ export class DraftStore {
     } finally { this.exporting.delete(id); }
   }
   async remove(id: string) {
-    await this.transaction<void>(["drafts", "chunks"], "readwrite", (tx, result) => {
+    await this.write(id, () => this.transaction<void>(["drafts", "chunks"], "readwrite", (tx, result) => {
       tx.objectStore("drafts").delete(id);
       tx.objectStore("chunks").delete(IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER])); result();
-    });
+    }));
   }
 }
 export function wavHeader(samples: number) {
@@ -146,7 +168,10 @@ export function createLocalRecorder(audio: PcmCapture, canCapture: () => boolean
   const store = new DraftStore();
   const draft = ref<RecordingDraft | null>(null), drafts = ref<RecordingDraft[]>([]);
   const error = ref(""), busy = ref(false), capturing = ref(false), level = ref(0), recordedSamples = ref(0), submittingId = ref<string | null>(null);
-  const active = computed(() => !!draft.value && ["recording", "paused"].includes(draft.value.status));
+  const readOnly = ref(false), ownedId = ref<string | null>(null);
+  const active = computed(() => capturing.value || (ownedId.value === draft.value?.id && !!draft.value && ["recording", "paused"].includes(draft.value.status)));
+  let recordingLease: DraftLease | null = null, submissionLease: DraftLease | null = null;
+  function releaseRecording() { recordingLease?.release(); recordingLease = null; ownedId.value = null; }
   let operation = 0, buffer: Uint8Array[] = [], bufferedSamples = 0, queuedSamples = 0;
   let writing: Promise<void> = Promise.resolve(), writeError: unknown = null;
   let maxSamples = 4 * 60 * 60 * RATE, maxBytes = 512 * 1024 * 1024;
@@ -170,20 +195,33 @@ export function createLocalRecorder(audio: PcmCapture, canCapture: () => boolean
   }
   async function select(id: string) {
     if (active.value || busy.value || submittingId.value) throw new Error("请先结束当前本地录音或等待上传，再查看其他草稿");
-    clearPlayback();
-    let value = await store.get(id);
-    if (value.status === "recording") value = await store.update(id, { status: "interrupted" }).catch(() => ({ ...value, status: "interrupted" }));
-    if (value.submission?.status === "uploading") value = await store.update(id, { submission: { ...value.submission, status: "unknown" } });
-    draft.value = value; recordedSamples.value = value.samples;
+    busy.value = true; clearPlayback();
+    let lease: DraftLease | null = null;
+    try {
+      lease = await store.claim(id);
+      let value = await store.get(id);
+      // A status alone cannot tell a crashed recorder from another live window.
+      if (lease && value.status === "recording") value = await store.update(id, { status: "interrupted" });
+      if (lease && value.submission?.status === "uploading") value = await store.update(id, { submission: { ...value.submission, status: "unknown" } });
+      readOnly.value = !lease; draft.value = value; recordedSamples.value = value.samples;
+    } finally { lease?.release(); busy.value = false; }
+  }
+  async function claimRecording(id: string, generation: number) {
+    const lease = recordingLease ?? await store.claim(id);
+    if (!lease) throw new Error(OWNED_ELSEWHERE);
+    if (generation !== operation) { if (lease !== recordingLease) lease.release(); return false; }
+    recordingLease = lease; ownedId.value = id; readOnly.value = false;
+    return true;
   }
   async function begin(id?: string) {
-    if (busy.value || capturing.value || submittingId.value || !canCapture()) throw new Error("请先结束另一项网页采音或等待提交完成");
-    busy.value = true; const generation = ++operation; error.value = ""; clearPlayback();
+    if (busy.value || capturing.value || submittingId.value || !canCapture() || (active.value && draft.value?.id !== id)) throw new Error("请先结束另一项网页采音或等待提交完成");
+    busy.value = true; const generation = ++operation, target = id ?? crypto.randomUUID(); error.value = ""; clearPlayback();
     try {
+      if (!await claimRecording(target, generation)) return;
       const config = await fetch("/api/dictation/config").then(r => { if (!r.ok) throw new Error("无法读取录音限制，请检查连接后重试"); return r.json(); });
       maxBytes = config.max_upload_mb * 1024 * 1024;
       maxSamples = Math.min(config.max_upload_minutes * 60 * RATE, Math.floor((maxBytes - 44) / 2));
-      const value: RecordingDraft = id ? await store.get(id) : await store.put({ id: crypto.randomUUID(), createdAt: timestamp(), updatedAt: timestamp(),
+      const value: RecordingDraft = id ? await store.get(id) : await store.put({ id: target, createdAt: timestamp(), updatedAt: timestamp(),
         sampleRate: RATE, channels: 1, format: "pcm16le", samples: 0, status: "paused" });
       if (generation !== operation) return;
       if (value.samples >= maxSamples) throw new Error("草稿已达到当前上传时长或大小上限，请先下载或转写");
@@ -216,13 +254,17 @@ export function createLocalRecorder(audio: PcmCapture, canCapture: () => boolean
     } catch (cause) {
       if (generation === operation) {
         await audio.stop("local", false); error.value = cause instanceof Error ? cause.message : String(cause);
-        if (draft.value) publish(await store.update(draft.value.id, { status: "interrupted" }).catch(() => draft.value!));
+        if (recordingLease?.id === target) {
+          if (draft.value?.id === target) publish(await store.update(target, { status: "interrupted" }).catch(() => draft.value!));
+          releaseRecording();
+        }
       }
     } finally { busy.value = false; await load().catch(() => {}); }
   }
   let finishing: Promise<void> | null = null;
   function finish(state: RecordingDraft["status"]) {
     if (finishing) return finishing;
+    if (!recordingLease || recordingLease.id !== draft.value?.id) return Promise.reject(new Error(OWNED_ELSEWHERE));
     capturing.value = false; level.value = 0; busy.value = true;
     finishing = (async () => {
       try {
@@ -236,7 +278,10 @@ export function createLocalRecorder(audio: PcmCapture, canCapture: () => boolean
             error.value = "草稿状态无法写入，已停止采音；已保存音频仍可试听和下载。";
           }
         }
-      } finally { finishing = null; busy.value = false; await load().catch(() => {}); }
+      } finally {
+        if (draft.value?.status !== "paused" || writeError) releaseRecording();
+        finishing = null; busy.value = false; await load().catch(() => {});
+      }
     })();
     return finishing;
   }
@@ -255,28 +300,46 @@ export function createLocalRecorder(audio: PcmCapture, canCapture: () => boolean
     if ((draft.value?.id === id && active.value) || busy.value || submittingId.value === id) throw new Error("请先结束录音并等待保存/提交完成");
     await store.remove(id); if (draft.value?.id === id) { draft.value = null; clearPlayback(); } await load();
   }
+  function checkSubmission(value: RecordingDraft) {
+    if (value.submission?.status === "unknown") throw new Error("上次提交结果不明确，请先检查历史再确认重试");
+    if (value.submission?.status === "uploading") throw new Error("上次提交尚未确认，请重新打开草稿并检查历史，再确认重试");
+  }
   async function freezeForSubmission() {
     if (!draft.value?.samples || active.value || busy.value || submittingId.value) throw new Error("请先结束录音并等待保存/提交完成");
-    if (draft.value.submission?.status === "unknown") throw new Error("上次提交结果不明确，请先检查历史再确认重试");
+    checkSubmission(draft.value); // Fast hint only; the authoritative check is under the lease.
     const id = draft.value.id;
     submittingId.value = id; // Claim before the first await, including Blob assembly.
     clearPlayback();
     try {
+      submissionLease = await store.claim(id);
+      if (!submissionLease) throw new Error(OWNED_ELSEWHERE);
       const config = await fetch("/api/dictation/config").then(r => { if (!r.ok) throw new Error("无法确认当前转写限制，草稿仍可下载"); return r.json(); });
       const current = await store.get(id);
+      publish(current); recordedSamples.value = current.samples;
+      checkSubmission(current); // Another window may have changed/recovered submission since selection.
       if (current.samples > config.max_upload_minutes * 60 * RATE || current.samples * 2 + 44 > config.max_upload_mb * 1024 * 1024) {
         throw new Error("录音超过当前服务器的时长或大小限制，请先下载备份；不会裁剪或自动重复提交");
       }
       const frozen = await store.wav(id, config.max_upload_mb * 1024 * 1024);
       publish(await store.update(id, { submission: { status: "uploading", samples: frozen.draft.samples } }));
       return frozen;
-    } catch (cause) { submittingId.value = null; throw cause; }
+    } catch (cause) { submissionLease?.release(); submissionLease = null; submittingId.value = null; throw cause; }
   }
   async function submission(id: string, status: NonNullable<RecordingDraft["submission"]>["status"], samples: number, sessionId?: string) {
-    submittingId.value = status === "uploading" ? id : null;
-    publish(await store.update(id, { submission: { status, samples, sessionId } }));
+    try { publish(await store.update(id, { submission: { status, samples, sessionId } })); }
+    finally {
+      if (status !== "uploading" && submissionLease?.id === id) {
+        submissionLease.release(); submissionLease = null; submittingId.value = null;
+      }
+    }
   }
-  function interrupt() { ++operation; capturing.value = false; void audio.stop("local", false).catch(() => {}); clearPlayback(); /* Last committed chunks survive. Never reopen the mic on load. */ }
-  return { draft, drafts, store, error, busy, capturing, level, recordedSamples, submittingId, active, playbackURL, load, select, begin,
+  function interrupt() {
+    ++operation; capturing.value = false; clearPlayback();
+    const lease = recordingLease;
+    void Promise.allSettled([audio.stop("local", false), writing]).then(() => {
+      if (recordingLease === lease) releaseRecording();
+    }); // Keep the lock until old writes finish; document destruction also releases Web Locks.
+  }
+  return { draft, drafts, store, error, busy, capturing, level, recordedSamples, submittingId, active, readOnly, playbackURL, load, select, begin,
     pause: () => finish("paused"), end: () => finish("ended"), preview, remove, freezeForSubmission, submission, clearPlayback, interrupt };
 }

@@ -5,11 +5,11 @@ import { useDictation } from "../composables/useDictation";
 const props = defineProps<{ terms: string[]; cleanup: boolean }>();
 const emit = defineEmits<{ history: [] }>();
 const d = useDictation(), local = d.local;
-const { draft, drafts, busy, active, capturing, level, error, recordedSamples, playbackURL, submittingId } = local;
+const { draft, drafts, busy, active, capturing, level, error, recordedSamples, playbackURL, submittingId, readOnly } = local;
 const player = ref<HTMLAudioElement | null>(null);
 const states = { recording: "上次未结束", paused: "已暂停", ended: "已结束", interrupted: "意外中断，已保存部分可用" };
 function duration(samples: number) { const s = Math.floor(samples / 16000); return `${String(Math.floor(s / 60)).padStart(2,'0')}:${String(s % 60).padStart(2,'0')}`; }
-const canSubmit = computed(() => !!draft.value?.samples && draft.value.submission?.status !== 'unknown' && !active.value && !busy.value && !submittingId.value && !d.recognizing.value && !d.busy.value && !d.uploadUncertain.value);
+const canSubmit = computed(() => !!draft.value?.samples && draft.value.submission?.status !== 'unknown' && !readOnly.value && !active.value && !busy.value && !submittingId.value && !d.recognizing.value && !d.busy.value && !d.uploadUncertain.value);
 async function action(callback: () => Promise<unknown>) { try { await callback(); } catch (cause) { error.value = cause instanceof Error ? cause.message : String(cause); } }
 async function begin(id?: string) { player.value?.pause(); await local.begin(id); }
 async function download() {
@@ -37,12 +37,16 @@ function claimPlayback() { if (player.value) void action(async () => d.playback.
     <p>录音先保存在本浏览器，不等待模型、不占识别资源。结束后可试听、下载 WAV，再提交转写。默认最多4小时（原始音频约460.8 MB）；浏览器存储和临时磁盘空间不足仍可能提前停止，请及时下载备份。</p>
     <p v-if="error" class="draft-error" role="alert">{{ error }}</p>
     <div v-if="draft" class="draft-current">
-      <strong>{{ capturing ? '正在录音' : states[draft.status] }} · 已录制 {{ duration(recordedSamples) }}</strong>
+      <strong>{{ capturing ? '正在录音' : readOnly ? '另一窗口正在操作（只读）' : states[draft.status] }} · 已录制 {{ duration(recordedSamples) }}</strong>
       <p role="status">{{ !busy && draft.samples === recordedSamples ? '已保存到本浏览器' : '正在保存' }} {{ duration(draft.samples) }}（{{ draft.samples }} 个样本）<span v-if="recordedSamples !== draft.samples"> · 尚未保存 {{ recordedSamples - draft.samples }} 个样本</span></p>
+      <p v-if="readOnly" role="status">此草稿由另一窗口录音或提交，仅可查看。请返回原窗口控制；它结束或关闭后，可重新检查草稿。</p>
       <meter v-if="capturing" min="0" max="1" :value="level" aria-label="本地录音音量" />
       <audio v-if="playbackURL" ref="player" :src="playbackURL" controls preload="metadata" aria-label="录音试听" @play="claimPlayback" />
       <div class="draft-actions">
-        <template v-if="active">
+        <template v-if="readOnly">
+          <n-button :disabled="busy" @click="action(() => local.select(draft!.id))">重新检查草稿</n-button>
+        </template>
+        <template v-else-if="active">
           <n-button v-if="capturing" :disabled="busy" @click="action(local.pause)">暂停录音</n-button>
           <n-button v-else :disabled="busy || d.ownsCapture.value" @click="action(() => begin(draft!.id))">继续录音</n-button>
           <n-button :disabled="busy" @click="action(local.end)">结束录音</n-button>
@@ -62,7 +66,7 @@ function claimPlayback() { if (player.value) void action(async () => d.playback.
       <div v-if="draft.submission?.status === 'unknown'">
         <p>提交结果不明确，不自动重复提交。请先检查历史是否已有对应会话。</p>
         <n-button @click="emit('history')">检查服务器历史</n-button>
-        <n-button @click="action(async () => { d.confirmUploadChecked(); await local.submission(draft!.id, 'failed', draft!.submission!.samples); })">已检查历史，允许手动重试</n-button>
+        <n-button :disabled="readOnly || busy" @click="action(async () => { d.confirmUploadChecked(); await local.submission(draft!.id, 'failed', draft!.submission!.samples); })">已检查历史，允许手动重试</n-button>
       </div>
     </div>
     <n-button v-if="!active" :disabled="busy || !!submittingId || d.ownsCapture.value || !!d.captureAction.value" @click="action(() => begin())">新建本地录音</n-button>

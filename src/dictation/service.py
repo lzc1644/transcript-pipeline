@@ -126,6 +126,7 @@ class Runtime:
         self.failure_signal = asyncio.Event()
         self.draining_started_at = None
         self.cpu_drained = False
+        self.cpu_input_closed = False
         self.attached = False
         self.ever_attached = False
         self.ready_at = None
@@ -301,7 +302,7 @@ class Runtime:
                     self.save()
                     self.emit("session.paused")
             elif kind == "drained":
-                self.cpu_drained = True
+                self.cpu_drained = self.cpu_input_closed = True
                 await self.queue.put(None)
                 return
             elif kind == "decoded":
@@ -563,6 +564,14 @@ class Runtime:
         self.draining_started_at = time.monotonic()
         self.save()
         self.emit("session.draining", message=reason)
+        await self.close_cpu_input()
+
+    async def close_cpu_input(self):
+        # Called under packet_lock. EOF and user stop share one close, while
+        # reopening dispatch to finish queued ASR/cleanup is a separate action.
+        if self.cpu_input_closed or self.cpu_drained:
+            return
+        self.cpu_input_closed = True
         await self.send_cpu({"op": "stop"})
 
     def silence_seconds(self):
@@ -669,7 +678,7 @@ class Runtime:
                 # Natural EOF closes only the CPU input, never the dispatch gate.
                 self.file_resume_status = "draining"
                 self.draining_started_at = time.monotonic()
-                await self.send_cpu({"op": "stop"})
+                await self.close_cpu_input()
             else:
                 await self._stop("正在完成尾部识别和整理")
 

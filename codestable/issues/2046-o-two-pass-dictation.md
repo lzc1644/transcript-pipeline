@@ -292,4 +292,26 @@ B工程与公开真实音频/格式链路可用；未调用付费整理供应商
 
 ## 发布授权（2026-10-23）
 
-用户随后明确要求「先保存一个commit，然后部署」。本轮全部语音输入改动保存为一个commit后更新现有单容器，不push、不关闭事项、不调用付费服务、不追加长时测试。部署前只读核对：无pending/running/活动听写任务、无识别worker或在途校对HTTP，现有容器healthy、GPU profile和原HTTPS地址/持久卷保持。发布后的实际commit、构建日志及健康/配置结果记录在`tmp/deploy/dictation-4h-<commit>/`；部署不改变质量报告中的未完成验收结论。
+用户随后明确要求「先保存一个commit，然后部署」。本轮全部语音输入改动保存为一个commit后更新现有单容器，不push、不关闭事项、不调用付费服务、不追加长时测试。部署前只读核对：无pending/running/活动听写任务、无识别worker或在途校对HTTP，现有容器healthy、GPU profile和原HTTPS地址/持久卷保持。已保存`39e9e93`并完成部署，容器healthy、HTTP/可信HTTPS和4h/512MiB/3600秒配置检查通过。构建及健康/配置结果在`tmp/deploy/dictation-4h-39e9e93/`；部署不改变质量报告中的未完成验收结论。
+
+## 修复39e9e93审查的三项操作边界（2026-10-23）
+
+用户审查证据`tmp/dictation-review-39e9e93/`指出：第二窗口打开活动草稿会误标interrupted并使原窗口失去控制；文件EOF后暂停再结束会重复写已退出CPU；局部tab与路由mode不同步导致面板导航失效。按此顺序最小修复，仍在本事项内，不推进模型/准确率优化。
+
+### 实现
+
+- `DraftStore.claim`用同源、每草稿的Web Locks独占权；所有put/update/append/remove经同一写入边界检查，录音/暂停持锁直到保存完毕后结束或中断，提交持锁至结果落盘。completion-review补充的旧UI快照绕过unknown问题也已修复：同一`checkSubmission`对快照仅快速提示，取得lease后以数据库current为准拒绝unknown/uploading，再做WAV组装/上传；同步当前视图但不覆写这些未确认状态。打开草稿先尝试取锁，取不到则只读、不改recording/uploading；另一窗口不能继续、结束、删除或重复提交。持有者关闭时由浏览器释放锁，pending写入完成前不主动释放；无心跳过期抢占。只读窗口须明确「重新检查草稿」，不会自动接管或开麦。活动面板依据本窗口所有权/采音，而非仅凭共享metadata状态。
+- Runtime独立`cpu_input_closed`，EOF与用户结束共用`close_cpu_input()`幂等关闭；解除文件暂停、继续派发剩余ASR/整理与关闭输入分开。CPU已经收到stop（即使尚未读到drained）或已drained均不再发送。严格假worker在首个stop后拒绝后续写入，不再掩盖此边界。
+- 页面tab直接从路由mode派生，所有标签、试音、历史打开和上传后切换均走同一`setTab`，不保留会与URL漂移的局部tab。面板现有入口无需另建状态或新控制器。
+
+### 验证与当前交付状态
+
+- `.venv/bin/python -m pytest`：**814 passed / 50.87s**，`tmp/dictation-review-fixes/pytest.log`。新增4项覆盖EOF后ASR/整理暂停再结束，以及stop已发但drained尚未读到/已读到；检查只发送一次stop、所有剩余工作完成、原PCM不变、GPU锁释放。定向file/lifecycle 24 passed。
+- 前端类型检查/生产build、`dictation-state.mjs`通过；既有草稿故障/积压/限长/刷新与ownership回归均通过，见`drafts-01/`、`ownership-01/`及`frontend-build-final.log`。
+- 新增`frontend/tests/dictation-boundaries.mjs`，`browser-06/report.json`八项通过：实际同源双窗口、真实IndexedDB/Web Locks/虚拟麦克风；第二窗口只读及9种直接写/控制拒绝，原窗口采音/保存/面板不丢；暂停仍独占，结束后可重新检查；原窗口关闭后恢复已保存前缀、不自动开麦，可继续追加和导出短WAV；锁内uploading拒绝；B旧ended快照→A写uploading并释放/关闭→C恢复unknown→B不重开直接提交，零上传且unknown不被覆盖，须主动检查历史并确认后才可重试；在途上传不误改unknown，失败保留草稿；面板草稿/正文从其他标签稳定返回。HTTP为合成状态，0推理/付费调用；两张实际截图已读取检查。
+- 新浏览器驱动01–03轮的async waitForFunction把Promise当真值，尚未保存样本就过早断言；04轮在异步打开草稿事务完成前检查恢复状态。改为有界读取实际IDB结果并等待对应UI提交后，05轮原六项完整通过，补充锁内状态检查后06轮八项完整通过；失败报告保留，没有重标成功。
+- 按REVIEW_CHECKLIST自评：仅三项批准bug及相邻入口，使用项目.venv；未改持久JSON/IndexedDB schema或上游产物，无重跑旧用户音频；未改默认模型、分段、供应商或4h/3600秒配置。未追加大文件/长时测试，4h完整上传的原失败与C人工准确率缺口均保留。
+
+以上修复验收完成时仍在工作区，未自动commit/push、部署、重启或关闭事项。用户随后明确授权「保存并部署」：先保存本节补丁为单个commit，再更新原单容器；不push，不追加长时测试或付费调用。部署前只读检查82份任务/会话状态，活动任务、识别worker、在途校对HTTP均为0；保留原数据、模型、CA卷和旧镜像回退入口。实际commit、构建和发布健康/版本证据写入`tmp/deploy/dictation-fixes-<commit>/`。
+
+更新前先结束旧版所有窗口的本地录音，更新后刷新，使各窗口使用同一锁协议。随后按既定条件收集本人设备录音/人工参考稿，不直接换模型。

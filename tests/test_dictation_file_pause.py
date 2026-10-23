@@ -26,7 +26,11 @@ class FileWorker(FakeWorker):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.uid = 0
+        self.input_closed = False
+        self.stop_calls = 0
     async def send(self, command):
+        if self.mode == "cpu" and self.input_closed:
+            raise RuntimeError("cpu worker 已退出，不能再次写入")
         if self.mode == "final":
             self.asr_calls.append(command["utterance_id"])
             if self.asr_started:
@@ -50,6 +54,8 @@ class FileWorker(FakeWorker):
                 "end": self.samples, "last_voice": self.samples, "boundary": "silence", "preview": ""})
             await self.events.put({"type": "processed", "samples": self.samples, "last_voice_sample": self.samples})
         elif command["op"] == "stop":
+            self.stop_calls += 1
+            self.input_closed = True  # Real CPU exits after producing its drained event.
             await self.events.put({"type": "drained"})
         else:
             raise AssertionError("File pause must not send a CPU pause boundary")
@@ -98,6 +104,71 @@ def test_pause_at_eof_waits_inflight_then_blocks_new_asr_and_preserves_queue(roo
         assert r.lock_file is None
         r.pause_file()  # completed does not become an empty paused task
         assert state["status"] == "completed"
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("stage", ["asr", "cleanup"])
+@pytest.mark.parametrize("drained_ack", [False, True])
+def test_stop_after_eof_pause_closes_cpu_once_and_finishes_remaining_work(root, stage, drained_ack):
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+    def factory(*args):
+        def clean(text, *args):
+            calls.append(text)
+            if len(calls) == 1:
+                entered.set()
+                assert release.wait(3)
+            return {"text": text + "。", "needs_review": False}
+        return clean
+    async def run():
+        class Worker(FileWorker):
+            asr_calls = []
+            asr_started = asyncio.Event() if stage == "asr" else None
+            asr_release = asyncio.Event()
+            eof_seen, eof_release = asyncio.Event(), asyncio.Event()
+            async def read(self):
+                event = await super().read()
+                if self.mode == "cpu" and event["type"] == "drained":
+                    self.eof_seen.set()
+                    if not drained_ack:
+                        await self.eof_release.wait()
+                return event
+        service = DictationService(root, worker_factory=Worker, cleanup_factory=factory)
+        state, r = await upload(service, packets=4, cleanup=stage == "cleanup")
+        try:
+            await asyncio.wait_for(Worker.eof_seen.wait(), 2)
+            if stage == "asr":
+                await asyncio.wait_for(Worker.asr_started.wait(), 2)
+            else:
+                assert await asyncio.to_thread(entered.wait, 2)
+                async with asyncio.timeout(2):
+                    while len(Worker.asr_calls) < 4:
+                        await asyncio.sleep(.001)
+            await status(state, "draining")
+            r.pause_file()
+            Worker.asr_release.set(); release.set()
+            await status(state, "paused")
+            assert r.cpu_drained is drained_ack
+            assert r.cpu.input_closed and r.cpu.stop_calls == 1
+            before = state["samples"]
+            assert before == state["audio_total_samples"] == 4 * 1280 - 3
+            assert any(u["status"] == ("finalizing" if stage == "asr" else "cleaning") for u in state["utterances"])
+            # CPU stdin is already closed, with or without its last event read.
+            # End must reopen dispatch, NOT attempt a second write to that pipe.
+            await r.stop(); await r.stop()
+            Worker.eof_release.set()
+            await asyncio.wait_for(r.task, 2)
+            assert state["status"] == "completed", state.get("error")
+            assert not r.failure and r.cpu.stop_calls == 1
+            assert Worker.asr_calls == ["1", "2", "3", "4"]
+            assert state["samples"] == before
+            assert (service.storage.path(state["id"]) / "audio/source.pcm").read_bytes() == b"\1\0" * before
+            assert all(u["status"] == ("raw" if stage == "asr" else "cleaned") for u in state["utterances"])
+            assert len(calls) == (0 if stage == "asr" else 4)
+            assert r.lock_file is None
+        finally:
+            release.set(); Worker.asr_release.set(); Worker.eof_release.set()
+            await service.close()
     asyncio.run(run())
 
 

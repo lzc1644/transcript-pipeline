@@ -10,8 +10,8 @@ const route = useRoute(), router = useRouter(), message = useMessage();
 const d = useDictation();
 const { session, recordingSession, history, error, busy, cleanupScope, level, connection, captureAction, active, recognizing, partial } = d;
 const viewingOwnedTask = computed(() => recognizing.value && session.value?.id === recordingSession.value?.id);
-const tab = ref("live");
-watch(() => route.query.mode, value => { if (value === 'record' || value === 'live') tab.value = value; }, { immediate: true });
+const tab = computed(() => ['record', 'upload', 'history'].includes(String(route.query.mode)) ? String(route.query.mode) : 'live');
+function setTab(mode: string) { return router.replace({ query: { ...route.query, mode } }); }
 const terms = ref("");
 const enableCleanup = ref(true);
 const settingsOpen = ref(false);
@@ -49,7 +49,7 @@ async function listen(u: Utterance) {
 watch(() => session.value?.id, stopPlayback);
 watch(tab, stopPlayback);
 onBeforeUnmount(stopPlayback);
-async function trial() { stopPlayback(); tab.value = 'record'; await nextTick(); await d.local.begin(); }
+async function trial() { stopPlayback(); await setTab('record'); await nextTick(); await d.local.begin(); }
 const uploadInput = ref<HTMLInputElement | null>(null);
 const uploadLimit = computed(() => {
   const config = d.serverConfig.value;
@@ -117,13 +117,14 @@ async function uploadChanged(event: Event) {
   if (file) {
     const submittedTab = tab.value;
     await d.upload(file, termList(), enableCleanup.value);
-    if (!error.value && tab.value === submittedTab) tab.value = "live";
+    if (!error.value && route.path === '/dictation' && tab.value === submittedTab) await setTab('live');
   }
   if (uploadInput.value) uploadInput.value.value = "";
 }
 async function select(id: string) {
   await d.select(id);
-  editing.value = null; draftEditing.value = null; tab.value = "live";
+  editing.value = null; draftEditing.value = null;
+  if (route.path === '/dictation') await setTab('live');
 }
 function removeSession(id: string) {
   if (window.confirm('删除这次服务器会话的音频和全部文字？本地录音草稿不会删除。此操作不能撤销。')) void action(() => d.remove(id));
@@ -149,7 +150,7 @@ onMounted(() => action(async () => {
       <div class="dictation-inline"><n-button size="small" @click="smallWindow">{{ compact ? '普通视图' : '紧凑小窗' }}</n-button><n-button size="small" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen">设置</n-button></div>
     </div>
     <nav class="dictation-tabs" aria-label="语音输入方式">
-      <button v-for="item in [{id:'live',text:'实时听写'},{id:'record',text:'录音转写'},{id:'upload',text:'导入音频'},{id:'history',text:'历史结果'}]" :key="item.id" :aria-current="tab === item.id ? 'page' : undefined" @click="tab = item.id; if(item.id === 'history') action(d.loadHistory)">{{ item.text }}</button>
+      <button v-for="item in [{id:'live',text:'实时听写'},{id:'record',text:'录音转写'},{id:'upload',text:'导入音频'},{id:'history',text:'历史结果'}]" :key="item.id" :aria-current="tab === item.id ? 'page' : undefined" @click="setTab(item.id); if(item.id === 'history') action(d.loadHistory)">{{ item.text }}</button>
     </nav>
     <section v-if="settingsOpen" class="dictation-settings" aria-label="听写设置">
       <label for="dictation-microphone">麦克风</label>
@@ -176,7 +177,7 @@ onMounted(() => action(async () => {
     <p v-if="error" class="dictation-error" role="alert">{{ error }}</p>
     <p v-if="d.inputWarning.value" class="dictation-status" role="status">{{ d.inputWarning.value }}</p>
 
-    <RecordingDraftPane v-if="tab === 'record'" :terms="termList()" :cleanup="enableCleanup" @history="tab = 'history'; action(d.loadHistory)" />
+    <RecordingDraftPane v-if="tab === 'record'" :terms="termList()" :cleanup="enableCleanup" @history="setTab('history'); action(d.loadHistory)" />
     <section v-else-if="tab === 'upload'" class="dictation-upload">
       <h3>从一段录音开始</h3>
       <p>支持 WAV、MP3、M4A、AAC、FLAC、OGG、WebM / MP4 音轨。{{ uploadLimit }}。</p>
@@ -187,7 +188,7 @@ onMounted(() => action(async () => {
         <progress :value="d.uploadProgress.value.loaded" :max="d.uploadProgress.value.total" aria-label="实际上传进度" />
         <n-button @click="d.cancelUpload">取消上传</n-button>
       </div>
-      <div v-if="d.uploadUncertain.value"><p>提交结果不明确，请先检查历史，不会自动重新上传。</p><n-button @click="tab = 'history'; action(d.loadHistory)">检查历史</n-button><n-button @click="d.confirmUploadChecked">已检查，允许手动重试</n-button></div>
+      <div v-if="d.uploadUncertain.value"><p>提交结果不明确，请先检查历史，不会自动重新上传。</p><n-button @click="setTab('history'); action(d.loadHistory)">检查历史</n-button><n-button @click="d.confirmUploadChecked">已检查，允许手动重试</n-button></div>
     </section>
 
     <section v-else-if="tab === 'history'" class="dictation-history" aria-label="听写历史">
