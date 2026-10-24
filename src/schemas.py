@@ -87,8 +87,8 @@ class ReferenceSettings(AppBaseModel):
     ai_ocr_backend: str = "codex_api"
     gemini_ocr_model: str = "Gemini 3.5 Flash (High)"
     gemini_ocr_fallback_model: str = ""
-    codex_ocr_model: str = "gpt-6-luna"
-    codex_ocr_reasoning_effort: str = "high"
+    codex_ocr_model: str = "gemini-3.5-flash-lite"
+    codex_ocr_reasoning_effort: str = "medium"
     codex_ocr_fast_mode: bool = False
     # 用户明确要求默认每 5 秒投递一页、最多 40 个在途请求；两项仍可由任务级设置覆盖。
     codex_ocr_max_concurrency: int = Field(default=40, ge=1)
@@ -166,7 +166,7 @@ class ClassificationSettings(AppBaseModel):
 class LLMSettings(AppBaseModel):
     enabled: bool = True
     provider: str = "local_cli"
-    model: str = "gpt-6.1-sol"
+    model: str = "gemini-3.8-flash-high"
     gemini_model: str = "Gemini 3.1 Pro (High)"
     gemini_fallback_model: str = ""
     backends: list[str] = Field(default_factory=lambda: ["codex_api"])

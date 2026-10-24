@@ -116,7 +116,8 @@ class SessionGatewayClient(CodexLBClient):
 
 class Cleanup:
     def __init__(self, gateway, model="gpt-6-luna", timeout=DEFAULT_CLEANUP_TIMEOUT_SECONDS, *, project_root: Path | None = None,
-                 document_model="gpt-6-luna", document_timeout=DEFAULT_CLEANUP_TIMEOUT_SECONDS):
+                 document_model="gpt-6-luna", document_timeout=DEFAULT_CLEANUP_TIMEOUT_SECONDS,
+                 reasoning_effort="low", document_reasoning_effort="high"):
         # Resolve existing Web credentials through its approved settings API,
         # without mutating os.environ across concurrent requests.
         credential = os.getenv(gateway.api_key_env, "")
@@ -128,6 +129,7 @@ class Cleanup:
                                           require_stream_completed=True, credential=credential)
         self.model = model
         self.document_model, self.document_timeout = document_model, document_timeout
+        self.reasoning_effort, self.document_reasoning_effort = reasoning_effort, document_reasoning_effort
 
     def __call__(self, text: str, context: list[str], terms: list[str]):
         return self._request(text, context, terms)
@@ -153,7 +155,7 @@ class Cleanup:
             raise TimeoutError("全文整理总期限已到，未发布不完整建议")
         return {"text": "\n\n".join(r["text"] for r in results),
                 "needs_review": any(r["needs_review"] for r in results),
-                "metrics": {"model": self.document_model, "reasoning_effort": "high",
+                "metrics": {"model": self.document_model, "reasoning_effort": self.document_reasoning_effort,
                             "strategy": "whole" if len(chunks) == 1 else "chunked",
                             "chunk_count": len(chunks), "timeout_seconds": self.document_timeout,
                             "complete_seconds": time.monotonic() - started,
@@ -163,7 +165,7 @@ class Cleanup:
         started = time.monotonic()
         document = document_timeout is not None
         model = self.document_model if document else self.model
-        effort = "high" if document else "low"
+        effort = self.document_reasoning_effort if document else self.reasoning_effort
         client = replace(self.client, timeout_seconds=document_timeout) if document else self.client
         payload = {"model": model, "reasoning": {"effort": effort}, "instructions": DOCUMENT_INSTRUCTIONS if document else INSTRUCTIONS,
                    "input": json.dumps({"current_text": text, "context": context[-2:], "terms": terms}, ensure_ascii=False),

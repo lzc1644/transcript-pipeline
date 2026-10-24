@@ -52,6 +52,8 @@ const reasoningOptions = [
 ];
 
 const modelOptions = [
+  { label: "Gemini 3.8 Flash High（阶段 6 精修）", value: "gemini-3.8-flash-high" },
+  { label: "Gemini 3.5 Flash Lite（PDF OCR）", value: "gemini-3.5-flash-lite" },
   { label: "GPT-6.1 Sol（阶段 6 精修）", value: "gpt-6.1-sol" },
   { label: "GPT-6 Luna（PDF OCR）", value: "gpt-6-luna" },
 ];

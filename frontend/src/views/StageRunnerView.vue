@@ -161,6 +161,8 @@ const reasoningOptions = [
   { label: "最高", value: "max" },
 ];
 const modelOptions = [
+  { label: "Gemini 3.8 Flash High", value: "gemini-3.8-flash-high" },
+  { label: "Gemini 3.5 Flash Lite", value: "gemini-3.5-flash-lite" },
   { label: "GPT-6.1 Sol", value: "gpt-6.1-sol" },
   { label: "GPT-6 Luna", value: "gpt-6-luna" },
 ];

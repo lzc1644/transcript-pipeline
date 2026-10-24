@@ -850,6 +850,8 @@ class DictationService:
             "document_cleanup_timeout_seconds", DEFAULT_CLEANUP_TIMEOUT_SECONDS)
         kwargs = {"project_root": self.root,
                   "document_model": cfg.get("document_cleanup_model", "gpt-6-luna"),
+                  "reasoning_effort": cfg.get("reasoning_effort", "low"),
+                  "document_reasoning_effort": cfg.get("document_reasoning_effort", "high"),
                   "document_timeout": document_timeout} if self.cleanup_factory is Cleanup else {}
         return self.cleanup_factory(self.gateway(state), cfg["cleanup_model"], timeout, **kwargs)
 

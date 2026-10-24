@@ -11,6 +11,8 @@ export interface Utterance {
 }
 export interface DictationConfig {
   max_upload_mb: number; max_upload_minutes: number; cleanup_timeout_seconds: number;
+  cleanup_model: string; document_cleanup_model: string;
+  cleanup_reasoning_effort: string; document_reasoning_effort: string;
   document_cleanup_timeout_seconds: number; decode_timeout_seconds: number; upload_receive_timeout_seconds: number;
 }
 export interface DictationSession {
@@ -19,7 +21,8 @@ export interface DictationSession {
   document_text?: string; document_cleanup_error?: string; phase_key?: string;
   progress?: { total_samples?: number; transcribed_samples: number; asr_failed: number; cleanup_total: number; cleanup_done: number; cleanup_failed: number };
   document_suggestion?: { id: string; original: string; text: string; metrics?: { strategy: string; chunk_count: number } };
-  config: { cleanup_model: string; terms: string[]; cleanup: boolean;
+  config: { cleanup_model: string; document_cleanup_model?: string; reasoning_effort?: string;
+    document_reasoning_effort?: string; terms: string[]; cleanup: boolean;
     cleanup_timeout_seconds?: number; document_cleanup_timeout_seconds?: number };
 }
 export const activeStates = ["created", "preparing", "listening", "pausing", "paused", "draining"];
@@ -231,7 +234,8 @@ function createDictationController() {
     if (recordingSession.value?.status === "listening" && !captureAction.value) void pause().catch(() => {});
     else void captureFailure(cause, operation);
   }
-  async function start(terms: string[], cleanup: boolean) {
+  async function start(terms: string[], cleanup: boolean, cleanupModel = "", documentCleanupModel = "",
+    cleanupEffort = "", documentEffort = "") {
     if (busy.value || recognizing.value || captureAction.value || local.active.value || local.busy.value || deviceBusy.value || uploadUncertain.value) return;
     const generation = ++operation, taskGeneration = ++creation;
     recording.select(null); recordingSession.value = null;
@@ -241,7 +245,9 @@ function createDictationController() {
       terms = validateTerms(terms);
       await audio.prepare("live", deviceFailure);
       if (disposed || generation !== operation || taskGeneration !== creation) return;
-      const state = await api("/sessions", { method: "POST", body: JSON.stringify({ terms, cleanup }) });
+      const state = await api("/sessions", { method: "POST", body: JSON.stringify({ terms, cleanup,
+        cleanup_model: cleanupModel || null, document_cleanup_model: documentCleanupModel || null,
+        cleanup_reasoning_effort: cleanupEffort || null, document_reasoning_effort: documentEffort || null }) });
       if (disposed || generation !== operation || taskGeneration !== creation) {
         await api(`/sessions/${state.id}/cancel`, { method: "POST" }); return;
       }
@@ -341,7 +347,8 @@ function createDictationController() {
       }
     } finally { captureAction.value = ""; }
   }
-  async function upload(file: File, terms: string[], cleanup: boolean) {
+  async function upload(file: File, terms: string[], cleanup: boolean, cleanupModel = "", documentCleanupModel = "",
+    cleanupEffort = "", documentEffort = "") {
     if (busy.value || recognizing.value || captureAction.value || uploadUncertain.value) return;
     const taskGeneration = ++creation, token = choose(null);
     // A completed predecessor has no cancellation authority over this new task.
@@ -351,6 +358,10 @@ function createDictationController() {
       terms = validateTerms(terms);
       await loadConfig();
       const query = new URLSearchParams({ filename: file.name, terms: JSON.stringify(terms), cleanup: String(cleanup) });
+      if (cleanupModel) query.set("cleanup_model", cleanupModel);
+      if (documentCleanupModel) query.set("document_cleanup_model", documentCleanupModel);
+      if (cleanupEffort) query.set("cleanup_reasoning_effort", cleanupEffort);
+      if (documentEffort) query.set("document_reasoning_effort", documentEffort);
       const state: DictationSession = await new Promise((resolve, reject) => {
         const xhr = uploading = new XMLHttpRequest();
         uploadProgress.value = { loaded: 0, total: file.size };

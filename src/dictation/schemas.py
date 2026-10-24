@@ -15,9 +15,17 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+CleanupModel = Literal["gpt-6-luna", "gpt-6.1-sol", "gemini-3.8-flash-high", "gemini-3.5-flash-lite"]
+ReasoningEffort = Literal["low", "medium", "high", "xhigh", "max"]
+
+
 class SessionRequest(StrictModel):
     terms: list[str] = Field(default_factory=list, max_length=50)
     cleanup: bool = True
+    cleanup_model: CleanupModel | None = None
+    document_cleanup_model: CleanupModel | None = None
+    cleanup_reasoning_effort: ReasoningEffort | None = None
+    document_reasoning_effort: ReasoningEffort | None = None
 
     @field_validator("terms")
     @classmethod
@@ -51,8 +59,10 @@ class DictationSettings(StrictModel):
     final_python: str = ".venv/asr-py312/bin/python"
     model_dir: str = "data/models/dictation"
     cleanup_model: str = "gpt-6-luna"
+    cleanup_reasoning_effort: str = "low"
     cleanup_timeout_seconds: int = Field(default=3600, ge=1, le=3600)
     document_cleanup_model: str = "gpt-6-luna"
+    document_reasoning_effort: str = "high"
     document_cleanup_timeout_seconds: int = Field(default=3600, ge=1, le=3600)
     decode_timeout_seconds: int = Field(default=900, ge=1, le=3600)
     max_upload_mb: int = Field(default=512, ge=1, le=1000)
@@ -68,14 +78,19 @@ class DictationSettings(StrictModel):
     def freeze(self, root: Path, loaded, request: SessionRequest, *, preview=True):
         models = root / self.model_dir
         return {
-            **self.model_dump(), **request.model_dump(), "preview": preview,
+            **self.model_dump(exclude={"cleanup_reasoning_effort"}),
+            **request.model_dump(include={"terms", "cleanup"}), "preview": preview,
+            "cleanup_model": request.cleanup_model or self.cleanup_model,
+            "document_cleanup_model": request.document_cleanup_model or self.document_cleanup_model,
+            "reasoning_effort": request.cleanup_reasoning_effort or self.cleanup_reasoning_effort,
+            "document_reasoning_effort": request.document_reasoning_effort or self.document_reasoning_effort,
             "cpu_python": str(root / self.cpu_python), "final_python": str(root / self.final_python),
             "streaming_model": str(models / "paraformer"), "vad_model": str(models / "silero_vad_v6.onnx"),
             "streaming_model_id": MODEL_ID, "streaming_revision": MODEL_REVISION,
             "qwen_model": get_candidate("qwen3-asr-0.6b").model,
             "qwen_revision": get_candidate("qwen3-asr-0.6b").revision,
             "qwen_cache": str(loaded.resolve_path(loaded.active_profile.cache_dir) / loaded.settings.asr.backend_cache_subdir),
-            "reasoning_effort": "low", "document_reasoning_effort": "high", "segmentation": {k: getattr(self, k) for k in
+            "segmentation": {k: getattr(self, k) for k in
                 ("pre_ms", "silence_ms", "tail_ms", "target_seconds", "hard_seconds")},
         }
 

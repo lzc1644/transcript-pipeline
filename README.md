@@ -290,11 +290,11 @@ Base URL 可填服务根地址或带 `/v1` 的地址（支持尾部 `/` 和反�
 相关默认配置：
 
 - 阶段 6：`llm.backends = ["codex_api"]`
-- 阶段 6 默认模型：`llm.model = gpt-6.1-sol`（GPT-6.1 Sol）；读取旧 Web 保存的 `gpt-6-sol` 默认值时映射到新 ID，不改写历史任务配置
+- 阶段 6 默认模型：`llm.model = gemini-3.8-flash-high`；阶段 6 整理已有 ASR 文本，不直接识别音频。读取旧 Web 保存的 `gpt-6-sol` 时仍映射到 `gpt-6.1-sol`，不改写历史任务配置
 - 阶段 6 reasoning 支持 `low`、`medium`、`high`、`xhigh`、`max`；默认值为 `llm.reasoning_effort = high`
 - PDF OCR：`reference.ai_ocr_backend = codex_api`
-- PDF OCR 模型：`reference.codex_ocr_model = gpt-6-luna`（GPT-6 Luna）
-- PDF OCR reasoning：`reference.codex_ocr_reasoning_effort = high`
+- PDF OCR 默认模型：`reference.codex_ocr_model = gemini-3.5-flash-lite`
+- PDF OCR 默认 reasoning：`reference.codex_ocr_reasoning_effort = medium`
 - PDF OCR 最大并发：`reference.codex_ocr_max_concurrency = 40`；只限制同时在途请求，必须为正整数，可在独立 PDF OCR 页面按任务调整
 - PDF OCR 投递间隔：`reference.codex_ocr_submit_interval_seconds = 5.0` 秒；每次只新增一张图片，不等待前一页完成，可在独立 PDF OCR 页面按任务调整，最终仍按原始页码拼接
 - PDF OCR 等待时间：`reference.ocr_timeout_seconds = 480`

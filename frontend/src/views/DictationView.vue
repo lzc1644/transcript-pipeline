@@ -14,6 +14,20 @@ const tab = computed(() => ['record', 'upload', 'history'].includes(String(route
 function setTab(mode: string) { return router.replace({ query: { ...route.query, mode } }); }
 const terms = ref("");
 const enableCleanup = ref(true);
+const cleanupModel = ref("");
+const documentCleanupModel = ref("");
+const cleanupEffort = ref("");
+const documentEffort = ref("");
+const cleanupModels = [
+  { value: "gpt-6-luna", label: "GPT-6 Luna" },
+  { value: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash Lite" },
+  { value: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash High" },
+  { value: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+];
+const effortOptions = [
+  { value: "low", label: "低" }, { value: "medium", label: "中" }, { value: "high", label: "高" },
+  { value: "xhigh", label: "很高" }, { value: "max", label: "最高" },
+];
 const settingsOpen = ref(false);
 const savedTerms = ref<string[]>([]), chosenTerms = ref<string[]>([]), newTerm = ref("");
 try {
@@ -116,7 +130,8 @@ async function uploadChanged(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0];
   if (file) {
     const submittedTab = tab.value;
-    await d.upload(file, termList(), enableCleanup.value);
+    await d.upload(file, termList(), enableCleanup.value, cleanupModel.value, documentCleanupModel.value,
+      cleanupEffort.value, documentEffort.value);
     if (!error.value && route.path === '/dictation' && tab.value === submittedTab) await setTab('live');
   }
   if (uploadInput.value) uploadInput.value.value = "";
@@ -166,18 +181,42 @@ onMounted(() => action(async () => {
       <p>首次选择后保存到本浏览器；设备不可用时请重新选择，不会悄悄切换。录音中请先暂停，再切换设备。试音只保存本地草稿，不调用识别或整理。</p>
       <label for="dictation-terms">少量术语 <span>每行一个或逗号分隔，最多50项</span></label>
       <textarea id="dictation-terms" v-model="terms" :disabled="active" rows="3" placeholder="WebSocket&#10;项目专名" />
-      <label class="dictation-inline"><input type="checkbox" v-model="enableCleanup" :disabled="active" />使用逐句轻度整理（Luna · low）</label>
+      <label class="dictation-inline"><input type="checkbox" v-model="enableCleanup" :disabled="active" />使用逐句轻度整理</label>
+      <div class="dictation-model-row">
+        <div><label for="dictation-cleanup-model">逐句快速处理模型</label>
+          <select id="dictation-cleanup-model" v-model="cleanupModel" :disabled="active">
+            <option value="">服务器默认（{{ d.serverConfig.value?.cleanup_model || '读取中' }}）</option>
+            <option v-for="model in cleanupModels" :key="model.value" :value="model.value">{{ model.label }}</option>
+          </select></div>
+        <div><label for="dictation-cleanup-effort">逐句思考强度</label>
+          <select id="dictation-cleanup-effort" v-model="cleanupEffort" :disabled="active">
+            <option value="">默认（{{ d.serverConfig.value?.cleanup_reasoning_effort || '读取中' }}）</option>
+            <option v-for="effort in effortOptions" :key="effort.value" :value="effort.value">{{ effort.label }}</option>
+          </select></div>
+      </div>
+      <div class="dictation-model-row">
+        <div><label for="dictation-document-model">全文整理模型</label>
+          <select id="dictation-document-model" v-model="documentCleanupModel" :disabled="active">
+            <option value="">服务器默认（{{ d.serverConfig.value?.document_cleanup_model || '读取中' }}）</option>
+            <option v-for="model in cleanupModels" :key="model.value" :value="model.value">{{ model.label }}</option>
+          </select></div>
+        <div><label for="dictation-document-effort">全文思考强度</label>
+          <select id="dictation-document-effort" v-model="documentEffort" :disabled="active">
+            <option value="">默认（{{ d.serverConfig.value?.document_reasoning_effort || '读取中' }}）</option>
+            <option v-for="effort in effortOptions" :key="effort.value" :value="effort.value">{{ effort.label }}</option>
+          </select></div>
+      </div>
       <details><summary>本浏览器的常用术语（主动选用，不自动改写已有会话）</summary>
         <div class="dictation-inline"><input v-model="newTerm" aria-label="新常用术语" placeholder="一个正确词或项目名" /><n-button @click="action(async () => addTerm(newTerm))">保存常用术语</n-button></div>
         <div v-for="term in savedTerms" :key="term" class="dictation-inline"><label><input v-model="chosenTerms" type="checkbox" :value="term" />{{ term }}</label><n-button text size="small" :aria-label="`删除常用术语${term}`" @click="action(async () => { storeTerms(savedTerms.filter(value => value !== term)); chosenTerms = chosenTerms.filter(value => value !== term); })">移除</n-button></div>
         <n-button :disabled="active || !chosenTerms.length" @click="terms = validateTerms(chosenTerms).join('\n')">用于下次识别</n-button>
       </details>
-      <p>CPU 流式 Paraformer → GPU Qwen 0.6B → Luna low。停止后可用 Luna high 整体整理全文，再预览确认。术语仅作参考，不强制替换。密钥沿用服务端运行设置。</p>
+      <p>Qwen 负责最终识别；上面两项只处理识别后的文字，并在新会话中固定。密钥沿用运行设置。</p>
     </section>
     <p v-if="error" class="dictation-error" role="alert">{{ error }}</p>
     <p v-if="d.inputWarning.value" class="dictation-status" role="status">{{ d.inputWarning.value }}</p>
 
-    <RecordingDraftPane v-if="tab === 'record'" :terms="termList()" :cleanup="enableCleanup" @history="setTab('history'); action(d.loadHistory)" />
+    <RecordingDraftPane v-if="tab === 'record'" :terms="termList()" :cleanup="enableCleanup" :cleanup-model="cleanupModel" :document-cleanup-model="documentCleanupModel" :cleanup-effort="cleanupEffort" :document-effort="documentEffort" @history="setTab('history'); action(d.loadHistory)" />
     <section v-else-if="tab === 'upload'" class="dictation-upload">
       <h3>从一段录音开始</h3>
       <p>支持 WAV、MP3、M4A、AAC、FLAC、OGG、WebM / MP4 音轨。{{ uploadLimit }}。</p>
@@ -236,7 +275,7 @@ onMounted(() => action(async () => {
         <p v-if="connection" class="dictation-status" role="status">{{ connection }}</p>
         <div class="dictation-actions">
           <n-button v-if="captureAction === 'starting' && !recognizing" @click="action(() => d.stop(null))">结束准备</n-button>
-          <n-button v-else-if="!active" type="primary" :loading="busy" :disabled="recognizing || !!captureAction || d.local.active.value || d.local.busy.value || d.uploadUncertain.value" @click="d.start(termList(), enableCleanup)">开始听写</n-button>
+          <n-button v-else-if="!active" type="primary" :loading="busy" :disabled="recognizing || !!captureAction || d.local.active.value || d.local.busy.value || d.uploadUncertain.value" @click="d.start(termList(), enableCleanup, cleanupModel, documentCleanupModel, cleanupEffort, documentEffort)">开始听写</n-button>
           <n-button v-else type="primary" :disabled="session?.status === 'draining'" @click="action(() => d.stop(session!.id))">{{ session?.status === 'draining' ? '正在完成尾部' : '停止' }}</n-button>
           <n-button v-if="recognizing" quaternary @click="d.showRecording">返回活动会话</n-button>
           <n-button v-if="active && session?.mode === 'upload'" :disabled="!!d.fileAction.value || !['listening','draining','paused'].includes(session.status)" @click="action(() => d.fileControl(session!.id, session!.status === 'paused' ? 'resume' : 'pause'))">{{ session.status === 'paused' ? '继续转写' : '暂停转写' }}</n-button>
@@ -269,6 +308,10 @@ onMounted(() => action(async () => {
 .dictation-page { max-width: 960px; margin: 0 auto; gap: 20px; }
 .dictation-page > audio { width: 100%; max-width: 560px; }
 .dictation-settings select, .dictation-settings input:not([type=checkbox]) { padding: 8px; max-width: 100%; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-raised); color: var(--text-primary); }
+.dictation-model-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(150px, 1fr); gap: 12px; }
+.dictation-model-row > div { display: grid; gap: 6px; min-width: 0; }
+.dictation-model-row select { width: 100%; }
+@media (max-width: 600px) { .dictation-model-row { grid-template-columns: 1fr; } }
 .dictation-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .dictation-tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--border-strong); }
 .dictation-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--text-secondary); padding: 8px 0 12px; cursor: pointer; }

@@ -295,11 +295,6 @@ def is_meta_line(text: str) -> bool:
     return any(marker.lower() in normalized for marker in META_LINE_MARKERS)
 
 
-def strip_leading_ascii_noise(text: str) -> str:
-    # 年份、日期等数字属于正文，不能和模型偶发输出的 ASCII 噪声一起删除。
-    return re.sub(r"^[A-Za-z`~!@#$%^&*()_+\-=\[\]{}|\\:;\"'<>,.?/\s]+(?=[\u3400-\u9fff])", "", text).strip()
-
-
 def normalize_ocrmypdf_edge_line(text: str) -> str:
     normalized = re.sub(r"\d+", "#", text.strip())
     normalized = re.sub(r"\s+", " ", normalized)
@@ -491,11 +486,11 @@ def sanitize_gemini_ocr_text(text: str) -> str:
                 continue
             continue
 
-        if not started and not is_cjk_content_line(line):
+        if not started and re.fullmatch(r"[A-Za-z]{1,2}>\.{2,}", line):
             continue
 
         started = True
-        output_lines.append(strip_leading_ascii_noise(line))
+        output_lines.append(re.sub(r"^t(?=[\u3400-\u9fff])", "", line))
 
     while output_lines and output_lines[-1] == "":
         output_lines.pop()

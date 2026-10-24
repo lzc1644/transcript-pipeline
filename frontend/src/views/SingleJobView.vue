@@ -337,7 +337,7 @@ onBeforeUnmount(stopPolling);
                   </n-grid-item>
                 <n-grid-item v-if="!isConversation" span="2 m:1">
                   <n-form-item label="PDF OCR 模型">
-                    <n-input v-model:value="form.ocr_model" placeholder="例如 gpt-6-luna" />
+                    <n-input v-model:value="form.ocr_model" placeholder="例如 gemini-3.5-flash-lite" />
                   </n-form-item>
                 </n-grid-item>
                 <n-grid-item v-if="!isConversation" span="2 m:1">

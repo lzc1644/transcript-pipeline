@@ -109,8 +109,8 @@ reference:
   ai_ocr_backend: codex_api
   gemini_ocr_model: Gemini 3.5 Flash (High)
   gemini_ocr_fallback_model: ""
-  codex_ocr_model: gpt-6-luna
-  codex_ocr_reasoning_effort: high
+  codex_ocr_model: gemini-3.5-flash-lite
+  codex_ocr_reasoning_effort: medium
   # 仅 PDF OCR 请求快速服务，不改变模型、推理强度或并发；可能增加额度消耗。
   codex_ocr_fast_mode: false
   # 默认每 5 秒新增一页，不等待前一页完成；最多允许 40 个请求同时在途，Web 任务可单独覆盖。
@@ -181,7 +181,7 @@ classification:
 llm:
   enabled: true
   provider: local_cli
-  model: gpt-6.1-sol
+  model: gemini-3.8-flash-high
   gemini_model: Gemini 3.1 Pro (High)
   gemini_fallback_model: ""
   backends:

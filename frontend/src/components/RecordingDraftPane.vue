@@ -2,7 +2,8 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { NButton } from "naive-ui";
 import { useDictation } from "../composables/useDictation";
-const props = defineProps<{ terms: string[]; cleanup: boolean }>();
+const props = defineProps<{ terms: string[]; cleanup: boolean; cleanupModel: string; documentCleanupModel: string;
+  cleanupEffort: string; documentEffort: string }>();
 const emit = defineEmits<{ history: [] }>();
 const d = useDictation(), local = d.local;
 const { draft, drafts, busy, active, capturing, level, error, recordedSamples, playbackURL, submittingId, readOnly } = local;
@@ -20,7 +21,8 @@ async function submit() {
   if (!canSubmit.value || !draft.value) return;
   player.value?.pause();
   const { blob, draft: frozen } = await local.freezeForSubmission();
-  const state = await d.upload(new File([blob], `recording-${frozen.id}.wav`, { type: 'audio/wav' }), props.terms, props.cleanup);
+  const state = await d.upload(new File([blob], `recording-${frozen.id}.wav`, { type: 'audio/wav' }), props.terms, props.cleanup,
+    props.cleanupModel, props.documentCleanupModel, props.cleanupEffort, props.documentEffort);
   await local.submission(frozen.id, state ? 'submitted' : d.uploadUncertain.value ? 'unknown' : 'failed', frozen.samples, state?.id);
 }
 function remove(id: string) {

@@ -50,6 +50,23 @@ def test_whole_document_payload_uses_current_edited_body_high_and_independent_bu
     asyncio.run(run())
 
 
+def test_sentence_and_document_models_and_efforts_are_independent(monkeypatch):
+    sent = []
+    def response(client, payload, **kwargs):
+        sent.append(payload)
+        return json.dumps({"text": "整理后文本。", "needs_review": False})
+    monkeypatch.setattr(SessionGatewayClient, "codex_responses_text", response)
+    cleaner = Cleanup(CodexLBSettings(base_url="http://testserver"), model="gemini-3.5-flash-lite",
+                      document_model="gemini-3.8-flash-high", reasoning_effort="medium",
+                      document_reasoning_effort="xhigh")
+    sentence = cleaner("识别文本", [], [])
+    document = cleaner.document("整篇识别文本", [], [])
+    assert [(item["model"], item["reasoning"]["effort"]) for item in sent] == [
+        ("gemini-3.5-flash-lite", "medium"), ("gemini-3.8-flash-high", "xhigh")]
+    assert sentence["metrics"]["reasoning_effort"] == "medium"
+    assert document["metrics"]["reasoning_effort"] == "xhigh"
+
+
 def test_high_reasoning_incomplete_sse_never_publishes_a_document(root, dripping_gateway, monkeypatch):
     port, *_ = dripping_gateway
     monkeypatch.setenv("DICTATION_DEADLINE_TEST_KEY", "local-test-only")

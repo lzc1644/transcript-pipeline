@@ -81,8 +81,8 @@ reference:
   ai_ocr_backend: codex_api
   gemini_ocr_model: Gemini 3.5 Flash (High)
   gemini_ocr_fallback_model: ""
-  codex_ocr_model: gpt-6-luna
-  codex_ocr_reasoning_effort: high
+  codex_ocr_model: gemini-3.5-flash-lite
+  codex_ocr_reasoning_effort: medium
   # 默认每 5 秒新增一页，不等待前一页完成；最多允许 40 个请求同时在途，Web 任务可单独覆盖。
   codex_ocr_max_concurrency: 40
   codex_ocr_submit_interval_seconds: 5.0
@@ -110,7 +110,7 @@ classification:
 llm:
   enabled: false
   provider: openai
-  model: gpt-6.1-sol
+  model: gemini-3.8-flash-high
   gemini_model: Gemini 3.1 Pro (High)
   gemini_fallback_model: ""
   backends:

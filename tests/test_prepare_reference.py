@@ -877,6 +877,12 @@ Page 1:
     )
 
 
+def test_sanitize_gemini_ocr_text_preserves_english_only_and_mixed_first_lines() -> None:
+    assert sanitize_gemini_ocr_text("Reading club, October 2026.\nChapter 1: The Beginning.") == (
+        "Reading club, October 2026.\nChapter 1: The Beginning.")
+    assert sanitize_gemini_ocr_text("Adam Smith认为资本存在周转。") == "Adam Smith认为资本存在周转。"
+
+
 def test_run_agy_pdf_ocr_sanitizes_model_output_before_return_and_sidecar(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

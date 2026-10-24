@@ -68,6 +68,9 @@ def install_dictation(app, root: Path):
         with api_errors():
             settings = load_dictation_settings(root)
             return {"enabled": settings.enabled, "cleanup_model": settings.cleanup_model,
+                    "document_cleanup_model": settings.document_cleanup_model,
+                    "cleanup_reasoning_effort": settings.cleanup_reasoning_effort,
+                    "document_reasoning_effort": settings.document_reasoning_effort,
                     "max_upload_mb": settings.max_upload_mb, "max_upload_minutes": settings.max_upload_minutes,
                     "cleanup_timeout_seconds": settings.cleanup_timeout_seconds,
                     "document_cleanup_timeout_seconds": settings.document_cleanup_timeout_seconds,
@@ -185,7 +188,9 @@ def install_dictation(app, root: Path):
             return {"deleted": True}
 
     @router.post("/uploads")
-    async def upload(request: Request, response: Response, filename: str, terms: str = "[]", cleanup: bool = True):
+    async def upload(request: Request, response: Response, filename: str, terms: str = "[]", cleanup: bool = True,
+                     cleanup_model: str | None = None, document_cleanup_model: str | None = None,
+                     cleanup_reasoning_effort: str | None = None, document_reasoning_effort: str | None = None):
         validate_origin(request)
         suffix = Path(filename).suffix.lower()
         if suffix not in AUDIO_EXTENSIONS:
@@ -193,7 +198,10 @@ def install_dictation(app, root: Path):
         identifier = owner(request) if request.cookies.get(COOKIE) else secrets.token_urlsafe(32)
         with api_errors():
             length = int(request.headers.get("content-length", "0"))
-            body = SessionRequest(terms=json.loads(terms), cleanup=cleanup)
+            body = SessionRequest(terms=json.loads(terms), cleanup=cleanup,
+                                  cleanup_model=cleanup_model, document_cleanup_model=document_cleanup_model,
+                                  cleanup_reasoning_effort=cleanup_reasoning_effort,
+                                  document_reasoning_effort=document_reasoning_effort)
             state = await service.create(identifier, body, upload_name="upload" + suffix, start=False)
             await service.receive_upload(state["id"], identifier, request.stream(), length)
         response.set_cookie(COOKIE, identifier, httponly=True, samesite="strict",

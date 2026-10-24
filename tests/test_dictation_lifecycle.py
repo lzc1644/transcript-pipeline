@@ -251,9 +251,23 @@ def test_http_snapshot_download_edit_and_owner_are_consistent(root):
     app.state.dictation.cleanup_factory = fake_cleanup
     headers = {"Origin": "http://testserver"}
     with TestClient(app) as client:
+        config = client.get("/api/dictation/config").json()
+        assert (config["cleanup_model"], config["cleanup_reasoning_effort"]) == ("gpt-6-luna", "low")
+        assert (config["document_cleanup_model"], config["document_reasoning_effort"]) == ("gpt-6-luna", "high")
         assert client.post("/api/dictation/sessions", json={}).status_code == 403
-        response = client.post("/api/dictation/sessions", json={}, headers=headers)
+        assert client.post("/api/dictation/sessions", json={"cleanup_model": "wrong"}, headers=headers).status_code == 422
+        assert client.post("/api/dictation/sessions", json={"document_cleanup_model": "wrong"}, headers=headers).status_code == 422
+        assert client.post("/api/dictation/sessions", json={"cleanup_reasoning_effort": "wrong"}, headers=headers).status_code == 422
+        assert client.post("/api/dictation/sessions", json={"document_reasoning_effort": "wrong"}, headers=headers).status_code == 422
+        response = client.post("/api/dictation/sessions", json={
+            "cleanup_model": "gemini-3.5-flash-lite", "cleanup_reasoning_effort": "medium",
+            "document_cleanup_model": "gemini-3.8-flash-high", "document_reasoning_effort": "high",
+        }, headers=headers)
         assert response.status_code == 200
+        assert response.json()["config"]["cleanup_model"] == "gemini-3.5-flash-lite"
+        assert response.json()["config"]["reasoning_effort"] == "medium"
+        assert response.json()["config"]["document_cleanup_model"] == "gemini-3.8-flash-high"
+        assert response.json()["config"]["document_reasoning_effort"] == "high"
         sid = response.json()["id"]
         with client.websocket_connect(f"/api/dictation/sessions/{sid}/stream", headers=headers) as ws:
             for _ in range(100):

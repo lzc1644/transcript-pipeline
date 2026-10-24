@@ -8,11 +8,11 @@
 2. 文字框内显示当前句预览和已完成正文；停顿后先显示 Qwen 最终识别，再提交逐句整理结果。框内滚动，录音/复制按钮不随文字增长下移；浏览旧句时暂停自动跟随，可点「回到最新」。
 3. 录音由应用级唯一控制器持有，切到任务列表、设置或历史不会中断。底部常驻面板可「暂停听写 / 继续听写」「结束听写」「复制正文」「正文」；收起后仍保留状态和暂停/继续入口。暂停立即关闭麦克风、保留尾包，不插入静音；只有服务端确认后显示「已暂停」。
 4. 「结束听写」立即释放麦克风，继续完成已收到的尾部。暂停时仍占用模型和 GPU 锁；排队识别/整理可继续，暂停不是释放识别资源。关闭/刷新页面不自动恢复麦克风；断线超过会话宽限期（默认10秒）后结束已接收内容。
-5. 「设置」提供少量术语和整理开关。术语只作为最终识别与整理参考，不强制替换，也不继承读书会词表或书名。
+5. 「设置」分别选择 Qwen 识别后的逐句快速处理模型、全文整理模型及各自的思考强度，并提供少量术语和整理开关。选项随新会话冻结；术语只作为最终识别与整理参考，不强制替换，也不继承读书会词表或书名。
 6. 三个入口分别为「实时听写」「录音转写」「导入音频」，另有服务器历史。「录音转写」先用同一采音引擎录到本浏览器 IndexedDB，不创建服务端会话、不启动 worker、不占 GPU；暂停后继续追加同一草稿，结束后可试听、下载 WAV 或提交既有上传链路。
 7. 「导入音频」显示实际上传字节并可取消；上传完成后可暂停/继续文件转写。默认最多 512 MiB、4 小时；无网络断点续传。解码无假百分比；转写进度按实际已处理音频位置计，整理按当前应整理/已结束任务计，失败单列。
 8. 「历史结果」只列本浏览器拥有的会话。删除需确认，先停止接收、推理和整理，再删除音频与文字。
-9. 停止并处理完成后，点击「整理全文」使用 Luna high 整体整理当前正文（含人工修改）。先展示差异，确认后才应用；已应用/编辑的全文也可再次整理。失败时保留原稿，可重试。
+9. 停止并处理完成后，点击「整理全文」使用当前会话选定的全文整理模型处理正文（含人工修改）。先展示差异，确认后才应用；已应用/编辑的全文也可再次整理。失败时保留原稿，可重试。
 
 「紧凑小窗」打开同一个会话的结果视图，使用相同浏览器凭据。原窗口继续拥有麦克风；小窗可以查看、编辑、复制或停止。暂停/继续须返回原录音窗口，小窗不会抢占麦克风。不要在录音时关闭原录音窗口；断开超过宽限期后服务端会结束会话。没有会话时也可先开小窗，再直接在小窗开始听写。
 
@@ -44,11 +44,11 @@
 
 - CPU：`csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en`，INT8，sherpa-onnx 真正增量识别。与批处理 SeACo Paraformer 是不同模型。
 - GPU：注册表中的 Qwen3-ASR 0.6B 固定 revision，每个会话加载一次。只对完整短句识别，不加载 ForcedAligner，不用第一遍文字提示第二遍。
-- HTTP 网关：`gpt-6-luna`。逐句显式 `reasoning.effort=low`；手动全文整理显式 `high`。只处理最终识别/当前正文，不再重跑 ASR。完整 JSON 校验后才提交，不执行转录中的指令，不自动切供应商。
+- HTTP 网关：逐句快速处理和手动全文整理默认各用 `gpt-6-luna`，新会话可分别选择 `gemini-3.5-flash-lite`、`gemini-3.8-flash-high` 或 `gpt-6.1-sol`，并分别设定思考强度。默认逐句 `low`、全文 `high`。两者只处理最终识别/当前正文，不重跑 ASR。完整 JSON 校验后才提交，不执行转录中的指令，不自动切供应商。历史会话重试仍使用创建时冻结的模型和强度。
 
 两套提示词分开维护：逐句只轻度修复当前句，全文结合上下文恢复断句、段落和高把握的同音错字；均保留数字、否定、条件、主体、专名与中英混说，不总结或补造事实。疑似听错无法唯一判断时保留原表达并标记复核。
 
-Luna逐句和全文校对默认均为3600秒（1小时）**总期限**；这是允许的最长等待，不会强制等待满1小时。全文输出预算仍为16K–32K（包含推理与正文），逐句为4096输出token。普通正文不超过12000字符时一次整体请求；更长正文由 Cleanup 明确分块，界面注明分块及段数，所有块共享同一个3600秒期限。任一块超时、截断或缺少completed事件时不发布部分建议。超时返回504，网关/格式错误返回502并附中文原因；原稿和TXT不变。相同会话的全文整理 single-flight，主窗/小窗重复点击返回409，原请求实际退出前不会放行；不同会话仍共享全局并发2。
+逐句和全文整理默认均为3600秒（1小时）**总期限**；这是允许的最长等待，不会强制等待满1小时。全文输出预算仍为16K–32K（包含推理与正文），逐句为4096输出token。普通正文不超过12000字符时一次整体请求；更长正文由 Cleanup 明确分块，界面注明分块及段数，所有块共享同一个3600秒期限。任一块超时、截断或缺少completed事件时不发布部分建议。超时返回504，网关/格式错误返回502并附中文原因；原稿和TXT不变。相同会话的全文整理 single-flight，主窗/小窗重复点击返回409，原请求实际退出前不会放行；不同会话仍共享全局并发2。
 
 LLM 仍可能出错，`needs_review` 是建议而不是置信度。数字、否定、主体、条件和中英混说应人工核对。固定规则要求保留中英混说，不把英文翻译成中文。跨句改口不会静默重写较早正文。
 
@@ -64,7 +64,7 @@ LLM 仍可能出错，`needs_review` 是建议而不是置信度。数字、否�
 
 Qwen 环境默认 `.venv/asr-py312/bin/python`，也可由 `TRANSCRIPT_ASR_PYTHON` 指定；模型缓存沿用当前 profile 的 `cache_dir/asr-models/hf`。首次使用前按既有 ASR 文档准备 Qwen 0.6B 的固定 revision。听写启动使用 `local_files_only=True` / `HF_HUB_OFFLINE=1`，不会边录音边下载。
 
-网关地址与鉴权通过现有网页运行设置或配置指定的环境变量解析；临时测试密钥可只放进启动进程的环境，勿写入源码或测试产物。听写冻结网关地址和模型配置，不继承阶段 6 的模型、推理配置或校对系统指令，逐句low/全文high由听写独立设置。两个推理 worker 不需要访问远端 LLM。
+网关地址与鉴权通过现有网页运行设置或配置指定的环境变量解析；临时测试密钥可只放进启动进程的环境，勿写入源码或测试产物。听写冻结网关地址、两个处理模型与各自的思考强度，不继承阶段 6 的配置或校对系统指令。两个推理 worker 不需要访问远端 LLM。
 
 完成前端构建后，按现有方法启动服务，或本机单进程运行：
 
@@ -119,9 +119,9 @@ services:
 
 运行 `export DICTATION_CONFIG_FILE=/absolute/path/dictation.json` 后，`docker compose up -d --no-build --wait trans` 才会应用挂载。不要挂整个 `config/` 覆盖镜像默认配置。原生 Linux 部署脚本显式只使用基础 Compose，不读取本机 override；自定义配置应使用这里的手工 Compose 命令部署。配置在会话创建时读取，新会话才使用新参数；既有会话配置保持冻结。
 
-`enabled=false` 阻止新会话，不影响读书会流水线。还可配置 `cpu_python`、`final_python`、`model_dir`、`cleanup_model`、`cleanup_timeout_seconds`、`document_cleanup_model`、`document_cleanup_timeout_seconds`、`decode_timeout_seconds`、`pre_ms`、`silence_ms`、`tail_ms`、`target_seconds`、`hard_seconds`。默认分别为 250ms 前留、700ms 静音、150ms 尾留、20s 软目标、25s 硬上限。硬切分标记需复核，不当作自然句界。
+`enabled=false` 阻止新会话，不影响读书会流水线。还可配置 `cpu_python`、`final_python`、`model_dir`、`cleanup_model`、`cleanup_reasoning_effort`、`cleanup_timeout_seconds`、`document_cleanup_model`、`document_reasoning_effort`、`document_cleanup_timeout_seconds`、`decode_timeout_seconds`、`pre_ms`、`silence_ms`、`tail_ms`、`target_seconds`、`hard_seconds`。默认分别为 250ms 前留、700ms 静音、150ms 尾留、20s 软目标、25s 硬上限。硬切分标记需复核，不当作自然句界。
 
-当前逐句为 Luna `low`，全文为 Luna `high`（早期 `none` 实测仅保留作历史基线）。旧会话自动逐句处理仍用创建时冻结的期限；手动逐句重试及「整理全文」使用当前服务器配置（默认3600秒），不回写旧配置快照。缺少全文模型参数时仍采用 Luna high。实际期限记在每次结果的metrics，网页也显示当前校对期限。Gemini 对照脚本不自动改运行默认值，也不假定其他模型支持相同推理参数。
+未选择模型和强度时，逐句为 Luna `low`、全文为 Luna `high`（早期 `none` 实测仅保留作历史基线）。旧会话自动逐句处理仍用创建时冻结的期限；手动逐句重试及「整理全文」使用当前服务器配置的期限（默认3600秒），模型和强度继续使用会话快照，不回写旧配置。实际期限记在每次结果的 metrics，网页也显示当前校对期限。
 
 ## 状态、数据与唯一正文
 
@@ -161,12 +161,12 @@ ffmpeg -nostdin -n -f s16le -ar 16000 -ac 1 -i /path/to/source.pcm recovered.wav
 
 路由均在 `/api/dictation`：
 
-- `POST /sessions`、`GET /sessions`、`GET /sessions/{id}`。
+- `POST /sessions`、`GET /sessions`、`GET /sessions/{id}`。创建请求可分别带 `cleanup_model`、`document_cleanup_model`（`gpt-6-luna` / `gpt-6.1-sol` / `gemini-3.8-flash-high` / `gemini-3.5-flash-lite`）和 `cleanup_reasoning_effort`、`document_reasoning_effort`（`low` / `medium` / `high` / `xhigh` / `max`）；省略时保持各自的服务端默认。
 - `WS /sessions/{id}/stream`：双向音频与事件。二进制头 `<uint32 sequence, uint64 start_sample>`，后接 16 kHz、单声道、小端 PCM16；正常网络包 80ms，暂停/结束尾包可不足80ms。
   - 暂停：先关闭本地新增采音并 flush 尾包，再在同一 WS 发送 `{type:"pause",next_sequence,samples}`。服务端校验接收边界，CPU 收尾 `boundary=pause`、重置 VAD/预览但不退出，提交 `session.paused`。不提供可能越过音频的独立 HTTP 实时暂停。
   - 继续：主动申请麦克风但先不发布音频，发送 `{type:"resume",next_sequence,samples}`，收到最新 listening 确认后开启新采音 lease。样本/包号/句号继续递增；迟到权限、Worklet、连接或终止后的回调不能恢复采音。
   - `pause_boundaries` 为新增可选字段；旧会话没有该字段也可读取。延迟通过各段采音的样本时钟映射，暂停空档不计入后续语句延迟；`metrics.paused_wall_seconds` 单独记录已结束的暂停时长。
-- `POST /uploads?filename=...&terms=[...]&cleanup=true`：原始文件请求体。
+- `POST /uploads?filename=...&terms=[...]&cleanup=true`：原始文件请求体，可附加与创建请求相同的两个模型参数。
 - `GET /sessions/{id}/utterances/{uid}/audio`：仅按有权限会话和已存在句子读取WAV，拒绝路径/符号链接，支持音频范围读取。
 - `PATCH /sessions/{id}/utterances/{uid}`：`{revision,text,discard_document?}`。
 - `PATCH /sessions/{id}/draft`：`{revision,text}`。
