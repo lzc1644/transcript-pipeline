@@ -20,7 +20,7 @@ def emit(event):
 def cpu_worker(config):
     import numpy as np
     from src.dictation.audio import Segmenter, SegmentConfig, SileroVAD
-    from src.dictation.streaming_asr import StreamingASR
+    from src.dictation.streaming_asr import PREVIEW_THREADS, StreamingASR
     segmenter = Segmenter(SileroVAD(Path(config["vad_model"])), SegmentConfig(**config["segmentation"]))
     asr = StreamingASR(Path(config["streaming_model"])) if config.get("preview", True) else None
     utterance = 0
@@ -28,7 +28,8 @@ def cpu_worker(config):
     last_update = 0
     import importlib.metadata
     emit({"type": "ready", "metadata": {"sherpa_onnx": importlib.metadata.version("sherpa-onnx"),
-          "onnxruntime": importlib.metadata.version("onnxruntime"), "preview_enabled": asr is not None}})
+          "onnxruntime": importlib.metadata.version("onnxruntime"), "preview_enabled": asr is not None,
+          "preview_threads": PREVIEW_THREADS if asr is not None else None}})
     for line in sys.stdin:
         command = json.loads(line)
         operation = command["op"]

@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from src.dictation.schemas import CleanupRequest, DraftEditRequest, EditRequest, SessionRequest, load_dictation_settings
 from src.dictation.service import CleanupFailed, Conflict, DictationService, UploadLimit, WorkerIPCError
 from src.dictation.storage import public_state
+from src.dictation.streaming_asr import PREVIEW_THREADS
 
 COOKIE = "dictation_owner"
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".flac", ".webm", ".mp4"}
@@ -74,6 +75,8 @@ def install_dictation(app, root: Path):
                     "max_upload_mb": settings.max_upload_mb, "max_upload_minutes": settings.max_upload_minutes,
                     "max_active_sessions": settings.max_active_sessions,
                     "active_sessions": len(service.recognition.members),
+                    "preview_threads": PREVIEW_THREADS,
+                    "cleanup_concurrency": service.CLEANUP_CONCURRENCY,
                     "cleanup_timeout_seconds": settings.cleanup_timeout_seconds,
                     "document_cleanup_timeout_seconds": settings.document_cleanup_timeout_seconds,
                     "decode_timeout_seconds": settings.decode_timeout_seconds,

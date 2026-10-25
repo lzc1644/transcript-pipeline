@@ -31,7 +31,8 @@ def root(tmp_path):
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
-    (tmp_path / "config/dictation.json").write_text(json.dumps({"cpu_python": "cpu", "final_python": "final", "model_dir": "models"}))
+    # Keep the existing two-slot scenarios explicitly configured; default eight is tested separately.
+    (tmp_path / "config/dictation.json").write_text(json.dumps({"cpu_python": "cpu", "final_python": "final", "model_dir": "models", "max_active_sessions": 2}))
     return tmp_path
 
 

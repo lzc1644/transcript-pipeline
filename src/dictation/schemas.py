@@ -55,7 +55,7 @@ class CleanupRequest(StrictModel):
 
 class DictationSettings(StrictModel):
     enabled: bool = True
-    max_active_sessions: int = Field(default=2, ge=1)
+    max_active_sessions: int = Field(default=8, ge=1)
     cpu_python: str = ".venv/dictation-py312/bin/python"
     final_python: str = ".venv/asr-py312/bin/python"
     model_dir: str = "data/models/dictation"

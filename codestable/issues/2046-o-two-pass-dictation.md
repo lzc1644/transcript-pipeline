@@ -368,3 +368,7 @@ B工程与公开真实音频/格式链路可用；未调用付费整理供应商
 部署前已复核：持久任务/会话无活动状态、无识别worker及校对HTTP子进程，现有HTTP/可信HTTPS健康；没有自定义dictation配置，使用代码默认2路。当前镜像已保留为`transcript-pipeline:rollback-before-multisession-20261025t111528z`，数据、模型与CA卷保持原入口。发布前快照、独立可用的`RECOVERY.md`、构建/切换日志及最终健康/有效配置/源码验收记录写入`tmp/deploy/dictation-multisession-20261025T111527Z/`。提交号以该目录`commit.txt`为准；最终结果以`report.json`为准，不用计划替代已发生结果。
 
 部署完成后用户刷新浏览器，按`docs/DICTATION.md`的两设备清单验收。默认2路保持不变，多人持续性能及既有人工质量/4h完整上传验收仍为后续项。
+
+## 8路试用授权（2026-10-25）
+
+用户在2线程8路隔离回放通过后，明确同意「容量8、预览2线程、整理并发8」并要求保存commit；按上一条确认的部署方案发布，不push、不关闭本事项。改动与测试见[2050](2050-x-ff-preview-cpu-threads.md)、[2051](2051-x-ff-eight-session-trial.md)。当前试用参数取代此前2路/4线程/2整理并发默认值，旧记录仅为历史基线。发布证据和恢复入口位于`tmp/deploy/dictation-eight-20261025T125710Z/`；上线后刷新浏览器，由用户继续10分钟多设备与实际网关验收。

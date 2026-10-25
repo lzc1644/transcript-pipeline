@@ -251,24 +251,26 @@ def test_waiting_cleanup_slot_cannot_start_a_request_after_pause(root):
                 return {"text": text, "needs_review": False}
             return clean
         service = DictationService(root, worker_factory=Worker, cleanup_factory=factory)
-        await service.cleanup_slots.acquire(); await service.cleanup_slots.acquire()
+        for _ in range(service.CLEANUP_CONCURRENCY):
+            await service.cleanup_slots.acquire()
         state, r = await upload(service, packets=3, cleanup=True)
         async with asyncio.timeout(2):
             while len(Worker.asr_calls) < 3:
                 await asyncio.sleep(.001)
         r.pause_file()
         await status(state, "paused")
-        service.cleanup_slots.release(); service.cleanup_slots.release()
+        for _ in range(service.CLEANUP_CONCURRENCY):
+            service.cleanup_slots.release()
         await asyncio.sleep(.02)
         assert not calls
         entered, release = threading.Event(), threading.Event()
         manual_calls = []
         def manual_cleanup():
             manual_calls.append(True)
-            if len(manual_calls) == 2:
+            if len(manual_calls) == service.CLEANUP_CONCURRENCY:
                 entered.set()
             release.wait(2)
-        manual = [asyncio.create_task(service.external(manual_cleanup)) for _ in range(2)]
+        manual = [asyncio.create_task(service.external(manual_cleanup)) for _ in range(service.CLEANUP_CONCURRENCY)]
         try:
             assert await asyncio.to_thread(entered.wait, .5), "paused file held a global cleanup slot"
             assert not calls and state["status"] == "paused"

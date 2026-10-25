@@ -695,6 +695,7 @@ class Runtime:
 
 class DictationService:
     UPLOAD_RECEIVE_TIMEOUT_SECONDS = 1800
+    CLEANUP_CONCURRENCY = 8
 
     def __init__(self, root: Path, *, worker_factory=Worker, cleanup_factory=Cleanup, recover=True):
         self.root, self.storage = root, Storage(root)
@@ -707,7 +708,7 @@ class DictationService:
         self.deleting = set()
         self.closing = False
         self.gate = asyncio.Lock()
-        self.cleanup_slots = asyncio.Semaphore(2)
+        self.cleanup_slots = asyncio.Semaphore(self.CLEANUP_CONCURRENCY)
         self.recognition = RecognitionScheduler(self)
         if recover:
             self.storage.recover()
@@ -1004,7 +1005,7 @@ class DictationService:
         document = request.scope == "document"
         if document and sid in self.document_cleanups:
             raise Conflict("本会话已有全文整理正在执行，请等待完成；原稿仍可使用")
-        if sum(len(group) for group in self.background.values()) >= 2:
+        if sum(len(group) for group in self.background.values()) >= self.CLEANUP_CONCURRENCY:
             raise Conflict("已有整理/上传正在执行或队列已满，请等待；原始文字仍可用")
         task = asyncio.current_task()
         self.background.setdefault(sid, set()).add(task)
