@@ -7,10 +7,10 @@
 1. 点击「开始听写」，允许麦克风权限。等状态显示「正在听音」再讲话。
 2. 文字框内显示当前句预览和已完成正文；停顿后先显示 Qwen 最终识别，再提交逐句整理结果。框内滚动，录音/复制按钮不随文字增长下移；浏览旧句时暂停自动跟随，可点「回到最新」。
 3. 录音由应用级唯一控制器持有，切到任务列表、设置或历史不会中断。底部常驻面板可「暂停听写 / 继续听写」「结束听写」「复制正文」「正文」；收起后仍保留状态和暂停/继续入口。暂停立即关闭麦克风、保留尾包，不插入静音；只有服务端确认后显示「已暂停」。
-4. 「结束听写」立即释放麦克风，继续完成已收到的尾部。暂停时仍占用模型和 GPU 锁；排队识别/整理可继续，暂停不是释放识别资源。关闭/刷新页面不自动恢复麦克风；断线超过会话宽限期（默认10秒）后结束已接收内容。
+4. 「结束听写」立即释放麦克风，继续完成已收到的尾部。暂停保留会话名额和恢复状态，但不独占 GPU；其他用户照常识别。关闭/刷新页面不自动恢复麦克风；断线超过会话宽限期（默认10秒）后结束已接收内容。
 5. 「设置」分别选择 Qwen 识别后的逐句快速处理模型、全文整理模型及各自的思考强度，并提供少量术语和整理开关。选项随新会话冻结；术语只作为最终识别与整理参考，不强制替换，也不继承读书会词表或书名。
 6. 三个入口分别为「实时听写」「录音转写」「导入音频」，另有服务器历史。「录音转写」先用同一采音引擎录到本浏览器 IndexedDB，不创建服务端会话、不启动 worker、不占 GPU；暂停后继续追加同一草稿，结束后可试听、下载 WAV 或提交既有上传链路。
-7. 「导入音频」显示实际上传字节并可取消；上传完成后可暂停/继续文件转写。默认最多 512 MiB、4 小时；无网络断点续传。解码无假百分比；转写进度按实际已处理音频位置计，整理按当前应整理/已结束任务计，失败单列。
+7. 「导入音频」显示实际上传字节并可取消；上传完成后检查识别容量和 GPU；繁忙时文件保留，显示等待原因，点击「重试开始转写」即可，不必重新上传。开始转写后可暂停/继续。默认最多 512 MiB、4 小时；无网络断点续传。解码无假百分比；转写进度按实际已处理音频位置计，整理按当前应整理/已结束任务计，失败单列。
 8. 「历史结果」只列本浏览器拥有的会话。删除需确认，先停止接收、推理和整理，再删除音频与文字。
 9. 停止并处理完成后，点击「整理全文」使用当前会话选定的全文整理模型处理正文（含人工修改）。先展示差异，确认后才应用；已应用/编辑的全文也可再次整理。失败时保留原稿，可重试。
 
@@ -28,7 +28,7 @@
 
 实时与本地采音共享一个具有明确 live/local lease 的 PcmCapture；只有所属生命周期能释放该 lease。旧实时会话的轮询/迟到完成不会关掉新的本地录音。文件识别占用GPU时仍可单独本地录音；活动实时听写（包括暂停）不能同时开启本地第二路麦克风。
 
-文件暂停统一约束生产者、新最终 ASR 和新逐句整理请求；已经开始的解码/推理/HTTP在原期限内退出后才显示「已暂停」。暂停保留文件读取位置、分段状态和待处理队列，不制造人工句界；EOF后还有识别/整理时仍可暂停；CPU输入只关闭一次，暂停后点击「结束」会解除派发等待并完成剩余工作，不再次向已退出的CPU worker发送stop。保留模型和GPU锁，但等待恢复不占空闲的全局HTTP整理槽；取消/结束可以解除等待，不因满队列互锁。服务重启仍标记中断，本阶段不承诺精确跨重启续跑。
+文件暂停统一约束生产者、新最终 ASR 和新逐句整理请求；已经开始的解码/推理/HTTP在原期限内退出后才显示「已暂停」。暂停保留文件读取位置、分段状态和待处理队列，不制造人工句界；EOF后还有识别/整理时仍可暂停；CPU输入只关闭一次，暂停后点击「结束」会解除派发等待并完成剩余工作，不再次向已退出的CPU worker发送stop。暂停仍计入活动名额，但不占其他会话的GPU轮转机会；只剩文字整理时归还识别名额。等待恢复不占空闲的全局HTTP整理槽；取消/结束可以解除等待，不因满队列互锁。服务重启仍标记中断，本阶段不承诺精确跨重启续跑。
 
 ## 设备、回听和常用术语
 
@@ -43,7 +43,7 @@
 ## 三个模型各管一件事
 
 - CPU：`csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en`，INT8，sherpa-onnx 真正增量识别。与批处理 SeACo Paraformer 是不同模型。
-- GPU：注册表中的 Qwen3-ASR 0.6B 固定 revision，每个会话加载一次。只对完整短句识别，不加载 ForcedAligner，不用第一遍文字提示第二遍。
+- GPU：注册表中的 Qwen3-ASR 0.6B 固定 revision，由服务共享一个最终识别进程，各会话分别保留 CPU worker。只对完整短句识别，不加载 ForcedAligner，不用第一遍文字提示第二遍。
 - HTTP 网关：逐句快速处理和手动全文整理默认各用 `gpt-6-luna`，新会话可分别选择 `gemini-3.5-flash-lite`、`gemini-3.8-flash-high` 或 `gpt-6.1-sol`，并分别设定思考强度。默认逐句 `low`、全文 `high`。两者只处理最终识别/当前正文，不重跑 ASR。完整 JSON 校验后才提交，不执行转录中的指令，不自动切供应商。历史会话重试仍使用创建时冻结的模型和强度。
 
 两套提示词分开维护：逐句只轻度修复当前句，全文结合上下文恢复断句、段落和高把握的同音错字；均保留数字、否定、条件、主体、专名与中英混说，不总结或补造事实。疑似听错无法唯一判断时保留原表达并标记复核。
@@ -73,7 +73,7 @@ npm --prefix frontend run build
 .venv/bin/python -m uvicorn api_server:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-访问 `http://127.0.0.1:8000/dictation`。不应对同一个数据目录同时启动多个 Web 实例或多个 Uvicorn worker；当前设计是单进程管理、一个活动听写/上传会话。
+访问 `http://127.0.0.1:8000/dictation`。不应对同一个数据目录同时启动多个 Web 实例或多个 Uvicorn worker；当前设计是单 Web 进程管理多个活动会话、共享一个 Qwen 进程。
 
 Docker Compose 默认传入 `ASR_BACKENDS=qwen` 和 `DICTATION=1`，分别安装 Qwen 与 CPU worker 的独立环境；直接 `docker build` 仍需显式指定这两个 build-arg。镜像复制源码时设置 `app` 所有者，宿主新文件即使为 `0600/0700` 也能由非 root 服务读取。确认已有任务结束后部署：
 
@@ -93,6 +93,7 @@ docker compose exec -T trans /app/.venv/bin/python scripts/setup_dictation.py --
 ```json
 {
   "enabled": true,
+  "max_active_sessions": 2,
   "idle_seconds": 60,
   "disconnect_seconds": 10,
   "max_upload_mb": 512,
@@ -117,11 +118,49 @@ services:
           create_host_path: false
 ```
 
-运行 `export DICTATION_CONFIG_FILE=/absolute/path/dictation.json` 后，`docker compose up -d --no-build --wait trans` 才会应用挂载。不要挂整个 `config/` 覆盖镜像默认配置。原生 Linux 部署脚本显式只使用基础 Compose，不读取本机 override；自定义配置应使用这里的手工 Compose 命令部署。配置在会话创建时读取，新会话才使用新参数；既有会话配置保持冻结。
+运行 `export DICTATION_CONFIG_FILE=/absolute/path/dictation.json` 后，`docker compose up -d --no-build --wait trans` 才会应用挂载。不要挂整个 `config/` 覆盖镜像默认配置。原生 Linux 部署脚本显式只使用基础 Compose，不读取本机 override；自定义配置应使用这里的手工 Compose 命令部署。识别/整理参数在会话创建时冻结；`max_active_sessions` 在每次识别准入时读取，降低容量不会中断已有会话。
 
 `enabled=false` 阻止新会话，不影响读书会流水线。还可配置 `cpu_python`、`final_python`、`model_dir`、`cleanup_model`、`cleanup_reasoning_effort`、`cleanup_timeout_seconds`、`document_cleanup_model`、`document_reasoning_effort`、`document_cleanup_timeout_seconds`、`decode_timeout_seconds`、`pre_ms`、`silence_ms`、`tail_ms`、`target_seconds`、`hard_seconds`。默认分别为 250ms 前留、700ms 静音、150ms 尾留、20s 软目标、25s 硬上限。硬切分标记需复核，不当作自然句界。
 
 未选择模型和强度时，逐句为 Luna `low`、全文为 Luna `high`（早期 `none` 实测仅保留作历史基线）。旧会话自动逐句处理仍用创建时冻结的期限；手动逐句重试及「整理全文」使用当前服务器配置的期限（默认3600秒），模型和强度继续使用会话快照，不回写旧配置。实际期限记在每次结果的 metrics，网页也显示当前校对期限。
+
+### 部署多会话版本
+
+本次交付源码，不自动更新正在使用的容器。审核后由部署者：
+
+1. 等已有批量ASR、实时/文件转写和在途文字整理完成，结束旧页面的本地录音。
+2. 默认2路无需新增配置；自定义时按上述单文件只读挂载设置 `max_active_sessions`，保留原数据、模型和CA卷。
+3. 使用现有单容器入口 `docker compose build trans`，再 `docker compose up -d --no-build --wait trans`；不要增加Uvicorn workers，不删除GPU锁。保留升级前镜像作为回退入口。
+4. 检查现有HTTPS健康与 `/api/dictation/config` 的 `max_active_sessions`，所有浏览器刷新后执行下方多人清单。
+
+## 多人使用、排队与故障恢复
+
+两个人可以在不同设备或独立浏览器配置中同时开始听写；每人有独立音频、CPU预览、术语、正文、历史和保存目录。共享 Cookie 的标签页是同一浏览器所有者，不是独立用户测试。GPU按句执行：A一句、B一句，再回到A；同会话保持句序，长文件与实时会话同样轮转。远端文字处理全局并发保持2，不随人数增加。
+
+默认 `max_active_sessions=2`。准备、听写、暂停和待识别的会话占名额；ASR结束只剩远端整理时归还。历史查看/编辑/复制、本地录音草稿、上传接收和资源等待不占识别名额。达到上限只拒绝新识别，不影响现有用户。可在上述JSON配置中逐步改为3或4；先完成下方两路手测，再增加人数。`GET /api/dictation/config` 提供 `max_active_sessions` 和查询时的 `active_sessions`，以创建时原子准入结果为准。
+
+- 容量已满：「当前语音识别容量已满，请稍后重试」。
+- 批量ASR持锁：「GPU 正被批量转录占用，请等待完成」。不删除 `_asr-gpu.lock` 或抢占已有任务。
+- 上传收到完整文件后暂不可识别：进入 `waiting`，`wait_reason=capacity|batch_asr|recovering`；文件保留，可点「重试开始转写」（`POST /sessions/{id}/resume`）。取消/删除仍只影响本会话。服务重启把等待会话标为中断，原上传材料保留，不承诺自动恢复。
+
+每会话最终识别待处理队列最多16句，另有一项提交到共享调度器的任务。文件队列积压会暂停读取；实时队列满或CPU音频积压超过5秒会停止新增采音，已接收音频继续处理，并明确告警。排队不会触发60秒推理超时；该期限仅覆盖实际派发后的IPC与推理。预览区区分「正在等待共享识别」和「正在最终识别」。
+
+暂停文件会阻止尚未派发的本文件任务；已派发的解码/ASR/整理退出后才确认暂停。取消/删除移除本人的待派发任务，等待本人在途识别安全结束，不杀共享worker。断线超过宽限期只结束断线会话。最后一个需要识别资源的会话退出时关闭Qwen，**进程实际退出后**才归还GPU锁；后续会话可重新加载。
+
+单句识别错误只标记该句失败。共享worker崩溃、超时、显存不足或结果标识错误会终止故障进程、停止全部受影响会话的新采音、结算等待并保留已接收音频/已完成正文；不无限重试或换模型。回收完成后可新建会话。全服务停止时统一回收共享worker，已完成结果和原始音频保留。
+
+### 先做两路手动验收，再提高容量
+
+工程自动化及单会话公开音频样例不能替代多人性能验收。由使用者在部署新版、刷新浏览器后执行：
+
+1. 两设备或两个独立浏览器配置同时讲话10分钟：各有预览/最终稿，无串稿、漏段或持续增长积压。
+2. 各自配置不同人名、数字和英文术语，检查词表及结果隔离。
+3. A暂停、继续、结束和关页；B始终继续识别。
+4. 长文件转写与实时听写同时运行，检查轮转和实时结果等待。
+5. 两个识别名额占满时第三人收到容量提示；ASR完成仅剩整理时第三人能进入。另测批量ASR持锁时上传保留及重试。
+6. 两路稳定后改为3、4路，重复观察，不把默认2视为硬件容量保证。
+
+保留各会话目录：`asr/<uid>.json` 的 `queue_wait_seconds`（从端点进入会话队列到实际派发）和 `inference_seconds`（worker实测推理）；`session.json` 分句的 `queue_wait_seconds`、`asr_seconds`、首字/最终稿延迟；`metrics.json` 的 `backlog_seconds/max_backlog_seconds`（CPU已接收未处理音频）、`asr_pending_utterances`、`asr_audio_backlog_seconds` 及各自max值（待最终识别句数/音频时长）。`final_shared_process` 是共享进程累计资源，不是本会话独占消耗，不应跨会话相加。
 
 ## 状态、数据与唯一正文
 
@@ -142,8 +181,10 @@ data/dictation/<session_id>/
   utterances.jsonl      有界预览之外的状态事件
   draft.txt             当前正文投影
   metrics.json          启动、延迟、队列和资源信息
-  cpu.log / final.log   本会话 worker 诊断
+  cpu.log              本会话 CPU worker 诊断
 ```
+
+共享最终识别配置/日志位于 `data/dictation/_recognition/worker.json` 和 `final.log`，不含会话术语；按请求传入各自词表。该日志跨共享进程启动追加；原历史会话的 `final.log` 不迁移。
 
 `Storage.render_draft` 是正文唯一投影：保存、GET、复制、TXT 下载及全文整理输入一致。整篇建议绑定 `content_revision`；正文改动立即使旧建议失效，不能用最新 session revision 套用旧建议。确认应用后全文稿成为正文，普通保存或后台逐句重试不会撤回它；这时使用「编辑全文」。API 如需返回逐句稿，必须显式 `discard_document=true`，不得无提示撤回全文。
 
@@ -171,13 +212,13 @@ ffmpeg -nostdin -n -f s16le -ar 16000 -ac 1 -i /path/to/source.pcm recovered.wav
 - `PATCH /sessions/{id}/utterances/{uid}`：`{revision,text,discard_document?}`。
 - `PATCH /sessions/{id}/draft`：`{revision,text}`。
 - `POST /sessions/{id}/cleanup`：`scope=failed|utterance|document|apply`。
-- `POST /sessions/{id}/pause`、`POST /sessions/{id}/resume` 仅用于文件转写（同源/所有权保护）；实时暂停继续仍只走有序WS。
+- `POST /sessions/{id}/pause`、`POST /sessions/{id}/resume` 用于文件转写（同源/所有权保护），resume也重试启动waiting上传；实时暂停继续仍只走有序WS。
 - `POST /sessions/{id}/stop`、`POST /sessions/{id}/cancel`、`DELETE /sessions/{id}`。
 - `GET /sessions/{id}/draft.txt`。
 
 变更请求和 WebSocket 校验 Origin；默认同源，可用 `TRANSCRIPT_DICTATION_ORIGINS` 添加精确来源。反向代理需保留 Host，支持 WebSocket upgrade 与长连接；远程浏览器使用 HTTPS/WSS。Vite 开发代理已启用 WebSocket 并保留 Host。
 
-ACK 表示 PCM 与接收位置已持久化。128 包有限恢复窗口内重复包必须字节相同，不能补接有缺口音频。队列超过2秒告警，超过5秒停止新增采音。IPC 写锁与 drain 合用3秒期限；stop 后 CPU 收尾另有10秒期限。卡死会结束本会话并保留音频，不让 GPU 永久占用。Qwen 与旧批量 ASR 共用 `_asr-gpu.lock`，worker 真正退出后才释放。实时会话最终识别退出后释放GPU，再等待远端整理；文件会话按暂停资源契约保留锁至整理收尾结束。HTTP整理请求本身不使用GPU。上传接收另有1800秒总期限，浏览器等待比它多10秒。文件解码使用独立的`decode_timeout_seconds`，默认900秒、可配1–3600秒，不与Luna校对期限共用。听写整理对所有网关（含localhost/127.0.0.1/`.local`）强制使用既有curl `--max-time`：逐句、全文默认及配置上限均为3600秒；全文多块共用该总期限，持续SSE滴流也不能无限延长。缺少curl时明确失败，不回退urllib；旧批处理HTTP策略不变。删除/关闭会先占有生命周期，拒绝新工作，取消并等待已登记上传、推理和有界远端请求退出。校对卡住时，该等待最长可接近1小时；镜像Supervisor/Compose的优雅关闭预算已同步放宽，避免145/160秒提前强杀。容量验证阶段仅改源码与部署模板，后续经用户授权的发布记录见事项2046。
+ACK 表示 PCM 与接收位置已持久化。128 包有限恢复窗口内重复包必须字节相同，不能补接有缺口音频。队列超过2秒告警，超过5秒停止新增采音。IPC 写锁与 drain 合用3秒期限；stop 后 CPU 收尾另有10秒期限。卡死会结束本会话并保留音频，不让 GPU 永久占用。Qwen 与旧批量 ASR 共用 `_asr-gpu.lock`，worker 真正退出后才释放。实时与文件会话均在最终识别完成后归还识别名额，再等待远端整理；仍有其他识别会话时，共享worker和GPU锁继续保留。HTTP整理请求本身不使用GPU。上传接收另有1800秒总期限，浏览器等待比它多10秒。文件解码使用独立的`decode_timeout_seconds`，默认900秒、可配1–3600秒，不与Luna校对期限共用。听写整理对所有网关（含localhost/127.0.0.1/`.local`）强制使用既有curl `--max-time`：逐句、全文默认及配置上限均为3600秒；全文多块共用该总期限，持续SSE滴流也不能无限延长。缺少curl时明确失败，不回退urllib；旧批处理HTTP策略不变。删除/关闭会先占有生命周期，拒绝新工作，取消并等待已登记上传、推理和有界远端请求退出。校对卡住时，该等待最长可接近1小时；镜像Supervisor/Compose的优雅关闭预算已同步放宽，避免145/160秒提前强杀。容量验证阶段仅改源码与部署模板，后续经用户授权的发布记录见事项2046。
 
 ## 优化 A：暂停与跨页面控制（2026-10-23）
 
@@ -258,6 +299,8 @@ node frontend/tests/dictation-pause.mjs
 node frontend/tests/dictation-ownership.mjs
 node frontend/tests/dictation-layout.mjs
 node frontend/tests/dictation-drafts.mjs
+# 多会话排队/容量/上传等待重试界面，HTTP为合成状态
+node frontend/tests/dictation-multisession.mjs
 # 多窗口草稿独占/原窗口关闭恢复、面板导航；真实浏览器存储/采音，HTTP为合成状态
 node frontend/tests/dictation-boundaries.mjs
 # 4h数据容量边界（不是连续采音4h），较耗磁盘；按需执行

@@ -115,5 +115,5 @@ def test_file_decode_budget_is_independent_and_can_exceed_legacy_120_seconds(
             assert '解码超时' in state['error']
         else:
             assert state['samples'] == 3837 and state['audio_total_samples'] == 3837
-        assert runtime.lock_file is None
+        assert not runtime.asr_reserved
     asyncio.run(run())

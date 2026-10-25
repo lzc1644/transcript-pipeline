@@ -7,9 +7,11 @@ import { DictationPlayback } from "./dictationPlayback";
 
 export interface Utterance {
   id: string; revision: number; status: string; text: string; raw_text: string; preview: string;
+  asr_queue_state?: "queued" | "running"; queue_wait_seconds?: number;
   edited: boolean; error?: string; suggestion?: string; needs_review: boolean; start_sample?: number; end_sample?: number | null;
 }
 export interface DictationConfig {
+  max_active_sessions: number; active_sessions: number;
   max_upload_mb: number; max_upload_minutes: number; cleanup_timeout_seconds: number;
   cleanup_model: string; document_cleanup_model: string;
   cleanup_reasoning_effort: string; document_reasoning_effort: string;
@@ -25,7 +27,7 @@ export interface DictationSession {
     document_reasoning_effort?: string; terms: string[]; cleanup: boolean;
     cleanup_timeout_seconds?: number; document_cleanup_timeout_seconds?: number };
 }
-export const activeStates = ["created", "preparing", "listening", "pausing", "paused", "draining"];
+export const activeStates = ["created", "waiting", "preparing", "listening", "pausing", "paused", "draining"];
 export type DictationStartResult = { status: "started"; sessionId: string } | { status: "rejected"; reason: string };
 
 /** Created once by App, never by a route or by the dock. History is a separate selection. */
@@ -47,7 +49,7 @@ function createDictationController() {
     if (captureAction.value) return labels[captureAction.value];
     const state = recordingSession.value;
     if (ownsCapture.value && state?.status === "listening" && !capturing.value) return "麦克风已关闭 · 暂停未确认，请检查连接或结束";
-    if (state?.status === "paused") return state.mode === "live" ? "已暂停 · 麦克风已关闭" : "转写已暂停 · 识别资源保留";
+    if (state?.status === "paused") return state.mode === "live" ? "已暂停 · 麦克风已关闭" : "转写已暂停 · 会话名额保留";
     return state?.phase ?? "准备开始";
   });
   const selectedDeviceId = ref(localStorage.getItem("dictation:microphone") ?? "");

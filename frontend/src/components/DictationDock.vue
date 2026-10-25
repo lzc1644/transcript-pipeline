@@ -317,6 +317,8 @@ async function openText() {
         </button>
       </div>
 
+      <p v-if="recordingSession.status === 'waiting'" class="dictation-dock__note">文件已保留，无需重新上传。<button type="button" :disabled="!!d.fileAction.value" @click="action(() => d.fileControl(recordingSession!.id, 'resume'))">重试开始转写</button></p>
+      <p v-if="recordingSession.utterances.some(u => u.status === 'finalizing' && u.asr_queue_state !== 'running')" class="dictation-dock__note" role="status">正在等待共享识别 · 按会话轮转</p>
       <!-- Expanded Content -->
       <template v-if="!collapsed">
         <!-- Hero Row: [⚙ Settings] [🎙 Hero Mic Toggle] [⏹ Stop] -->
@@ -469,7 +471,7 @@ async function openText() {
         <p v-if="d.inputWarning.value && !localActive" class="dictation-dock__note" role="status">{{ d.inputWarning.value }}</p>
         <p v-if="connection" class="dictation-dock__note" role="status">{{ connection }}</p>
         <p v-if="error" class="dictation-dock__error" role="alert">{{ error }}</p>
-        <p v-if="['paused','pausing'].includes(recordingSession.status) || captureAction === 'resuming'" class="dictation-dock__note">暂停不释放模型和识别资源；关闭录音窗口或断网超过宽限期后会结束会话。</p>
+        <p v-if="['paused','pausing'].includes(recordingSession.status) || captureAction === 'resuming'" class="dictation-dock__note">暂停保留会话名额，不独占 GPU；其他用户仍可识别。关闭录音窗口或断网超过宽限期后会结束会话。</p>
       </template>
 
       <!-- Collapsed Quick Controls -->

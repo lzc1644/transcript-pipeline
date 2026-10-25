@@ -27,7 +27,7 @@ class FakeWorker:
         self.started.append(self.mode)
     async def send(self, value):
         if self.mode == "final":
-            await self.events.put({"type": "final", "text": "不是不能做，是现在不做", "inference_seconds": .01})
+            await self.events.put({**{k: value[k] for k in ("session_id", "utterance_id", "request_id")}, "type": "final", "text": "不是不能做，是现在不做", "inference_seconds": .01})
         elif value["op"] == "audio":
             if not self.samples:
                 await self.events.put({"type": "utterance.start", "utterance_id": "1", "start": 0})
@@ -67,7 +67,7 @@ def test_stop_drains_tail_releases_gpu_and_preserves_separate_outputs(root):
         directory = service.storage.path(state["id"])
         assert (directory / "asr/1.json").is_file() and (directory / "cleaned/1.json").is_file()
         assert (directory / "draft.txt").read_text().endswith("。")
-        assert runtime.lock_file is None and runtime.cpu.closed and runtime.final.closed
+        assert not runtime.asr_reserved and runtime.cpu.closed and service.recognition.worker is None
         await service.close()
     asyncio.run(run())
 
@@ -76,7 +76,7 @@ def test_failed_final_asr_preserves_preview_without_publishing_it_as_final(root)
     class FailedFinal(FakeWorker):
         async def send(self, value):
             if self.mode == "final":
-                await self.events.put({"type": "failed", "error": "模拟最终识别失败", "fatal": False})
+                await self.events.put({**{k: value[k] for k in ("session_id", "utterance_id", "request_id")}, "type": "failed", "error": "模拟最终识别失败", "fatal": False})
             else:
                 await super().send(value)
     async def run():
@@ -106,7 +106,7 @@ def test_no_initial_connection_or_no_audio_is_bounded_and_gpu_reusable(root, att
         runtime.last_audio_at = time.monotonic() - 20
         await asyncio.wait_for(asyncio.shield(runtime.task), 3)
         assert state["status"] in {"completed", "interrupted"}
-        assert runtime.lock_file is None
+        assert not runtime.asr_reserved
         another = await service.create("owner", SessionRequest(cleanup=False), start=False)
         assert another["id"] != state["id"]
         await service.close()
@@ -129,8 +129,8 @@ def test_upload_reception_owned_until_exit_no_late_worker_start(root, operation)
             yield b"should never be submitted"
         receiving = asyncio.create_task(service.receive_upload(sid, "owner", blocked_stream()))
         await entered.wait()
-        lock = service.runtimes[sid].lock_file
-        assert lock is not None
+        assert not service.runtimes[sid].asr_reserved
+        assert service.recognition.lock_file is None
         if operation == "delete":
             await service.delete(sid, "owner")
         elif operation == "cancel":
@@ -140,12 +140,13 @@ def test_upload_reception_owned_until_exit_no_late_worker_start(root, operation)
         release.set()
         assert receiving.cancelled()
         assert not FakeWorker.started
-        assert lock.closed
+        assert service.recognition.lock_file is None
         if operation == "delete":
             assert not service.storage.path(sid).exists()
         else:
             assert service.storage.load(sid)["status"] == ("interrupted" if operation == "close" else "cancelled")
-        # Lifetime lock is gone only after the receiver has exited.
+        # Receiving uploads never acquire the GPU mutex.
+        (root / "data/jobs").mkdir(parents=True, exist_ok=True)
         with (root / "data/jobs/_asr-gpu.lock").open("a") as file:
             fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     asyncio.run(run())
@@ -178,7 +179,7 @@ def test_blocked_worker_pipe_bounds_audio_and_stop_and_preserves_received_pcm(ro
         results = await asyncio.wait_for(asyncio.gather(accepting, stopping, return_exceptions=True), 1)
         assert all(isinstance(error, (WorkerIPCError, asyncio.CancelledError)) for error in results)
         await asyncio.wait_for(runtime.task, 1)
-        assert state["status"] == "failed" and runtime.lock_file is None
+        assert state["status"] == "failed" and not runtime.asr_reserved
         assert (service.storage.path(state["id"]) / "audio/source.pcm").read_bytes() == pcm
         with (root / "data/jobs/_asr-gpu.lock").open("a") as file:
             fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -199,7 +200,7 @@ def test_repeated_cancel_waits_the_same_worker_shutdown(root):
         await asyncio.sleep(.005)
         second = asyncio.create_task(service.cancel(state["id"], "owner"))
         await asyncio.wait_for(asyncio.gather(first, second), 1)
-        assert runtime.cpu.closed and runtime.final.closed and runtime.lock_file is None
+        assert runtime.cpu.closed and service.recognition.worker is None and not runtime.asr_reserved
         assert state["status"] == "cancelled"
     asyncio.run(run())
 
@@ -221,7 +222,7 @@ def test_stop_written_but_cpu_never_drained_has_runtime_deadline(root):
         await runtime.stop()
         await asyncio.wait_for(runtime.task, 2)
         assert state["status"] == "failed" and "收尾超过期限" in state["error"]
-        assert runtime.lock_file is None and runtime.cpu.closed and runtime.final.closed
+        assert not runtime.asr_reserved and runtime.cpu.closed and service.recognition.worker is None
         assert (service.storage.path(state["id"]) / "audio/source.pcm").read_bytes() == pcm
         with (root / "data/jobs/_asr-gpu.lock").open("a") as file:
             fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -240,7 +241,7 @@ def test_startup_failure_cancels_other_loader_before_gpu_unlock(root):
         runtime = service.runtimes[state["id"]]
         await asyncio.wait_for(runtime.task, 1)
         assert state["status"] == "failed" and "加载失败" in state["error"]
-        assert runtime.cpu.closed and runtime.final.closed and runtime.lock_file is None
+        assert runtime.cpu.closed and service.recognition.worker is None and not runtime.asr_reserved
     asyncio.run(run())
 
 

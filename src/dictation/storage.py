@@ -8,7 +8,7 @@ import re
 import shutil
 import wave
 
-ACTIVE = {"created", "preparing", "listening", "pausing", "paused", "draining"}
+ACTIVE = {"created", "waiting", "preparing", "listening", "pausing", "paused", "draining"}
 
 
 def atomic_json(path: Path, value):

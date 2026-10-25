@@ -72,6 +72,8 @@ def install_dictation(app, root: Path):
                     "cleanup_reasoning_effort": settings.cleanup_reasoning_effort,
                     "document_reasoning_effort": settings.document_reasoning_effort,
                     "max_upload_mb": settings.max_upload_mb, "max_upload_minutes": settings.max_upload_minutes,
+                    "max_active_sessions": settings.max_active_sessions,
+                    "active_sessions": len(service.recognition.members),
                     "cleanup_timeout_seconds": settings.cleanup_timeout_seconds,
                     "document_cleanup_timeout_seconds": settings.document_cleanup_timeout_seconds,
                     "decode_timeout_seconds": settings.decode_timeout_seconds,
@@ -170,6 +172,8 @@ def install_dictation(app, root: Path):
         with api_errors():
             state = service.get(sid, owner(request))
             runtime = service.runtimes.get(sid)
+            if state["status"] == "waiting":
+                return public_state(await service.start_upload(sid, owner(request)))
             if runtime and runtime.task and not runtime.task.done():
                 runtime.resume_file()
             return public_state(state)

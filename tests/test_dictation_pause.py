@@ -110,7 +110,7 @@ def test_twenty_pause_resume_cycles_keep_pcm_ids_gpu_and_manual_edit(root):
             await r.pause(*boundary)
             await status(state, "paused")
             await r.pause(*boundary)
-            assert not r.task.done() and r.lock_file is not None
+            assert not r.task.done() and r.asr_reserved
             with (root / "data/jobs/_asr-gpu.lock").open("a") as lock:
                 with pytest.raises(BlockingIOError):
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -132,7 +132,7 @@ def test_twenty_pause_resume_cycles_keep_pcm_ids_gpu_and_manual_edit(root):
         for u, pcm in zip(state["utterances"], chunks):
             with wave.open(str(directory / f'audio/{u["id"]}.wav')) as wav:
                 assert wav.readframes(wav.getnframes()) == pcm
-        assert r.lock_file is None
+        assert not r.asr_reserved
         await service.close()
     asyncio.run(run())
 
@@ -163,7 +163,7 @@ def test_terminal_actions_win_over_pending_pause_or_resume(root, operation):
             assert state["status"] == "cancelled"
         with pytest.raises(Conflict):
             await r.resume(1, 211)
-        assert state["status"] != "listening" and r.lock_file is None
+        assert state["status"] != "listening" and not r.asr_reserved
     asyncio.run(run())
 
 
@@ -183,7 +183,7 @@ def test_paused_skips_idle_and_no_audio_but_disconnect_still_expires(root):
         r.attached = False
         r.disconnected_at = time.monotonic() - 100
         await asyncio.wait_for(r.task, 2)
-        assert state["status"] == "interrupted" and r.lock_file is None
+        assert state["status"] == "interrupted" and not r.asr_reserved
     asyncio.run(run())
 
 
@@ -205,7 +205,7 @@ def test_pause_confirmation_is_bounded_and_boundary_must_match(root):
         r.CPU_DRAIN_TIMEOUT_SECONDS = .02
         await r.pause(0, 0)
         await asyncio.wait_for(r.task, 2)
-        assert state["status"] == "failed" and "暂停确认" in state["error"] and r.lock_file is None
+        assert state["status"] == "failed" and "暂停确认" in state["error"] and not r.asr_reserved
     asyncio.run(run())
 
 
@@ -216,7 +216,7 @@ def test_restart_marks_pause_interrupted_and_old_sessions_need_no_new_fields(roo
         state = await service.create("owner", SessionRequest(), start=False)
         state["status"] = old_status
         service.commit(state)  # intentionally no pause_boundaries field
-        service.runtimes[state["id"]].release_gpu()
+        await service.runtimes[state["id"]].release_recognition()
         recovered = DictationService(root)
         snapshot = recovered.get(state["id"], "owner")
         assert snapshot["status"] == "interrupted"

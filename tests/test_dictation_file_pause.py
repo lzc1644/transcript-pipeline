@@ -68,7 +68,8 @@ async def upload(service, packets=3, cleanup=False):
         wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
         wav.writeframes(b"\1\0" * (packets * 1280 - 3))
     r = service.runtimes[state["id"]]
-    r.task = asyncio.create_task(r.run())
+    state["upload_bytes"] = path.stat().st_size
+    await service.start_upload(state["id"], "owner")
     await ready(state)
     return state, r
 
@@ -83,7 +84,7 @@ def test_pause_at_eof_waits_inflight_then_blocks_new_asr_and_preserves_queue(roo
         await Worker.asr_started.wait()
         await status(state, "draining")
         r.pause_file()
-        assert state["status"] == "pausing" and r.lock_file is not None
+        assert state["status"] == "pausing" and r.asr_reserved
         before = state["samples"]
         Worker.asr_release.set()
         await status(state, "paused")
@@ -101,7 +102,7 @@ def test_pause_at_eof_waits_inflight_then_blocks_new_asr_and_preserves_queue(roo
         assert all(u["boundary"] == "silence" for u in state["utterances"])
         assert public_state(state)["progress"]["transcribed_samples"] == before
         assert not any("final_latency_seconds" in u for u in state["utterances"])
-        assert r.lock_file is None
+        assert not r.asr_reserved
         r.pause_file()  # completed does not become an empty paused task
         assert state["status"] == "completed"
     asyncio.run(run())
@@ -165,7 +166,7 @@ def test_stop_after_eof_pause_closes_cpu_once_and_finishes_remaining_work(root, 
             assert (service.storage.path(state["id"]) / "audio/source.pcm").read_bytes() == b"\1\0" * before
             assert all(u["status"] == ("raw" if stage == "asr" else "cleaned") for u in state["utterances"])
             assert len(calls) == (0 if stage == "asr" else 4)
-            assert r.lock_file is None
+            assert not r.asr_reserved
         finally:
             release.set(); Worker.asr_release.set(); Worker.eof_release.set()
             await service.close()
@@ -216,7 +217,7 @@ def test_full_queues_and_cleanup_pause_have_no_deadlock_or_new_requests(root, op
         asr_before, cleanup_before, cursor = len(Worker.asr_calls), len(calls), state["samples"]
         await asyncio.sleep(.03)
         assert len(Worker.asr_calls) == asr_before and len(calls) == cleanup_before
-        assert state["samples"] == cursor and r.lock_file is not None
+        assert state["samples"] == cursor and r.asr_reserved
         if operation == "resume":
             r.resume_file()
             await asyncio.wait_for(r.task, 3)
@@ -232,7 +233,7 @@ def test_full_queues_and_cleanup_pause_have_no_deadlock_or_new_requests(root, op
             assert state["status"] == "completed" and state["samples"] == cursor
             assert public_state(state)["progress"]["transcribed_samples"] == cursor
             assert cursor < state["audio_total_samples"]  # Early stop must not invent 100% completion.
-        assert r.lock_file is None
+        assert not r.asr_reserved
     try:
         asyncio.run(run())
     finally:
@@ -299,7 +300,7 @@ def test_real_bounded_http_request_finishes_before_pause_without_new_dispatch(ro
         await status(state, "paused")
         assert await asyncio.to_thread(disconnected.wait, 1)
         await asyncio.sleep(.05)
-        assert stats["requests"] == 1 and r.lock_file is not None
+        assert stats["requests"] == 1 and not r.asr_reserved
         r.resume_file()
         await asyncio.wait_for(r.task, 3)
         assert state["status"] == "completed" and stats["requests"] == 3

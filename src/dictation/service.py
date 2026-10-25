@@ -5,7 +5,6 @@ import asyncio
 import base64
 from collections import deque
 from datetime import datetime, timezone
-import fcntl
 import json
 import os
 from pathlib import Path
@@ -19,16 +18,13 @@ from src.codex_lb_client import CodexLBClientError
 from src.dictation.cleanup import Cleanup, DEFAULT_CLEANUP_TIMEOUT_SECONDS
 from src.dictation.schemas import SessionRequest, load_dictation_settings
 from src.dictation.storage import ACTIVE, Storage, atomic_json, public_state
+from src.dictation.scheduler import Conflict, RecognitionBusy, RecognitionScheduler
 
 RATE = 16000
 
 
 def now():
     return datetime.now(timezone.utc).isoformat()
-
-
-class Conflict(ValueError):
-    pass
 
 
 class UploadLimit(ValueError):
@@ -112,9 +108,10 @@ class Worker:
 class Runtime:
     CPU_DRAIN_TIMEOUT_SECONDS = 10
 
-    def __init__(self, manager, state, lock_file):
-        self.manager, self.state, self.lock_file = manager, state, lock_file
-        self.cpu = self.final = None
+    def __init__(self, manager, state):
+        self.manager, self.state = manager, state
+        self.asr_reserved = False
+        self.cpu = None
         self.task = None
         self.queue = asyncio.Queue(maxsize=16)
         self.cleanup_queue = asyncio.Queue(maxsize=8)
@@ -160,6 +157,12 @@ class Runtime:
         return event
 
     def save(self):
+        pending = [u for u in self.state["utterances"] if u["status"] == "finalizing"]
+        metrics = self.state["metrics"]
+        metrics["asr_pending_utterances"] = len(pending)
+        metrics["asr_audio_backlog_seconds"] = sum((u["end_sample"] - u["start_sample"]) / RATE for u in pending)
+        metrics["max_asr_pending_utterances"] = max(len(pending), metrics.get("max_asr_pending_utterances", 0))
+        metrics["max_asr_audio_backlog_seconds"] = max(metrics["asr_audio_backlog_seconds"], metrics.get("max_asr_audio_backlog_seconds", 0))
         self.manager.commit(self.state)
 
     def utterance(self, uid):
@@ -178,14 +181,14 @@ class Runtime:
         try:
             atomic_json(config_path, cfg)
             self.cpu = manager.worker_factory(cfg["cpu_python"], "cpu", config_path, manager.root, directory / "cpu.log")
-            self.final = manager.worker_factory(cfg["final_python"], "final", config_path, manager.root,
-                                                directory / "final.log", self.lock_file.fileno())
             state.update(status="preparing", phase="准备 CPU 预览和 GPU 最终识别模型")
             self.save()
-            loading = [asyncio.create_task(self.cpu.start()), asyncio.create_task(self.final.start())]
+            loading = [asyncio.create_task(self.cpu.start()), asyncio.create_task(manager.recognition.start(self))]
             jobs.extend(loading)
             cpu_metadata, final_metadata = await asyncio.gather(*loading)
             state["metrics"].update(cpu_worker=cpu_metadata, final_worker=final_metadata)
+            if self.failure:
+                raise RuntimeError(self.failure)
             if self.cancelled:
                 return
             state["metrics"]["startup_seconds"] = time.monotonic() - starting
@@ -215,18 +218,13 @@ class Runtime:
                     raise job.exception()
             await core_task
             watchdog.cancel()
-            if state["mode"] == "live":
-                await self.final.close()
-                self.release_gpu()
+            await self.release_recognition()
             state["phase_key"] = "cleaning"
             if state["status"] == "draining":
                 state["phase"] = "正在完成逐句整理"
                 self.save()
             await self.cleanup_queue.put(None)
             await asyncio.gather(*self.cleanup_tasks)
-            if state["mode"] == "upload":
-                await self.final.close()
-                self.release_gpu()
             if not self.cancelled:
                 state.update(status="interrupted" if state.get("interrupted") else "completed", phase_key="completed",
                              phase="连接中断，已接收音频处理完成" if state.get("interrupted") else "已停止，处理完成")
@@ -244,13 +242,14 @@ class Runtime:
                 if not job.done():
                     job.cancel()
             await asyncio.gather(*jobs, *self.cleanup_tasks, return_exceptions=True)
-            for worker in (self.cpu, self.final):
-                if worker:
-                    await worker.close()
-            self.release_gpu()
+            if self.cpu:
+                await self.cpu.close()
+            await self.release_recognition()
             for u in state["utterances"]:
                 if u["status"] in {"partial", "finalizing"}:
-                    u.update(status="asr_failed", error="会话中断，最终识别未完成")
+                    u.update(status="asr_failed", needs_review=True,
+                             error=self.failure or state.get("error") or "会话中断，最终识别未完成")
+                    u.pop("asr_queue_state", None)
                 elif u["status"] == "cleaning":
                     u.update(status="cleanup_failed", error="整理未完成，原始文字可用")
             if self.cancelled:
@@ -258,10 +257,12 @@ class Runtime:
             self.save()
             self.changed.set()
 
-    def release_gpu(self):
-        if self.lock_file:
-            self.lock_file.close()
-            self.lock_file = None
+    async def release_recognition(self):
+        await self.manager.recognition.release(self)
+
+    async def release_if_asr_done(self):
+        if self.cpu_drained and not any(u["status"] in {"partial", "finalizing"} for u in self.state["utterances"]):
+            await self.release_recognition()
 
     async def cpu_loop(self):
         while True:
@@ -292,18 +293,22 @@ class Runtime:
                     u["endpoint_latency_seconds"] = u["endpoint_at"] - self.sample_time(u["last_voice_sample"])
                 self.save()
                 self.emit("utterance.pending", utterance_id=u["id"], revision=u["revision"])
-                await self.queue.put((u["id"], path, time.monotonic()))
+                if self.queue.full() and self.state["mode"] == "live":
+                    self.emit("session.warning", message="识别队列已满，停止新增采音；已接收音频继续处理")
+                    await self.stop("识别队列已满，已停止新增采音，正在完成已接收音频")
+                await self.queue.put((u["id"], path, u["endpoint_at"]))
             elif kind == "paused":
                 if event["samples"] != self.state["samples"]:
                     raise RuntimeError("CPU 暂停位置与持久音频不一致，已接收音频保留")
                 if self.state["status"] == "pausing" and not self.cancelled:
-                    self.state.update(status="paused", phase="已暂停 · 麦克风已关闭，识别资源保留")
+                    self.state.update(status="paused", phase="已暂停 · 麦克风已关闭，会话名额保留")
                     self.state["pause_boundaries"][-1]["confirmed_at"] = now()
                     self.save()
                     self.emit("session.paused")
             elif kind == "drained":
                 self.cpu_drained = self.cpu_input_closed = True
                 await self.queue.put(None)
+                await self.release_if_asr_done()
                 return
             elif kind == "decoded":
                 self.state.update(decoded=True, audio_total_samples=event["samples"])
@@ -322,18 +327,18 @@ class Runtime:
                 return
             uid, path, queued = item
             u = self.utterance(uid)
-            await self.begin_dispatch("asr")
             try:
-                await self.final.send({"op": "transcribe", "utterance_id": uid, "path": str(path)})
-                result = await asyncio.wait_for(self.final.read(), 60)
+                result = await self.manager.recognition.transcribe(self, uid, path, queued)
             finally:
                 self.end_dispatch("asr")
-            if self.cancelled:
+            if self.cancelled or self.manager.runtimes.get(self.state["id"]) is not self:
                 return
+            u.pop("asr_queue_state", None)
             if result["type"] in {"final", "failed"}:
                 self.state["asr_processed_samples"] = max(self.state.get("asr_processed_samples", 0), u["end_sample"])
             if result["type"] == "final":
-                u.update(raw_text=result["text"], status="raw", asr_seconds=result["inference_seconds"])
+                u.update(raw_text=result["text"], status="raw", asr_seconds=result["inference_seconds"],
+                         queue_wait_seconds=result["queue_wait_seconds"])
                 if "gpu_peak_allocated_bytes" in result:
                     self.state["metrics"].update(gpu_peak_allocated_bytes=result["gpu_peak_allocated_bytes"],
                                                  gpu_allocated_bytes=result["gpu_allocated_bytes"])
@@ -345,6 +350,7 @@ class Runtime:
                 self.manager.storage.artifact(self.state["id"], "asr", uid, result)
                 self.save()
                 self.emit("asr.final", utterance_id=uid, text=result["text"], revision=u["revision"])
+                await self.release_if_asr_done()
                 if self.state["config"]["cleanup"]:
                     if self.cleanup_queue.full() and self.state["mode"] == "live":
                         u.update(status="cleanup_failed", error="整理队列已满，原始文字可用；停止后可重试")
@@ -357,8 +363,7 @@ class Runtime:
                 u.update(status="asr_failed", error=result["error"], needs_review=True)
                 self.save()
                 self.emit("utterance.failed", utterance_id=uid, stage="asr", error=result["error"])
-                if result.get("fatal"):
-                    raise RuntimeError(result["error"])
+                await self.release_if_asr_done()
             else:
                 raise RuntimeError(result.get("error", "最终识别 worker 协议无效"))
             self.update_file_pause()
@@ -409,7 +414,7 @@ class Runtime:
             self.state.update(status=self.file_resume_status, phase="处理已结束，正在提交结果")
             self.dispatch_open.set()
         else:
-            self.state.update(status="paused", phase="转写已暂停 · 模型及识别资源保留")
+            self.state.update(status="paused", phase="转写已暂停 · 会话名额保留，不独占 GPU")
         self.save()
         self.emit("session.progress")
 
@@ -437,6 +442,7 @@ class Runtime:
         if self.draining_started_at is not None:
             self.draining_started_at = time.monotonic()
         self.dispatch_open.set()
+        self.manager.recognition.wake.set()
         self.save()
         self.emit("session.resumed")
 
@@ -460,7 +466,7 @@ class Runtime:
                 if previous != [start, len(pcm) // 2] or not self.manager.storage.same_audio(state["id"], start, pcm):
                     raise Conflict("重复音频包内容不同或超过恢复窗口，必须中断")
                 return self.emit("audio.ack", sequence=seq, next_sequence=state["next_sequence"], samples=state["samples"])
-            if state["status"] != "listening":
+            if state["status"] != "listening" or self.failure or self.cancelled:
                 raise Conflict("会话不再接收录音")
             if seq != state["next_sequence"] or start != state["samples"]:
                 raise Conflict("音频序号或样本起点不连续，拒绝带缺口续录")
@@ -553,13 +559,14 @@ class Runtime:
             await self._stop(reason)
 
     async def _stop(self, reason):
-        if self.state["status"] in {"created", "preparing"}:
+        if self.state["status"] in {"created", "preparing", "waiting"}:
             await self.manager.cancel(self.state["id"], self.state["owner"])
             return
         if self.state["status"] not in {"listening", "pausing", "paused"} or self.cancelled:
             return
         self.file_stopped = True
         self.dispatch_open.set()
+        self.manager.recognition.wake.set()
         self.state.update(status="draining", phase=reason)
         self.draining_started_at = time.monotonic()
         self.save()
@@ -579,7 +586,7 @@ class Runtime:
         return max(0, self.processed - max(self.last_voice_sample, self.idle_start_sample)) / RATE
 
     def sample_resources(self):
-        for name, worker in (("cpu", self.cpu), ("final", self.final)):
+        for name, worker in (("cpu", self.cpu), ("final_shared", self.manager.recognition.worker)):
             pid = getattr(getattr(worker, "process", None), "pid", None)
             if not pid:
                 continue
@@ -598,9 +605,12 @@ class Runtime:
             await asyncio.sleep(1)
             self.sample_resources()
             clock = time.monotonic()
-            if self.state["mode"] == "upload" and self.queue.full() and self.draining_started_at is not None:
-                # File backpressure can deliberately block the CPU event reader.
-                self.draining_started_at = clock
+            if self.queue.full():
+                # Shared inference backpressure is not a stalled CPU worker.
+                if self.draining_started_at is not None:
+                    self.draining_started_at = clock
+                if self.pausing_started_at is not None:
+                    self.pausing_started_at = clock
             if (self.state["status"] == "draining" and not self.cpu_drained
                     and self.draining_started_at is not None
                     and clock - self.draining_started_at >= self.CPU_DRAIN_TIMEOUT_SECONDS):
@@ -698,6 +708,7 @@ class DictationService:
         self.closing = False
         self.gate = asyncio.Lock()
         self.cleanup_slots = asyncio.Semaphore(2)
+        self.recognition = RecognitionScheduler(self)
         if recover:
             self.storage.recover()
 
@@ -749,8 +760,6 @@ class DictationService:
             settings = load_dictation_settings(self.root)
             if not settings.enabled:
                 raise Conflict("语音输入模块已关闭")
-            if any(r.task and not r.task.done() for r in self.runtimes.values()):
-                raise Conflict("已有语音输入会话正在处理，请先停止并等待完成")
             loaded = load_settings(project_root=self.root)
             config = settings.freeze(self.root, loaded, request, preview=not upload_name)
             for key in ("cpu_python", "final_python", "vad_model"):
@@ -758,14 +767,6 @@ class DictationService:
                     raise Conflict(f"语音输入尚未准备好：{key} 不存在，请查看 docs/DICTATION.md")
             if not upload_name and not (Path(config["streaming_model"]) / "encoder.int8.onnx").is_file():
                 raise Conflict("流式模型尚未预下载，请运行 scripts/setup_dictation.py")
-            lock_path = self.root / "data/jobs/_asr-gpu.lock"
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            lock = lock_path.open("a")
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                lock.close()
-                raise Conflict("GPU 被其他 ASR 任务占用，请等待任务完成；不会抢占") from None
             sid = uuid4().hex
             state = {"id": sid, "owner": owner, "status": "created", "phase": "等待准备模型",
                      "mode": "upload" if upload_name else "live", "created_at": now(), "updated_at": now(),
@@ -785,16 +786,18 @@ class DictationService:
                 "base_url": os.getenv(gateway.base_url_env, "") or frontend.codex_lb_base_url or gateway.base_url,
                 "base_url_env": "",
             }).model_dump()
+            runtime = Runtime(self, state)
+            if not upload_name:
+                await self.recognition.reserve(runtime, settings.max_active_sessions)
             try:
                 self.storage.create(state)
                 self.states[sid] = state
                 self.projections[sid] = ""
-                runtime = Runtime(self, state, lock)
                 self.runtimes[sid] = runtime
                 if start:
                     runtime.task = asyncio.create_task(runtime.run())
             except BaseException:
-                lock.close()
+                await runtime.release_recognition()
                 raise
             return state
 
@@ -818,17 +821,16 @@ class DictationService:
                         count += len(chunk)
             if not count:
                 raise ValueError("上传文件为空")
-            # The runtime identity is the lifecycle token. Validation and start
-            # are one event-loop turn, so deletion cannot slip between them.
+            # start_upload rechecks cancellation when it reserves recognition.
             if (self.runtimes.get(sid) is not runtime or runtime.cancelled
-                    or sid in self.deleting or self.closing or runtime.lock_file is None):
+                    or sid in self.deleting or self.closing):
                 raise Conflict("上传会话已取消或正在删除")
             state["upload_bytes"] = count
             self.commit(state)
-            runtime.task = asyncio.create_task(runtime.run())
+            await self.start_upload(sid, owner, wait_if_busy=True)
         except BaseException as exc:
             runtime.cancelled = True
-            runtime.release_gpu()
+            await runtime.release_recognition()
             state.update(status="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed",
                          phase="上传已取消" if isinstance(exc, asyncio.CancelledError) else "上传失败",
                          error=("上传未完成" if isinstance(exc, asyncio.CancelledError) else
@@ -838,6 +840,30 @@ class DictationService:
         finally:
             self.background[sid].discard(task)
         return state
+
+    async def start_upload(self, sid, owner, *, wait_if_busy=False):
+        async with self.gate:
+            state = self.get(sid, owner)
+            runtime = self.runtimes.get(sid)
+            if (not runtime or runtime.cancelled or state["mode"] != "upload"
+                    or state["status"] not in {"created", "waiting"} or not state.get("upload_bytes")):
+                raise Conflict("上传尚未完成或会话不可启动")
+            settings = load_dictation_settings(self.root)
+            if not settings.enabled:
+                raise Conflict("语音输入模块已关闭")
+            try:
+                await self.recognition.reserve(runtime, settings.max_active_sessions)
+            except RecognitionBusy as exc:
+                state.update(status="waiting", phase=f"{exc}；文件已保留，请重试开始转写", wait_reason=exc.reason)
+                self.commit(state)
+                if not wait_if_busy:
+                    raise
+                return state
+            state.pop("wait_reason", None)
+            state.update(status="created", phase="等待准备模型")
+            self.commit(state)
+            runtime.task = asyncio.create_task(runtime.run())
+            return state
 
     def gateway(self, state):
         from src.schemas import CodexLBSettings
@@ -952,7 +978,7 @@ class DictationService:
         elif state["status"] in ACTIVE:
             if runtime:
                 runtime.cancelled = True
-                runtime.release_gpu()
+                await runtime.release_recognition()
             state.update(status="cancelled", phase="已取消")
             self.commit(state)
         return public_state(state)
@@ -1059,10 +1085,8 @@ class DictationService:
         for task in tasks:
             if not task.done() and not task.cancelling():
                 task.cancel()
+        await self.recognition.close()
         await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
-        for runtime in self.runtimes.values():
-            if runtime.lock_file:
-                runtime.release_gpu()
         for state in interrupted:
             if state["id"] not in self.deleting:
                 state.update(status="interrupted", phase="服务停止，已完成结果保留", error="服务已停止，录音未继续")

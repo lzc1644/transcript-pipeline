@@ -45,7 +45,7 @@ def fake_cleanup(*args, **kwargs):
 async def completed(service):
     state = await service.create("owner", SessionRequest(), start=False)
     runtime = service.runtimes[state["id"]]
-    runtime.release_gpu()
+    await runtime.release_recognition()
     state.update(status="completed", phase="完成")
     state["utterances"] = [{"id": "1", "revision": 1, "raw_text": "原稿", "text": "原稿", "edited": False,
                             "status": "cleanup_failed", "start_sample": 0, "end_sample": RATE}]
@@ -69,7 +69,7 @@ def test_session_model_choices_are_frozen_independently_for_both_cleanup_passes(
         assert chosen["config"]["document_cleanup_model"] == "gemini-3.8-flash-high"
         assert chosen["config"]["reasoning_effort"] == "medium"
         assert chosen["config"]["document_reasoning_effort"] == "xhigh"
-        service.runtimes[chosen["id"]].release_gpu()
+        await service.runtimes[chosen["id"]].release_recognition()
         default = await service.create("owner", SessionRequest(), start=False)
         assert default["worker_config"]["qwen_model"] == "Qwen/Qwen3-ASR-0.6B"
         assert default["worker_config"]["cleanup_model"] == "gpt-6-luna"
@@ -330,7 +330,7 @@ def test_audio_packet_idempotency_durability_and_gaps(root):
             await runtime.accept_audio(struct.pack("<IQ", 2, 1280) + b"\0\0")
         with pytest.raises(Conflict):
             await runtime.accept_audio(struct.pack("<IQ", 0, 0) + b"\0\0" * 1280)
-        runtime.release_gpu()
+        await runtime.release_recognition()
     asyncio.run(run())
 
 
@@ -350,7 +350,7 @@ def test_upload_limit_rejects_before_worker_and_releases_lock(root):
         with pytest.raises(UploadLimit):
             await service.receive_upload(state["id"], "owner", stream(), 513 * 1024 * 1024)
         runtime = service.runtimes[state["id"]]
-        assert runtime.task is None and runtime.lock_file is None
+        assert runtime.task is None and not runtime.asr_reserved
         assert state["status"] == "failed"
     asyncio.run(run())
 
@@ -365,7 +365,7 @@ def test_stalled_upload_has_receive_deadline_and_releases_gpu(root):
             await asyncio.Event().wait()
         with pytest.raises(TimeoutError):
             await service.receive_upload(state["id"], "owner", stalled())
-        assert service.runtimes[state["id"]].lock_file is None
+        assert not service.runtimes[state["id"]].asr_reserved
         assert state["status"] == "failed" and "超过期限" in state["error"]
     asyncio.run(run())
 
@@ -518,9 +518,10 @@ def test_owner_gpu_lock_and_restart(root):
         state = await service.create("owner", SessionRequest(), start=False)
         with pytest.raises(KeyError):
             service.get(state["id"], "other")
+        other_service = DictationService(root, recover=False)
         with pytest.raises(Conflict, match="GPU"):
-            await service.create("other", SessionRequest(), start=False)
-        service.runtimes[state["id"]].release_gpu()
+            await other_service.create("other", SessionRequest(), start=False)
+        await service.runtimes[state["id"]].release_recognition()
         recovered = DictationService(root)
         assert recovered.get(state["id"], "owner")["status"] == "interrupted"
     asyncio.run(run())

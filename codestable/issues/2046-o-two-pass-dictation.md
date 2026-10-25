@@ -319,3 +319,52 @@ B工程与公开真实音频/格式链路可用；未调用付费整理供应商
 ## 后续模型选项（2026-10-24）
 
 用户明确要选择的是 Qwen 识别**之后**的两个文字处理模型，而非 ASR。新会话可分别选择逐句快速处理和全文整理的模型及思考强度；默认 Luna `low` / Luna `high` 不变，选项随会话冻结，历史重试沿用旧选择。实现和验证见独立记录 [2047-x-ff-gemini-model-routing.md](2047-x-ff-gemini-model-routing.md)；本事项原有物理麦克风、人工对照与长期质量验收缺口仍在。
+
+## 多会话共享最终识别（2026-10-25，工程完成，待多人手测）
+
+用户批准：多会话独立采音/CPU预览，共享一份Qwen，按会话轮转；默认`max_active_sessions=2`。保留现有入口、浏览器所有权、历史正文和中间产物结构。本轮实现与自动化验证；多人/长时性能由用户手动验收，不部署、提交或关闭事项。
+
+### 当前实施契约
+
+- 服务级scheduler唯一持有GPU锁、最终worker及输出读取；任务带session/utterance/request三重身份与独立术语。每会话现有16项有界队列保留，轮转每次一句，推理60秒期限从实际派发开始，排队单独计时。
+- 创建实时会话原子预留容量；准备/录音/暂停/待识别计入，ASR结束仅剩文字整理时归还。上传接收不占容量或GPU；接收完再准入，资源忙时材料保留为waiting，用户点击重试启动，不自动重复上传。
+- 暂停保留名额、不独占调度；文件暂停阻止尚未派发的ASR，已派发工作按原期限完成。取消/删除撤销本人排队工作，等待本人在途识别后退出，不关闭他人worker。共享故障停止受影响采音、结算等待、保留原音频/正文；确认进程退出后释放锁，可由新会话重启。
+- 整理全局并发仍为2，单Web进程，不换模型、不引入账号/队列平台/多GPU。
+
+目标界面局部（原正文/操作区域位置不变，窄屏换行）：
+```text
+[开始听写]  识别容量：最多2个活动会话
+临时识别：正在等待共享识别 / 正在最终识别
+文件等待：容量已满 或 GPU被批量转录占用；文件已保留 [重试开始转写] [取消]
+暂停：保留会话名额，其他用户仍可识别
+```
+
+验证：隔离可控worker覆盖身份/术语、单进程、轮转、暂停/取消/删除/断线隔离、容量回收、故障及真实子进程GPU锁；全量pytest、前端类型/build/state与实际界面检查。不得以自动化测试代替两设备10分钟人工验收。
+
+### 实现与交接
+
+- 新增`src/dictation/scheduler.py`，服务级原子容量/GPU锁、single-flight加载、唯一结果读取和轮转派发；每会话一次只提交一项到共享调度器，保留16句本地有界队列。任务在派发处登记file_inflight，等待中的文件任务可以立即暂停而不占GPU机会。普通单句失败继续服务，崩溃/超时/OOM/任务标识不符统一结算成员；无自动重试或模型替换。
+- Runtime不再持有最终worker/锁；退出只撤销自己的等待并等待自己的在途结果，最后成员退出才关闭共享进程。CPU启动失败不取消其他用户正在等待的共享加载。关闭先停止准入/采音并统一关闭共享worker，再等待原有有界HTTP线程。上传接收无GPU或容量占用，完成后准入；等待会话的resume只重试已保存材料，生命周期检查位于真正取得准入锁之后，取消不能被迟到启动绕过。
+- 明确采用用户批准的语义变化：暂停保留的是名额、不是GPU独占；文件与实时一样，在ASR结束而只剩远端整理时归还名额。旧文件暂停测试按此契约更新，仍覆盖待识别时持有名额、EOF/满队列及在途HTTP。`final_process`诊断改名`final_shared_process`，是共享进程累计资源，不应按会话求和；排队计时从端点就绪到派发，与worker实测推理分开。
+- 界面新增排队/推理区别、容量提示、历史与活动面板的waiting重试；文件等待空态不再要求说话。`docs/DICTATION.md`给出默认2路的配置、单进程部署步骤、恢复与六项多人验收。既有probe文件入口改用相同准入方法，命令/参数不变。
+
+### 本候选的验证证据
+
+- 全量`.venv/bin/python -m pytest`：**849 passed / 57.13s**，`tmp/dictation-multisession-pytest-final.log`。新增30项多会话情况（`tests/test_dictation_multisession.py`）：身份/术语、单worker、轮转与等待不算超时、暂停/停止/删除/取消/断线隔离、容量归还、错误恢复、上传等待及API所有权、取消与启动竞争、实时满队列完整收尾。真实line-framed子进程分别成功/崩溃/挂住，明确断言实际退出之前锁仍不可重获、退出后可重获。另一次文件暂停定向12 passed，恢复了满队列暂停期间名额仍保留的断言，`tmp/dictation-multisession-file-final.log`。
+- 前端类型检查/production build、`dictation-state.mjs`通过；新浏览器`tmp/dictation-multisession-browser-02/report.json`四项通过、0页面异常，涵盖桌面/390px排队与推理区别、容量与批量GPU占用的不同提示、历史及活动dock重试不重传文件。HTTP为合成状态，不是多人ASR性能证据；实际截图已查看。首次类型检查发现等待提示误插入本地录音分支，已移到活动识别分支后通过构建及真实浏览器。
+- 公开模型样例`paraformer/test_wavs/0.wav`，独立root和原GPU锁，分别用既有probe的`dual --realtime`与`final`文件入口实际运行：各**10.053125秒 / 160850样本 / 2句 / completed**，无远端整理调用。`tmp/dictation-multisession-real-01/`、`tmp/dictation-multisession-upload-real-01/`；实际会话位于`tmp/dictation-multisession-real-project-01/data/dictation/`。已逐项检查source.pcm长度、句WAV范围、正文/TXT一致及ASR身份与独立产物，`tmp/dictation-multisession-real-artifact-check.json`。实时样例CPU最大积压16ms；两句推理约0.19–0.50秒，仅支撑该短单会话链路，不作多人性能结论。
+- 按`docs/REVIEW_CHECKLIST.md`检查：仅批准的多会话范围、项目.venv、独立中间结果与旧历史兼容、无上游回写；普通句错和共享故障都有明确失败结果。未运行两设备10分钟多人验收，用户拥有该后续验收；未部署、提交、推送或关闭事项，不增加付费调用并发。
+
+修改文件：新增`src/dictation/scheduler.py`、`tests/test_dictation_multisession.py`、`frontend/tests/dictation-multisession.mjs`；修改`src/dictation/{schemas,service,storage,worker}.py`、`src/web/dictation.py`、`frontend/src/{components/DictationDock.vue,composables/useDictation.ts,views/DictationView.vue}`、`scripts/probe_dictation.py`、`tests/test_dictation{,_file_pause,_lifecycle,_limits,_pause}.py`、`docs/DICTATION.md`及本事项。
+
+下一步：交Astra审核本工作区diff及上述证据；审核通过、获得部署授权后更新单容器和刷新页面，再由用户按文档执行两设备持续讲话、词表隔离、交叉操作、长文件/实时轮转及第三人准入/容量回收。两路稳定后再考虑增加容量。原有人工准确率/4h完整上传的未完成验收继续保留。
+
+补充界面回归：`tmp/dictation-multisession-layout-01/`四项通过（60句/长预览内部滚动、向上阅读不抢位置、全文失败重试与应用、390px/540px操作区）；最终类型检查/build日志`tmp/dictation-multisession-build-final.log`，仅保留既有大chunk提示。前端状态日志`tmp/dictation-multisession-state.log`。
+
+## 多会话版本发布授权（2026-10-25）
+
+用户转交Astra只读审核结论：未发现必须先修的明确缺陷；已核对849项测试、前端及两个真实短音频，真实多人性能留待用户手测。随后用户明确同意「保存一个commit并部署，不push，保持默认2路」。本轮按此授权保存本轮实现为单个commit，更新现有单容器；不关闭事项、不追加付费或长时音频测试。
+
+部署前已复核：持久任务/会话无活动状态、无识别worker及校对HTTP子进程，现有HTTP/可信HTTPS健康；没有自定义dictation配置，使用代码默认2路。当前镜像已保留为`transcript-pipeline:rollback-before-multisession-20261025t111528z`，数据、模型与CA卷保持原入口。发布前快照、独立可用的`RECOVERY.md`、构建/切换日志及最终健康/有效配置/源码验收记录写入`tmp/deploy/dictation-multisession-20261025T111527Z/`。提交号以该目录`commit.txt`为准；最终结果以`report.json`为准，不用计划替代已发生结果。
+
+部署完成后用户刷新浏览器，按`docs/DICTATION.md`的两设备清单验收。默认2路保持不变，多人持续性能及既有人工质量/4h完整上传验收仍为后续项。

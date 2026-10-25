@@ -44,8 +44,10 @@ async def replay(args):
                                          start=args.candidate != "final")
             runtime = service.runtimes[state["id"]]
             if args.candidate == "final":
-                shutil.copyfile(source, service.storage.path(state["id"]) / "upload.wav")
-                runtime.task = asyncio.create_task(runtime.run())
+                destination = service.storage.path(state["id"]) / "upload.wav"
+                shutil.copyfile(source, destination)
+                state["upload_bytes"] = destination.stat().st_size
+                await service.start_upload(state["id"], "local-validation")
             deadline = time.monotonic() + 120
             while state["status"] in {"created", "preparing"}:
                 if time.monotonic() > deadline:
@@ -84,7 +86,7 @@ async def replay(args):
         utterances = [u for r in reports for u in r["result"]["utterances"]]
         summary = {"samples": len(reports), "utterances": len(utterances), "realtime": args.realtime,
                    "status": [r["result"]["status"] for r in reports], "cleanup_enabled": args.cleanup}
-        for key in ("first_partial_seconds", "final_latency_seconds", "cleanup_latency_seconds", "asr_seconds"):
+        for key in ("first_partial_seconds", "final_latency_seconds", "cleanup_latency_seconds", "queue_wait_seconds", "asr_seconds"):
             values = [u[key] for u in utterances if key in u]
             summary[key] = {"count": len(values), "p50": percentile(values, .5), "p95": percentile(values, .95)}
         summary["manual_review"] = "Inspect source audio, reference and separate raw/cleaned text; no automatic quality pass."

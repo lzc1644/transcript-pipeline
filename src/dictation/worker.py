@@ -83,14 +83,15 @@ def final_worker(config):
         if command["op"] in {"stop", "cancel"}:
             return
         started = time.monotonic()
+        identity = {key: command[key] for key in ("session_id", "utterance_id", "request_id")}
         try:
-            text = asr.transcribe(Path(command["path"]), config["terms"])
-            emit({"type": "final", "utterance_id": command["utterance_id"], "text": text,
+            text = asr.transcribe(Path(command["path"]), command["terms"])
+            emit({"type": "final", **identity, "text": text,
                   "inference_seconds": time.monotonic() - started,
                   "gpu_peak_allocated_bytes": torch.cuda.max_memory_allocated(),
                   "gpu_allocated_bytes": torch.cuda.memory_allocated()})
         except Exception as exc:
-            emit({"type": "failed", "utterance_id": command["utterance_id"], "error": str(exc),
+            emit({"type": "failed", **identity, "error": str(exc),
                   "fatal": "out of memory" in str(exc).lower()})
             if "out of memory" in str(exc).lower():
                 return

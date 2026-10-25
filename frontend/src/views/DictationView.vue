@@ -244,7 +244,7 @@ onMounted(() => action(async () => {
         <div ref="paperBody" class="dictation-paper__body" role="region" aria-label="听写文字" tabindex="0" @scroll="trackScroll">
         <div v-if="!completed.length && session?.document_text === undefined" class="dictation-empty">
           <div class="dictation-mic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></svg></div>
-          <h3>{{ active ? '准备好后，请自然说话' : '把想说的话，留成文字' }}</h3>
+          <h3>{{ session?.status === 'waiting' ? '文件已保留，等待开始转写' : active && session?.mode === 'upload' ? '正在处理录音' : active ? '准备好后，请自然说话' : '把想说的话，留成文字' }}</h3>
           <p>{{ active ? session?.phase : '点击开始，先允许浏览器使用麦克风。' }}</p>
           <small>音频与文字保存在服务器，历史中可明确删除。</small>
         </div>
@@ -265,7 +265,7 @@ onMounted(() => action(async () => {
           </article>
         </template>
         <section v-if="partial.length" class="dictation-preview" aria-label="临时识别">
-          <div v-for="u in partial" :key="u.id"><span>{{ states[u.status] }}</span><p>{{ u.preview || '已检测到语音，正在识别……' }}</p><small v-if="u.status === 'asr_failed'">{{ u.error }}；预览未进入正文和复制内容。</small><n-button v-if="u.status === 'asr_failed' && u.end_sample != null" text size="small" :disabled="d.capturing.value || d.local.capturing.value" @click="action(() => listen(u))">听失败分句</n-button></div>
+          <div v-for="u in partial" :key="u.id"><span>{{ u.status === "finalizing" && u.asr_queue_state !== "running" ? "正在等待共享识别" : states[u.status] }}</span><p>{{ u.preview || '已检测到语音，正在识别……' }}</p><small v-if="u.status === 'asr_failed'">{{ u.error }}；预览未进入正文和复制内容。</small><n-button v-if="u.status === 'asr_failed' && u.end_sample != null" text size="small" :disabled="d.capturing.value || d.local.capturing.value" @click="action(() => listen(u))">听失败分句</n-button></div>
         </section>
         </div>
       </section>
@@ -278,7 +278,8 @@ onMounted(() => action(async () => {
           <n-button v-else-if="!active" type="primary" :loading="busy" :disabled="recognizing || !!captureAction || d.local.active.value || d.local.busy.value || d.uploadUncertain.value" @click="d.start(termList(), enableCleanup, cleanupModel, documentCleanupModel, cleanupEffort, documentEffort)">开始听写</n-button>
           <n-button v-else type="primary" :disabled="session?.status === 'draining'" @click="action(() => d.stop(session!.id))">{{ session?.status === 'draining' ? '正在完成尾部' : '停止' }}</n-button>
           <n-button v-if="recognizing" quaternary @click="d.showRecording">返回活动会话</n-button>
-          <n-button v-if="active && session?.mode === 'upload'" :disabled="!!d.fileAction.value || !['listening','draining','paused'].includes(session.status)" @click="action(() => d.fileControl(session!.id, session!.status === 'paused' ? 'resume' : 'pause'))">{{ session.status === 'paused' ? '继续转写' : '暂停转写' }}</n-button>
+          <n-button v-if="session?.status === 'waiting'" :loading="!!d.fileAction.value" @click="action(() => d.fileControl(session!.id, 'resume'))">重试开始转写</n-button>
+          <n-button v-if="active && session?.mode === 'upload' && session.status !== 'waiting'" :disabled="!!d.fileAction.value || !['listening','draining','paused'].includes(session.status)" @click="action(() => d.fileControl(session!.id, session!.status === 'paused' ? 'resume' : 'pause'))">{{ session.status === 'paused' ? '继续转写' : '暂停转写' }}</n-button>
           <n-button :disabled="!session?.draft_text" @click="copy">复制已完成文字</n-button>
           <a v-if="session?.draft_text" class="dictation-download" :href="`/api/dictation/sessions/${session.id}/draft.txt`">下载 TXT</a>
           <n-button v-if="active" quaternary @click="action(() => d.cancel(session!.id))">取消后续处理</n-button>
@@ -287,6 +288,7 @@ onMounted(() => action(async () => {
         <p v-if="cleanupScope === 'document'" class="dictation-status" role="status">正在整体整理，最多等待{{ documentTimeout }}秒（总期限）；确认前不会修改正文。</p>
         <p v-if="session?.document_cleanup_error && !error && cleanupScope !== 'document'" class="dictation-error" role="alert">{{ session.document_cleanup_error }}</p>
         <p v-if="active && session?.mode === 'live'" class="dictation-status">本窗口只查看结果；暂停、继续请返回原录音窗口。这里仍可停止、复制和编辑。</p>
+        <p v-if="d.serverConfig.value?.max_active_sessions" class="dictation-status">识别容量：最多 {{ d.serverConfig.value.max_active_sessions }} 个活动会话；多人可同时录音，按句轮转识别。</p>
         <p v-if="session?.status === 'preparing'" class="dictation-status">模型准备期间请稍候；开始听音后再说话。</p>
         <p v-if="session?.status === 'draining'" class="dictation-status">麦克风已释放；最后几句仍在处理，原始识别可随时复制。</p>
       </section>
