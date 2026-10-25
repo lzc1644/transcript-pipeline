@@ -96,6 +96,32 @@ try {
     await page.screenshot({ path: `${output}/${name}-long-session.png`, fullPage: true });
   }
   checks.push('390px mobile and 540px compact views keep controls visible without horizontal overflow');
+  for (const [name, width, height] of [['desktop', 1280, 900], ['mobile', 390, 844]]) {
+    await page.setViewportSize({ width, height });
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.locator('.dictation-settings summary').click();
+    await page.getByRole('textbox', { name: '新常用术语' }).fill('长'.repeat(81));
+    await page.getByRole('button', { name: '保存常用术语', exact: true }).click();
+    const alert = page.locator('.n-modal [role="alert"]');
+    await alert.waitFor();
+    assert.match(await alert.textContent(), /术语最多50项，每项1–80字/);
+    assert.equal(await page.getByRole('alert').count(), 1);
+    // Check the painted error, not merely DOM presence behind the modal mask.
+    assert(await alert.evaluate(el => {
+      const r = el.getBoundingClientRect();
+      return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth
+        && el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+    }), `${name}: settings error must be unobscured and inside the viewport`);
+    await page.screenshot({ path: `${output}/${name}-settings-error.png`, fullPage: true });
+    await page.getByRole('textbox', { name: '新常用术语' }).fill('WebSocket');
+    await page.getByRole('button', { name: '保存常用术语', exact: true }).click();
+    await page.getByRole('checkbox', { name: 'WebSocket', exact: true }).waitFor();
+    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('dictation:terms'))), ['WebSocket']);
+    await page.getByRole('button', { name: '完成', exact: true }).click();
+    await page.locator('.n-modal').waitFor({ state: 'hidden' });
+    assert.equal(await page.locator('.dictation-page > [role="alert"]').count(), 1);
+  }
+  checks.push('settings validation errors stay visible above the mask on desktop/mobile; corrected terms save and closing preserves page errors');
   assert.deepEqual(errors, []);
   await writeFile(`${output}/report.json`, JSON.stringify({ checks, errors, synthetic_session: true, real_asr_or_llm: false }, null, 2));
   console.log(checks.join('\n'));

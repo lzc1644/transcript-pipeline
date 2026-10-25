@@ -82,10 +82,103 @@ function claimPlayback() { if (player.value) void action(async () => d.playback.
 </template>
 
 <style scoped>
-.recording-draft { display: grid; gap: 16px; }.recording-draft h3, .recording-draft h4, .recording-draft p { margin: 0; }
-.recording-draft > p, .draft-current > p, .draft-row p { color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; }
-.draft-current { display: grid; gap: 12px; background: var(--surface-subtle); padding: 20px; border-radius: 8px; }
-.draft-current audio { width: 100%; max-width: 560px; }.draft-actions { display: flex; flex-wrap: wrap; gap: 12px; }
-.draft-row { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; align-items: center; padding: 16px 0; border-top: 1px solid var(--border-subtle); }
-.draft-error { padding: 12px; border-left: 3px solid var(--color-error); color: var(--color-error); }
+.recording-draft {
+  display: grid;
+  gap: 16px;
+}
+.recording-draft h3, .recording-draft h4, .recording-draft p {
+  margin: 0;
+}
+.recording-draft h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.recording-draft h4 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 12px;
+}
+.recording-draft > p, .draft-current > p, .draft-row p {
+  color: var(--text-secondary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.draft-current {
+  display: grid;
+  gap: 12px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  padding: 18px 20px;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.draft-current strong {
+  font-size: 15px;
+  color: var(--text-primary);
+}
+.draft-current audio {
+  width: 100%;
+  max-width: 560px;
+  height: 40px;
+}
+.draft-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.draft-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  transition: border-color var(--motion-fast) var(--ease-out);
+}
+.draft-row:hover {
+  border-color: var(--border-strong);
+}
+.draft-row strong {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.draft-error {
+  padding: 12px 16px;
+  border-left: 3px solid var(--color-error);
+  background: var(--color-error-bg);
+  color: var(--color-error);
+  border-radius: 0 6px 6px 0;
+  font-size: 13px;
+}
+@media (max-width: 600px) {
+  .draft-current {
+    padding: 14px 16px;
+  }
+  .draft-actions {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+  .draft-actions > .n-button--primary-type,
+  .draft-actions > .n-button:first-child {
+    grid-column: 1 / -1;
+  }
+  .draft-actions > .n-button {
+    width: 100%;
+  }
+  .draft-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .draft-row > .n-button {
+    width: 100%;
+  }
+}
 </style>
