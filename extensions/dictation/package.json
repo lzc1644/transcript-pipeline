@@ -1,0 +1,25 @@
+{
+  "name": "transcript-dictation-extension",
+  "private": true,
+  "version": "0.1.1",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "test:bridge": "node ../../frontend/tests/dictation-extension-bridge.mjs",
+    "test:recovery": "node tests/close-recovery.mjs",
+    "build:chrome": "node build.mjs chrome",
+    "build:firefox": "node build.mjs firefox",
+    "package:dev": "npm run build:chrome && npm run build:firefox && node package.mjs"
+  },
+  "dependencies": {
+    "webextension-polyfill": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/webextension-polyfill": "^0.12.3",
+    "fflate": "0.8.3",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.1"
+  }
+}

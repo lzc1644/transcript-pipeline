@@ -69,3 +69,9 @@ tmp_*
 frontend/node_modules/
 frontend/dist/
 frontend/test-results/
+
+# Browser dictation extensions
+extensions/dictation/node_modules/
+extensions/dictation/dist/
+extensions/dictation/artifacts/
+frontend/public/dictation-extension/

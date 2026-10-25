@@ -1,0 +1,19 @@
+{
+  "incognito": "not_allowed",
+  "background": {
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "dictation-dev@transcript-pipeline.local",
+      "strict_min_version": "154.0"
+    }
+  },
+  "sidebar_action": {
+    "default_title": "网页语音输入",
+    "default_panel": "sidebar.html",
+    "open_at_install": false
+  }
+}

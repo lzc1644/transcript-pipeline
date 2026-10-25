@@ -1,4 +1,13 @@
 export type CaptureOwner = "live" | "local" | "probe";
+/** Local and extension-hosted capture share the controller's existing PCM/stop boundary. */
+export interface CaptureSource {
+  readonly prepared: boolean;
+  readonly silentSeconds: number;
+  isOwner(owner: CaptureOwner): boolean;
+  prepare(owner: CaptureOwner, onDeviceError: (error: Error) => void): Promise<void>;
+  start(owner: CaptureOwner, onPCM: (pcm: ArrayBuffer, level: number) => void): Promise<void>;
+  stop(owner: CaptureOwner, flush?: boolean): Promise<void>;
+}
 /** One local PCM capture owner. Permission, worklet and flush callbacks belong to a lease. */
 export class PcmCapture {
   deviceId = "";

@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from "vue-router";
 
 import DictationView from "../views/DictationView.vue";
+import DictationExtensionView from "../views/DictationExtensionView.vue";
 import BatchJobView from "../views/BatchJobView.vue";
 import JobListView from "../views/JobListView.vue";
 import PDFBookOCRView from "../views/PDFBookOCRView.vue";
@@ -41,6 +42,7 @@ export const router = createRouter({
       component: JobListView,
     },
     { path: "/dictation", name: "dictation", component: DictationView },
+    { path: "/dictation/extension", name: "dictation-extension", component: DictationExtensionView },
     {
       path: "/settings",
       name: "settings",

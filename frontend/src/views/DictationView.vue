@@ -162,7 +162,7 @@ onMounted(() => action(async () => {
   <section class="workbench-page dictation-page" :class="{ 'is-compact': compact }">
     <div class="page-heading">
       <div><h2>语音输入</h2><p v-if="!compact">说出来，整理成文。临时识别即时呈现，完成的文字可编辑、复制。</p></div>
-      <div class="dictation-inline"><n-button size="small" @click="smallWindow">{{ compact ? '普通视图' : '紧凑小窗' }}</n-button><n-button size="small" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen">设置</n-button></div>
+      <div class="dictation-inline"><n-button v-if="!compact" size="small" @click="router.push('/dictation/extension#extension-install')">扩展下载与安装</n-button><n-button size="small" @click="smallWindow">{{ compact ? '普通视图' : '紧凑小窗' }}</n-button><n-button size="small" :aria-expanded="settingsOpen" @click="settingsOpen = !settingsOpen">设置</n-button></div>
     </div>
     <nav class="dictation-tabs" aria-label="语音输入方式">
       <button v-for="item in [{id:'live',text:'实时听写'},{id:'record',text:'录音转写'},{id:'upload',text:'导入音频'},{id:'history',text:'历史结果'}]" :key="item.id" :aria-current="tab === item.id ? 'page' : undefined" @click="setTab(item.id); if(item.id === 'history') action(d.loadHistory)">{{ item.text }}</button>

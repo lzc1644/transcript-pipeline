@@ -24,6 +24,9 @@ config/glossaries/*
 # Frontend build outputs and installed packages (the build stage uses npm ci)
 frontend/node_modules/
 frontend/dist/
+extensions/dictation/node_modules/
+extensions/dictation/dist/
+frontend/public/dictation-extension/
 
 # Runtime data and local secrets must never enter an image build context
 .env

@@ -7,7 +7,14 @@ FROM ${NODE_IMAGE} AS frontend-builder
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
+WORKDIR /extensions/dictation
+COPY extensions/dictation/package.json extensions/dictation/package-lock.json ./
+RUN npm ci
+COPY extensions/dictation/ ./
+WORKDIR /frontend
 COPY frontend/ ./
+COPY shared/ /shared/
+RUN npm --prefix /extensions/dictation run package:dev
 RUN npm run build
 
 FROM ${CADDY_IMAGE} AS https-binary

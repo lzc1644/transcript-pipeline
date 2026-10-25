@@ -88,7 +88,7 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
   <n-config-provider :theme="isDark ? darkTheme : null" :theme-overrides="themeOverrides">
     <n-dialog-provider>
       <n-message-provider>
-        <div class="app-shell" :class="{ 'app-shell--compact': route.path === '/dictation' && route.query.compact === '1' }">
+        <div class="app-shell" :class="{ 'app-shell--compact': route.path === '/dictation/extension' || (route.path === '/dictation' && route.query.compact === '1') }">
           <a class="skip-link" href="#main-content">跳至主要内容</a>
           <aside class="app-sidebar" aria-label="工作台导航">
             <div class="app-brand"><span class="app-brand__mark" aria-hidden="true">文</span><div><strong>读书会整理</strong><small>Transcript Pipeline</small></div></div>
@@ -110,7 +110,7 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
               <router-view v-slot="{ Component }"><transition name="page" mode="out-in"><component :is="Component" /></transition></router-view>
             </main>
           </div>
-          <DictationDock @height="dockHeight = $event" />
+          <DictationDock v-if="route.path !== '/dictation/extension'" @height="dockHeight = $event" />
           <n-drawer v-model:show="drawerOpen" placement="left" :width="288" :auto-focus="true" :trap-focus="true" :close-on-esc="true" @after-leave="restoreMenuFocus">
             <n-drawer-content title="读书会整理" closable :native-scrollbar="false">
               <div id="mobile-navigation"><NavBar @navigate="drawerOpen = false" /></div>

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test:workbench": "node tests/workbench.mjs"
+    "test:workbench": "node tests/workbench.mjs",
+    "test:extension-install": "node tests/dictation-extension-install.mjs"
   },
   "dependencies": {
     "naive-ui": "^2.40.4",

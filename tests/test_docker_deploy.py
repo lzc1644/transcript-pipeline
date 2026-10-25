@@ -55,6 +55,28 @@ def test_runtime_copies_assign_non_root_ownership_even_for_private_host_files() 
     assert "USER app" in runtime
 
 
+def test_frontend_image_build_includes_the_shared_extension_protocol() -> None:
+    source = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    frontend = source.split("FROM ${NODE_IMAGE} AS frontend-builder", 1)[1].split("FROM ${CADDY_IMAGE}", 1)[0]
+    assert frontend.index("COPY shared/ /shared/") < frontend.index("RUN npm run build")
+    assert (ROOT / "shared/dictationExtensionProtocol.ts").is_file()
+    ignored = (ROOT / ".dockerignore").read_text().splitlines()
+    assert "extensions/dictation/node_modules/" in ignored
+    assert "extensions/dictation/dist/" in ignored
+
+
+def test_frontend_image_build_regenerates_browser_downloads_from_source() -> None:
+    source = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    frontend = source.split("FROM ${NODE_IMAGE} AS frontend-builder", 1)[1].split("FROM ${CADDY_IMAGE}", 1)[0]
+    package_command = "RUN npm --prefix /extensions/dictation run package:dev"
+    assert frontend.index("COPY extensions/dictation/package.json extensions/dictation/package-lock.json ./") < frontend.index("COPY extensions/dictation/ ./")
+    assert frontend.index("COPY extensions/dictation/ ./") < frontend.index(package_command)
+    assert frontend.index("COPY shared/ /shared/") < frontend.index(package_command)
+    assert frontend.index(package_command) < frontend.index("RUN npm run build")
+    assert "frontend/public/dictation-extension/" in (ROOT / ".dockerignore").read_text().splitlines()
+    assert "frontend/public/dictation-extension/" in (ROOT / ".gitignore").read_text().splitlines()
+
+
 def test_single_image_owns_http_tls_health_and_composable_shutdown_budget() -> None:
     from configparser import ConfigParser
     from src.dictation.schemas import DictationSettings

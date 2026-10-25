@@ -1,0 +1,11 @@
+:root { color-scheme: light dark; font: 15px/1.65 system-ui, sans-serif; color: light-dark(#26332d, #e4ece7); background: light-dark(#f6f8f5, #17201b); }
+* { box-sizing: border-box; }
+body { margin: 0; } main { min-height: 100dvh; padding: 22px 18px; display: flex; flex-direction: column; gap: 16px; }
+h1 { font-size: 25px; line-height: 1.35; letter-spacing: -.6px; margin: 10px 0; } h2 { font-size: 16px; margin: 0 0 8px; }
+p { margin: 0; overflow-wrap: anywhere; } .eyebrow { font-size: 13px; color: light-dark(#59665e, #a9b9ae); }
+#phase { font-weight: 650; border-inline-start: 3px solid #4d906c; padding-inline-start: 10px; } #error:empty { display: none; } #error { color: light-dark(#a03524, #ffab97); }
+.actions { display: grid; gap: 10px; } button { font: inherit; padding: 9px 12px; border: 1px solid light-dark(#b8c9bf, #4f6557); border-radius: 6px; color: inherit; background: light-dark(#fff, #25362b); cursor: pointer; text-align: center; }
+#enable { background: light-dark(#235c41, #a7d5b4); color: light-dark(#fff, #173220); border-color: transparent; } button:disabled, #enable:disabled { color: light-dark(#626e66, #adb9b0); background: light-dark(#e6ebe7, #2c3730); border-color: light-dark(#cbd5ce, #47594d); cursor: default; } button:focus-visible { outline: 3px solid #62a8d0; outline-offset: 2px; }
+section { border-top: 1px solid light-dark(#d9e3dc, #36483d); padding-top: 16px; } ol { padding-left: 22px; margin: 0 0 14px; } li + li { margin-top: 8px; } section p, footer p { font-size: 14px; color: light-dark(#59665e, #a9b9ae); }
+footer { margin-top: auto; display: grid; gap: 10px; padding-top: 10px; }
+@media (max-width: 280px) { main { padding: 16px 12px; } h1 { font-size: 22px; } }

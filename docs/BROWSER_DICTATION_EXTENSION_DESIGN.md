@@ -1,8 +1,12 @@
 # 浏览器语音输入扩展：实现设计与模型交接
 
-状态：设计交付，尚未实现。日期：2026-10-24。
+状态：**用户要求暂停开发（2026-10-25）**。停在 S1 实机验收，整体验收未完成；Firefox 原生侧栏采音及开发 ZIP 下载已实现。原方案与后续阶段保留，等待用户明确恢复后再执行。
 
-本文件供后续执行模型使用。用户已确定只向**浏览器网页输入框**输入，要求 Chrome、Firefox 两种扩展，并在现有网页引导安装。本轮授权为设计；开始实现、发布或部署仍以用户后续指令为准。
+暂停交接与恢复顺序见 [执行记录的暂停检查点](BROWSER_DICTATION_EXTENSION_IMPLEMENTATION.md#暂停检查点2026-10-25)。当前保存源码、测试与文档，不关闭事项，不自动推进 S2，不撤下现有下载页。
+
+**实施与证据入口：[BROWSER_DICTATION_EXTENSION_IMPLEMENTATION.md](BROWSER_DICTATION_EXTENSION_IMPLEMENTATION.md)。** Firefox 后台网页及失焦的独立网页窗口不能重新开麦；用户已接受尝试保持可见的原生侧栏。当前已打通“侧栏采音 → 服务网页 → 原同源 WebSocket”，两次目标框保持焦点的录音、PCM 字节及尾包、event page 重建已有真实证据。关闭意图 P1 已通过 Astra 复核；获单独授权后，新页面已部署到实际 8443，本机隔离 Chrome/Firefox 的可信 HTTPS、同源 POST 和带凭据 WSS 已通过。异机访问策略、物理麦克风与 Firefox 原生指示器仍待实机验收，S1 未完成，S2/S3 未实施。用户另行确认先交付 S4 中的开发 ZIP 下载与安装说明，并授权更新现有服务；不改变 S1 验收门槛。下文第 3.5 节是已确认的承载修订，其余完整功能仍为实施目标。
+
+本文件供后续执行模型使用。用户已确定只向**浏览器网页输入框**输入，要求 Chrome、Firefox 两种扩展，并在现有网页引导安装。用户随后已授权按此方案实施；发布、部署、付费调用仍需另行授权。
 
 实际部署前提：服务运行在用户自己的局域网主机，当前入口为 **`https://192.168.0.252:8443`**。浏览器可能在另一台电脑上；不能把“本地服务”写成浏览器电脑的 localhost，也不能假设存在公网 API。具体传输、证书和验收契约见第 3.4 节。
 
@@ -10,14 +14,15 @@
 
 用户打开语音输入网页，安装并连接扩展。在另一个网站的输入框放好光标，按快捷键开始听写，再按一次结束。系统完成识别和校对后，将结果一次性插入原位置，不按发送键，不提交表单。
 
-采用**现有网页作为录音端，扩展作为输入端**：
+采用**现有网页作为服务客户端，扩展作为输入端**。Chrome 由网页采音，Firefox 由同窗口原生侧栏采音：
 
 ```text
 目标网页的输入框
   ↕ 扩展内容脚本：保存输入位置、校验、回填
 扩展协调器：快捷键、操作绑定、消息路由、提交状态
   ↕ 已授权服务网页中的桥接内容脚本
-录音网页 /dictation/extension：麦克风、预览、校对结果
+录音网页 /dictation/extension：会话、音频序号、预览、校对结果
+  ↑ Firefox：可见原生侧栏中的原 PcmCapture / AudioWorklet
   ↕ 原来的同源 HTTP / WebSocket
 现有 /api/dictation → CPU 预览 → Qwen 最终识别 → 逐句校对
 ```
@@ -26,7 +31,7 @@
 
 - 不做桌面程序、本地辅助进程、系统输入法或浏览器外自动粘贴。
 - Chrome、Firefox 共用 TypeScript 核心，分别构建 Manifest V3 扩展；不维护两套业务规则。
-- 录音网页必须保持打开，可以切到后台；关闭网页后不继续录音。后台扩展进程不持有麦克风。
+- 服务录音网页必须保持打开，可以切到后台。Firefox 另须保持当前目标窗口的侧栏可见；关闭、刷新服务页或关闭侧栏会中止该操作。后台扩展进程不持有麦克风。
 - 扩展不直接调用后端 API，不读取 Cookie，不携带校对供应商密钥；原有同源鉴权、HTTPS/WSS 和音频协议不变。
 - 不使用剪贴板实现默认回填；正常路径直接修改输入控件并通知其页面框架。复制仅作为用户主动选择的恢复动作。
 - 默认使用已有**逐句校对完成后的全文快照**，不是停止后再自动调用一次全文模型。全文校对继续在网页中显式预览、确认；不暗中增加调用成本。
@@ -48,7 +53,7 @@
 - `App.vue` 通过 `provideDictation()` 创建应用级唯一控制器，页面和面板共用它。
 - `useDictation.ts` 将历史选中会话 `session` 与实际录音会话 `recordingSession` 分开；选择历史不会转移录音所有权。
 - `PcmCapture` 已有 live/local/probe 所有权、尾包 flush、设备选择、迟到权限保护。必须复用，不能在扩展重写第二套 PCM 采集。
-- `start()` 目前返回空值，忙碌时直接返回，失败写入响应式 error；不能把一次调用 resolve 当作开始成功。
+- `start()` 在设计检查时返回空值；S1 已改为明确的 `started(sessionId)` / `rejected(reason)`，保留旧参数与错误反馈。`started` 只表示绑定会话，不能把一次调用 resolve 当作采音成功。
 - `stop(id)` 要求明确会话 ID；历史停止与当前录音有不同处理。扩展不得用当前历史选择或 `stop(null)` 猜目标。
 - 后端 `completed` 仍可能含 `asr_failed`、`cleanup_failed` 或 `needs_review`。`draft_text` 可包含整理失败时的原稿，不代表已完整校对。
 - `Storage.render_draft` 是唯一正文投影；人工编辑、全文建议及版本保护已实现。禁止自行拼出第二种正文。
@@ -69,6 +74,10 @@
 ## 3. 安装、连接、日常使用
 
 ### 3.1 安装引导
+
+**当前开发包交付（用户最新选择）**：普通 `/dictation` 页提供“扩展下载与安装”入口，进入 `/dictation/extension#extension-install` 下载 Chrome / Firefox ZIP 并查看对应说明。Chrome 使用开发者模式加载已解压目录；Firefox 临时载入 `manifest.json`，明确重启需重载、未正式签名。两端始终可选，Ubuntu / Windows 使用同一份对应包；复制服务地址取当前网页 origin，不写死服务器地址。包缺失时显示重试，不给无效下载按钮。打包与 Docker 部署从相同源码自动生成归档，当前事项见 `codestable/issues/2049-o-extension-zip-download.md`。本轮不实现文字回填、正式商店安装、签名或整套 S4 连接诊断。
+
+以下为后续**正式安装引导**的目标：
 
 在 `/dictation` 页面新增独立引导组件，不用阻断弹窗，不挤压正文与现有录音按钮。
 
@@ -96,7 +105,7 @@
 2. 扩展自己的界面显示完整服务 origin，包括端口。用户点击连接时，申请该服务主机的可选权限；网页发来的消息不能自行批准权限或更换服务器。
 3. 只接受可信 HTTPS；允许开发用 HTTP `localhost`、`127.0.0.1`、`[::1]`，不接受普通内网 IP 的 HTTP。拒绝凭据嵌入 URL、非 http(s) 协议、片段里的控制参数。当前后端位于根路径，不扩展子路径部署能力。
 4. 用户自行完成内网 CA 信任，不关闭 TLS 验证。扩展打开或经用户确认绑定专用录音页 `/dictation/extension`。
-5. 在录音页点击“启用扩展控制”，确认音频保存与远端校对说明，完成麦克风授权/短试音。试音释放麦克风，不创建 ASR 会话、不调用校对。
+5. 在录音页确认音频保存与远端校对说明。Chrome 点击“启用扩展控制并试音”；Firefox 点击“启用服务端控制”，再在原生侧栏授权试音。试音释放麦克风，不创建 ASR 会话、不调用校对。
 6. 显示就绪和实际注册的快捷键。以后由扩展操作启动录音，不要求目标网站拥有麦克风权限。
 
 更换服务时只在无录音/待提交操作时进行，撤销旧桥接注册与旧连接；旧网站不能继续发结果。旧站点权限是否保留须让用户明确选择，默认移除本扩展为该连接申请的旧权限。不要删除其他配置或浏览器证书。
@@ -158,6 +167,18 @@
 
 连接反馈分层：先“扩展已连接网页”，再显示由**录音网页**同源检测得到的“服务可用/不可达”，录音时另显示“麦克风/识别连接已就绪”。健康接口成功不等于 WS、麦克风、GPU 和校对供应商均可用；不为一次检查连接自动创建 ASR 会话。TLS 导致页面未加载时，扩展只能提示“无法连接录音页，请打开服务检查网络或证书”，不要伪造精确错误原因。401/403/WS 1008 时检查来源、凭据和占用；连接超时检查客户端网络、8443 与主机状态，不修改模型来处理网络故障。
 
+### 3.5 已确认修订：Firefox 使用可见原生侧栏采音
+
+用户已接受尝试此方案。侧栏约占 340px 网页宽度；它不抢目标输入框焦点，但听写时不能关闭。Chrome 保留原网页采音，不能把侧栏前提加到原网页调用者或 Chrome 上。
+
+1. 在扩展自有面板连接服务，打开服务录音页。Firefox 网页按钮只启用服务控制，**不调用网页 getUserMedia**；用户从扩展面板点击“打开 Firefox 采音侧栏”，在侧栏明确授权并短试音。试音确认收到 PCM 后结束，不创建服务会话。
+2. 快捷键的新操作绑定当前聚焦普通窗口的已就绪侧栏，以及原服务 tab/document。服务网页先请求侧栏 PREPARE，沿原接口创建会话，确认 listening 后再请求 START；侧栏复用同一份 `PcmCapture` 和 worklet。
+3. PCM16 以带 `operationId/documentInstanceId/leaseId/sequence` 的 JSON 数组经扩展内部消息转给服务网页。网页去重并同步交给原控制器；后端包序号、样本位置、待确认缓冲与重连仍由原控制器负责。侧栏包回执和后端 audio.ack 是两层不同确认。
+4. 停止先同步释放轨道，再 flush worklet 尾包、排空侧栏消息回执，最后由网页发送原 WS stop。转接队列最多 62 包，失败有限重试同一序号，不能静默丢包或重放到后端。
+5. 后台重建查询原服务文档与原侧栏 lease，并补送已持久化、尚未确认的关闭命令，不自动 PREPARE/START。网页仍显示 recording 不能撤销停止意图。刷新、导航、关闭或撤权使操作失效并请求关闭采音；重新开始须显式启用相应页面/侧栏。SPA 离开专用页时，旧文档仅可结束原 lease、接收其尾包和终态，不能在普通路径重新开麦。
+
+侧栏不 fetch 后端、不建立后端 WS、不读取 Cookie；后台仅临时转接 PCM，音频不写扩展存储。物理设备释放和 Firefox 原生指示器需在实际设备上验收；当前 Firefox 154 的原生指示更新存在已复现的浏览器异常，见执行记录。
+
 ## 4. 模块分工与代码落点
 
 ### 4.1 扩展工程
@@ -174,6 +195,7 @@ extensions/dictation/
   src/protocol.ts             消息类型与运行时校验
   src/content/target.ts       输入目标、提交/撤销、幂等收据
   src/content/recorder.ts     受信服务网页的有限消息桥
+  src/sidebar.ts / sidebarCapture.ts  Firefox 侧栏 UI 与硬件 lease、转接队列
   src/popup.* / options.*     扩展自有界面
   tests/                     状态、协议、真实扩展测试与夹具
   dist/chrome/、dist/firefox/ 构建输出，加入忽略规则
@@ -191,6 +213,7 @@ Chrome 使用 MV3 service worker；Firefox 使用 MV3 非持久 background scrip
 - `App.vue` 仅为新路径采用已有紧凑布局方式，继续只提供一个控制器。新页面不依赖改写 Dock；若需协调布局，先核对正在修改的 Dock，而不是覆盖它。
 - `useDictation.ts` 的 `start` 增加可判定返回值：`started(sessionId)` 或 `rejected(reason)`，保留现有调用者忽略返回值时的行为、错误提示和清理。返回 started 仅表示已绑定新会话，真正录音就绪另由状态确认。
 - 给扩展调用增加可选 `AbortSignal`，绑定本次 start 的内部代次；准备阶段尚无 sessionId 时，取消只终止该代次的准备，晚到麦克风/会话立即按原规则清理。不能取消另一次网页启动；旧调用者不传 signal，行为保持。开始成功后的停止/取消使用已返回的明确 sessionId。当前工作区的 start 已有模型/推理配置参数，新增选项必须追加或采用兼容方式，不占用旧参数位置、不把旧调用改成固定模型。
+- 当前采用第七个可选参数 `{ signal?, capture? }`；侧栏通过窄 `CaptureSource` 边界进入原控制器。原六个配置参数、普通网页设备选择及 local/probe 采音保持原契约。
 - 增加按指定会话读取最终快照的窄入口，或使用桥接私有同源 GET；不得通过 `select(id)` 改用户正在看的历史来取结果。`stop/cancel` 始终使用本操作捕获的 sessionId。
 - 桥接绑定完成后监听页面已有状态；`start` 返回前被取消、迟到权限或迟到创建响应必须沿用原代次保护，不得关联到前一个 sessionId。
 - 常用术语复用现有校验和本浏览器术语库；在录音页明确选择，用于新会话并冻结。不默认把库中所有词全部启用，也不改变旧页面的术语行为。
@@ -201,7 +224,8 @@ Chrome 使用 MV3 service worker；Firefox 使用 MV3 非持久 background scrip
 
 | 状态 | 所有者 | 其他参与者的职责 |
 |---|---|---|
-| 麦克风、PCM、WS、当前录音会话 | 网页原 DictationController | 扩展发送意图并等待状态，不自行重连音频 |
+| 麦克风、worklet PCM | Chrome：原网页 PcmCapture；Firefox：原生侧栏中的同一 PcmCapture | 每次采音独占 lease；失败不自动换设备或重新开麦 |
+| 后端 PCM 序号/位置/确认、WS、当前录音会话 | 网页原 DictationController | 侧栏只转接原始 PCM；后台不持有后端连接 |
 | 识别/校对正文、版本、历史与产物 | 后端 Service/Storage | 网页读取原投影，不制造另一种正文 |
 | 一个扩展操作及绑定、是否允许提交 | 扩展后台协调器 | UI 和内容脚本不能自行创建新操作 |
 | DOM 元素、选区、修改检测、提交收据 | 目标页内容脚本 | 后台只存不透明 targetId，不保存整页/输入框内容 |
@@ -217,7 +241,9 @@ Chrome 使用 MV3 service worker；Firefox 使用 MV3 非持久 background scrip
 ```text
 operationId, generation, phase
 recorder: { tabId, documentInstanceId, exactOrigin }
+capture: { windowId, documentInstanceId, leaseId }（Firefox 侧栏操作）
 sessionId（创建成功后才有）
+closeIntent: { kind: stop|cancel|fault, pagePending, capturePending, discard }（请求关闭后）
 target: { tabId, frameId, documentInstanceId, targetId }
 result: { sessionRevision, text, disposition, reasons }（有结果时）
 commit: { commitId, status }（有提交尝试时）
@@ -234,6 +260,8 @@ commit: { commitId, status }（有提交尝试时）
 | 扩展 UI → 后台 | CONNECT、TOGGLE、CANCEL、COMMIT_PENDING、DISCARD | UI sender 必须是本扩展；CONNECT 要经过扩展 UI 权限确认 |
 | 后台 ↔ 目标脚本 | CAPTURE_TARGET、PREPARE_COMMIT、COMMIT、GET_RECEIPT、UNDO | 带 operation/target/document/commit 标识，只操作已记录元素 |
 | 后台 ↔ 录音桥 | HELLO、START、STOP、CANCEL、GET_OPERATION | 仅绑定的服务 origin、tab、文档；START 只由用户操作创建 |
+| 录音桥 ↔ 后台 ↔ 侧栏 | CAPTURE_REQUEST、AUDIO_FRAME、CAPTURE_ERROR | PREPARE/START/STOP/INSPECT、严格 lease/序号；音频仅转给原服务文档 |
+| 侧栏 → 后台 | SIDEBAR_HELLO、SIDEBAR_STATE、SIDEBAR_CLOSED | 仅本扩展打包的 sidebar.html；按普通窗口和文档实例绑定 |
 | 录音桥 → 后台 | STATE、RESULT、ERROR | 必须匹配 operation/session；不是任意网页提供的文本 |
 | 引导网页 ↔ 桥 | HELLO/STATUS | 只公开扩展版本、协议和连接状态，不公开正文、目标或凭据 |
 
@@ -257,6 +285,8 @@ idle → capturing_target → preparing → recording → draining → result_re
 - 从 `result_ready` 进入 committing 前执行第 6、7 节的全部检查；否则 pending 并给出原因。
 - START/STOP/CANCEL 按 operationId 去重。页面桥保留本页操作→session 关联；重复 START 返回已有状态，不再调用 start。
 - 后台单一队列串行更新操作记录；外部请求发出前保存意图，await 返回后核对 generation/document/phase。外部调用不在长期锁内等待。
+- 关闭意图与网页观察状态分开保存。STOP/CANCEL/故障关闭先持久记录原 document/lease 及各端待确认位，再向原端点发送；后台重建先补送未确认关闭，再核对状态。迟到 recording、PREPARE、START 不能撤销关闭，取消/放弃也不能在交接确认前清空绑定。
+- 网页以 `closedOperationId` 确认已封存该操作并交给原控制器关闭；它不表示 ASR/校对已处理完。侧栏 STOP 回执确认硬件关闭与所需尾包排空。两端分别落盘，丢回执只幂等重送未确认端；恢复期间允许原操作的 STOP 回执及正常停止尾包通过，不能让其等待恢复结束。
 - transient 操作保存在 `storage.session`，只允许扩展可信上下文访问；服务地址/偏好放 `storage.local`。音频不进扩展存储，正文不进 sync/local 或普通日志。
 - 同一后台实例的串行队列负责写入；新实例先加载记录，再探测**原**录音页和目标实例。状态无法核实时保留待处理，不新建录音、不自动回填。
 - 不依赖长连接让 service worker 永久存活，不用假心跳绕过浏览器生命周期。后台重新唤醒后主动重连，录音页在结果 ready 时可通过桥重新投递同一 RESULT。
@@ -365,17 +395,17 @@ Chrome/Firefox 默认均只支持普通窗口；首版不启用无痕/隐私窗�
 
 ## 10. 实施顺序与停止条件
 
-以下阶段由后续获得实现授权的模型执行；按序推进，第一轮先证明关键通路，不先铺完整商店页面。
+**当前暂停。** 用户明确恢复后，先完成 S1 剩余实机验收，再按以下阶段顺序推进；网页开发包下载这一已交付切片保留，不据此跳过验收。
 
-### S1：两端录音网页控制穿刺
+### S1：两端录音控制穿刺（Firefox 已确认采用原生侧栏）
 
 先按第 3.4 节核对实际 LAN 通路。localhost 的免证书开发环境只能用于局部检查，不能替代 `192.168.0.252:8443` 的证书、端口和代理验收。
 
-搭建最小扩展和网页桥，使用真实 Chrome、Firefox 的普通配置：用户在前台录音页完成明确授权后，回另一 tab 用快捷键请求开始、结束；后台标签页 AudioWorklet 持续产生音频。使用公开短样例/本人设备，不动用户历史，不要求校对调用。
+搭建最小扩展和网页桥，使用真实 Chrome、Firefox 的普通配置。Chrome 在前台录音页明确授权后切到另一 tab；Firefox 按第 3.5 节在原生侧栏授权。两端均须从目标输入框用快捷键开始、结束，且原控制器收到连续音频。使用公开短样例/本人设备，不动用户历史，不要求校对调用。
 
 必须观察：首次权限拒绝、后台重新开麦、AudioContext suspended/resume、切换 tab、至少一次后台休眠/重建、停止尾包、关闭录音页、两次连续操作。不能沿用旧测试的 `--autoplay-policy=no-user-gesture-required`、自动授予麦克风等启动参数来证明真实权限路径。
 
-通过条件：Chrome 与 Firefox 均能在正常权限设置下完成该体验；后台 coordinator 不持有音频且重建不双启动。若某端必须每次切回录音页点击才开始，记录实际限制，不把它说成快捷键后台录音已通过；先给出改用前台启动或扩展专用录音页的最小设计修订，再由用户确认体验变化。不要无声切换到桌面助手或只有 Chrome 的 offscreen 方案。
+通过条件：Chrome 后台网页与 Firefox 可见原生侧栏均能在正常权限设置下完成目标框内的快捷键体验；后台 coordinator 不持有采音设备、不保存音频且重建不双启动。Firefox 侧栏的横向空间取舍已获用户确认；仍须验证实际设备的麦克风释放、原生指示和第 3.4 节 LAN 通路。不得把只切回录音页才可开麦、桌面助手或仅 Chrome 的 offscreen 偷换成此体验。
 
 ### S2：固定结果回填穿刺
 
@@ -392,6 +422,8 @@ Chrome/Firefox 默认均只支持普通窗口；首版不启用无痕/隐私窗�
 通过条件：结果来自本操作、使用服务端正文投影；没有 `completed` 但 cleanup_failed 仍自动粘贴的问题；晚到结果不会修改已输入文本；原页直接听写仍可用。
 
 ### S4：安装引导、构建包和使用文档
+
+用户已单独授权提前交付开发 ZIP 下载及加载说明这一小段，仍使用 S1 包；不视为 S4 整体验收或跳过 S1–S3。
 
 完成两端构建、工具栏/设置/录音页 UI、连接检查、权限撤回、版本不兼容提示和开发安装说明。构建产物分别为 Chrome ZIP/unpacked 目录与 Firefox 待签名 ZIP；不得把 ZIP 重命名 XPI 冒充正式已签名安装包。
 
@@ -427,7 +459,7 @@ npm --prefix frontend run build
 node --experimental-strip-types frontend/tests/dictation-state.mjs
 ```
 
-执行者建立并记录以下新入口（当前尚不存在）：
+S1 已建立以下入口，用于验证和构建当前穿刺工程；不代表 S1–S4 已验收：
 
 ```bash
 npm --prefix extensions/dictation run typecheck

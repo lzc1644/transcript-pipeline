@@ -1,6 +1,6 @@
 import { computed, inject, onBeforeUnmount, provide, ref, type InjectionKey } from "vue";
 import { DictationSelection, type SelectionToken } from "./dictationSelection";
-import { PcmCapture } from "./dictationCapture";
+import { PcmCapture, type CaptureSource } from "./dictationCapture";
 import { createLocalRecorder } from "./dictationDrafts";
 import { validateTerms } from "./dictationTerms";
 import { DictationPlayback } from "./dictationPlayback";
@@ -26,6 +26,7 @@ export interface DictationSession {
     cleanup_timeout_seconds?: number; document_cleanup_timeout_seconds?: number };
 }
 export const activeStates = ["created", "preparing", "listening", "pausing", "paused", "draining"];
+export type DictationStartResult = { status: "started"; sessionId: string } | { status: "rejected"; reason: string };
 
 /** Created once by App, never by a route or by the dock. History is a separate selection. */
 function createDictationController() {
@@ -52,7 +53,8 @@ function createDictationController() {
   const selectedDeviceId = ref(localStorage.getItem("dictation:microphone") ?? "");
   const microphoneDevices = ref<MediaDeviceInfo[]>([]), deviceBusy = ref(false), inputWarning = ref("");
   const audio = new PcmCapture();
-  const playback = new DictationPlayback(() => !audio.isOwner("live") && !audio.isOwner("local") && !audio.isOwner("probe"));
+  let liveCapture: CaptureSource = audio;
+  const playback = new DictationPlayback(() => !liveCapture.isOwner("live") && !audio.isOwner("local") && !audio.isOwner("probe"));
   audio.beforeCapture = () => playback.stop();
   audio.deviceId = selectedDeviceId.value;
   audio.onDevice = id => {
@@ -67,6 +69,8 @@ function createDictationController() {
   let socket: WebSocket | null = null;
   let sequence = 0, samples = 0, operation = 0, creation = 0, audioGeneration = 0;
   let startingCapture = -1;
+  let startBusyOwner: number | null = null;
+  let microphoneProbe: object | null = null;
   let pending: { seq: number; packet: ArrayBuffer }[] = [];
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false, polling = false;
@@ -95,7 +99,7 @@ function createDictationController() {
   }
   async function releaseAudio(flush = true) {
     capturing.value = false; level.value = 0;
-    try { await audio.stop("live", flush); }
+    try { await liveCapture.stop("live", flush); }
     finally { audioGeneration++; }
   }
   function applyView(value: DictationSession, token = selection.token()) {
@@ -109,7 +113,7 @@ function createDictationController() {
     if (value.mode === "live" && (!activeStates.includes(value.status) || value.status === "draining")) {
       if (captureAction.value === "starting" || captureAction.value === "resuming") ++operation;
       failWaiter("会话已结束，不能继续采音");
-      if (audio.isOwner("live")) void releaseAudio(false).catch(cause => { error.value = String(cause); });
+      if (liveCapture.isOwner("live")) void releaseAudio(false).catch(cause => { error.value = String(cause); });
       captureAction.value = "";
     } else if (value.status === "listening" && captureAction.value === "starting") {
       const generation = operation;
@@ -162,10 +166,11 @@ function createDictationController() {
     }
   }
   async function beginCapture(generation: number, token: SelectionToken) {
-    if (startingCapture === generation || !audio.isOwner("live") || !audio.prepared || !recording.current(token) || generation !== operation) return;
+    if (startingCapture === generation || !liveCapture.isOwner("live") || !liveCapture.prepared || !recording.current(token) || generation !== operation) return;
     startingCapture = generation;
     const epoch = ++audioGeneration;
-    await audio.start("live", (pcm, volume) => {
+    playback.stop();
+    await liveCapture.start("live", (pcm, volume) => {
       if (disposed || epoch !== audioGeneration || !recording.current(token)) return;
       level.value = Math.min(1, volume * 5); sendPCM(pcm);
     });
@@ -235,32 +240,52 @@ function createDictationController() {
     else void captureFailure(cause, operation);
   }
   async function start(terms: string[], cleanup: boolean, cleanupModel = "", documentCleanupModel = "",
-    cleanupEffort = "", documentEffort = "") {
-    if (busy.value || recognizing.value || captureAction.value || local.active.value || local.busy.value || deviceBusy.value || uploadUncertain.value) return;
+    cleanupEffort = "", documentEffort = "", options: { signal?: AbortSignal; capture?: CaptureSource } = {}): Promise<DictationStartResult> {
+    if (options.signal?.aborted) return { status: "rejected", reason: "准备已取消" };
+    if (busy.value || recognizing.value || captureAction.value || local.active.value || local.busy.value || deviceBusy.value || uploadUncertain.value)
+      return { status: "rejected", reason: "录音、上传或模型正忙，请先结束当前操作。" };
     const generation = ++operation, taskGeneration = ++creation;
+    liveCapture = options.capture ?? audio;
+    startBusyOwner = taskGeneration;
+    const abort = () => {
+      if (generation !== operation || taskGeneration !== creation) return;
+      ++operation;
+      // Close only this preparation lease, including a still-pending permission request.
+      void releaseAudio(false).catch(() => {}).finally(() => {
+        if (startBusyOwner === taskGeneration) { startBusyOwner = null; busy.value = false; }
+      });
+      captureAction.value = "";
+    };
+    options.signal?.addEventListener("abort", abort, { once: true });
     recording.select(null); recordingSession.value = null;
     socket?.close(); socket = null;
     choose(null); error.value = ""; connection.value = ""; busy.value = true; captureAction.value = "starting";
     try {
       terms = validateTerms(terms);
-      await audio.prepare("live", deviceFailure);
-      if (disposed || generation !== operation || taskGeneration !== creation) return;
+      playback.stop();
+      await liveCapture.prepare("live", deviceFailure);
+      if (disposed || generation !== operation || taskGeneration !== creation) return { status: "rejected", reason: "准备已取消" };
       const state = await api("/sessions", { method: "POST", body: JSON.stringify({ terms, cleanup,
         cleanup_model: cleanupModel || null, document_cleanup_model: documentCleanupModel || null,
         cleanup_reasoning_effort: cleanupEffort || null, document_reasoning_effort: documentEffort || null }) });
       if (disposed || generation !== operation || taskGeneration !== creation) {
-        await api(`/sessions/${state.id}/cancel`, { method: "POST" }); return;
+        await api(`/sessions/${state.id}/cancel`, { method: "POST" }); return { status: "rejected", reason: "准备已取消" };
       }
       const token = recording.select(state.id);
       sequence = state.next_sequence; samples = state.samples; pending = [];
       applyView(state, choose(state.id)); applyRecording(state, token);
       connect(token);
+      return { status: "started", sessionId: state.id };
     } catch (cause) {
       if (generation === operation) {
-        await releaseAudio(false); captureAction.value = "";
+        await releaseAudio(false).catch(() => {}); captureAction.value = "";
         error.value = cause instanceof Error ? cause.message : String(cause);
       }
-    } finally { busy.value = false; }
+      return { status: "rejected", reason: generation === operation ? error.value : "准备已取消" };
+    } finally {
+      options.signal?.removeEventListener("abort", abort);
+      if (startBusyOwner === taskGeneration) { startBusyOwner = null; busy.value = false; }
+    }
   }
   async function pause() {
     if (!ownsCapture.value) throw new Error("请返回原录音窗口暂停；本窗口不拥有麦克风。");
@@ -283,7 +308,8 @@ function createDictationController() {
     const generation = ++operation, token = recording.token();
     captureAction.value = "resuming"; error.value = "";
     try {
-      await audio.prepare("live", deviceFailure);
+      playback.stop();
+      await liveCapture.prepare("live", deviceFailure);
       if (disposed || generation !== operation) return;
       const latest: DictationSession = await api(`/sessions/${token.id}`);
       applyRecording(latest, token);
@@ -338,7 +364,7 @@ function createDictationController() {
       return;
     }
     ++operation; failWaiter(); captureAction.value = "stopping";
-    if (recordingSession.value?.mode === "live") await releaseAudio(false);
+    if (recordingSession.value?.mode === "live") await releaseAudio(false).catch(cause => { error.value = String(cause); });
     try {
       if (id) {
         const state = await api(`/sessions/${id}/cancel`, { method: "POST" });
@@ -443,6 +469,39 @@ function createDictationController() {
       }
     } finally { await audio.stop("probe", false); deviceBusy.value = false; }
   }
+  /** Explicit foreground permission + worklet check; no session, ASR, draft or model call. */
+  async function probeMicrophone() {
+    if (recognizing.value || local.active.value || captureAction.value || busy.value || deviceBusy.value) throw new Error("请先结束当前采音或处理操作");
+    const token = microphoneProbe = {};
+    deviceBusy.value = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let count = 0, peak = 0;
+    try {
+      await audio.prepare("probe", () => {});
+      if (microphoneProbe !== token) throw new DOMException("试音已取消", "AbortError");
+      await Promise.race([
+        audio.start("probe", (pcm, volume) => { count += pcm.byteLength / 2; peak = Math.max(peak, volume); }),
+        new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("音频上下文未启动，请回到录音页重试授权。")), 5000); }),
+      ]);
+      await new Promise(resolve => setTimeout(resolve, 400));
+      if (microphoneProbe !== token) throw new DOMException("试音已取消", "AbortError");
+      await updateDevices();
+      if (microphoneProbe !== token) throw new DOMException("试音已取消", "AbortError");
+      if (!count) throw new Error("未收到麦克风采样，请检查设备后重试。");
+      return { samples: count, peak };
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (microphoneProbe === token) {
+        microphoneProbe = null;
+        try { await audio.stop("probe", false); } finally { deviceBusy.value = false; }
+      }
+    }
+  }
+  async function cancelMicrophoneProbe() {
+    if (!microphoneProbe) return;
+    microphoneProbe = null;
+    try { await audio.stop("probe", false); } finally { deviceBusy.value = false; }
+  }
   function chooseMicrophone(id: string) {
     if (capturing.value || local.capturing.value || captureAction.value || deviceBusy.value || local.busy.value) throw new Error("请先暂停采音，再切换麦克风");
     if (!microphoneDevices.value.some(device => device.deviceId === id)) throw new Error("请选择列表中仍可用的麦克风");
@@ -453,7 +512,7 @@ function createDictationController() {
   function unload() { ++creation; ++operation; playback.stop(); local.interrupt(); void audio.stop("probe", false); uploading?.abort(); failWaiter(); socket?.close(); void releaseAudio(false); }
   window.addEventListener("pagehide", unload);
   const pollTimer = setInterval(() => {
-    inputWarning.value = (capturing.value || local.capturing.value) && audio.silentSeconds >= 5 ? "麦克风持续5秒无明显输入，请检查设备静音、连接和输入音量。" : "";
+    inputWarning.value = ((capturing.value && liveCapture.silentSeconds >= 5) || (local.capturing.value && audio.silentSeconds >= 5)) ? "麦克风持续5秒无明显输入，请检查设备静音、连接和输入音量。" : "";
     void poll();
   }, 1000);
   onBeforeUnmount(() => {
@@ -464,7 +523,7 @@ function createDictationController() {
   });
   return { session, recordingSession, local, playback, selectedDeviceId, microphoneDevices, deviceBusy, inputWarning, listMicrophones, chooseMicrophone, fileAction, fileControl, uploadProgress, uploadUncertain, cancelUpload, confirmUploadChecked, history, error, busy, cleanupScope, level, connection, capturing,
     captureAction, captureLabel, active, recognizing, ownsCapture, partial, start, pause, resume, stop, cancel, upload,
-    select, showRecording, refresh, loadHistory, serverConfig, loadConfig, edit, editDraft, cleanup, remove };
+    select, showRecording, refresh, loadHistory, serverConfig, loadConfig, edit, editDraft, cleanup, remove, probeMicrophone, cancelMicrophoneProbe };
 }
 export type DictationController = ReturnType<typeof createDictationController>;
 const key: InjectionKey<DictationController> = Symbol("dictation-controller");

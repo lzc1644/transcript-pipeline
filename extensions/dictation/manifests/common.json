@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "网页语音输入 · S1 录音通路穿刺",
+  "version": "0.1.1",
+  "description": "S1 开发验证包：从浏览器快捷键控制已授权网页录音。尚未实现目标输入框捕获、结果回填或正式安装引导。",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*", "http://[::1]/*"],
+  "action": { "default_popup": "popup.html", "default_title": "网页语音输入" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "commands": {
+    "toggle-dictation": { "suggested_key": { "default": "Ctrl+Shift+Space", "mac": "Command+Shift+Space" }, "description": "开始或结束听写" },
+    "insert-pending": { "suggested_key": { "default": "Alt+Shift+V", "mac": "Alt+Shift+V" }, "description": "插入已确认的待处理结果" }
+  }
+}
