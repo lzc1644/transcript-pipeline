@@ -8,9 +8,14 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "test:workbench": "node tests/workbench.mjs",
+    "test:dictation-notebook": "node tests/dictation-notebook.mjs",
     "test:extension-install": "node tests/dictation-extension-install.mjs"
   },
   "dependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/merge": "^6.12.3",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
     "naive-ui": "^2.40.4",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0"

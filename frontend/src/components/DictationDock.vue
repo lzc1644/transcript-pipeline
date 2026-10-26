@@ -133,7 +133,8 @@ async function action(callback: () => Promise<unknown>) {
 }
 
 async function copy() {
-  const snapshot = recordingSession.value?.draft_text ?? "";
+  const snapshot = recordingSession.value?.editor_version === 1
+    ? d.documents.get(recordingSession.value.id).text.value : recordingSession.value?.draft_text ?? "";
   try {
     await navigator.clipboard.writeText(snapshot);
     message.success("已复制活动会话的已完成正文");

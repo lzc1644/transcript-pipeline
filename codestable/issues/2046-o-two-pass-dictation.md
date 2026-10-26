@@ -372,3 +372,68 @@ B工程与公开真实音频/格式链路可用；未调用付费整理供应商
 ## 8路试用授权（2026-10-25）
 
 用户在2线程8路隔离回放通过后，明确同意「容量8、预览2线程、整理并发8」并要求保存commit；按上一条确认的部署方案发布，不push、不关闭本事项。改动与测试见[2050](2050-x-ff-preview-cpu-threads.md)、[2051](2051-x-ff-eight-session-trial.md)。当前试用参数取代此前2路/4线程/2整理并发默认值，旧记录仅为历史基线。发布证据和恢复入口位于`tmp/deploy/dictation-eight-20261025T125710Z/`；上线后刷新浏览器，由用户继续10分钟多设备与实际网关验收。
+
+## 连续记事本与同区全文整理（2026-10-26）
+
+用户批准把逐句主视图和下方双栏整理预览合并为一个持续可编辑的 CodeMirror 6 纯文本记事本；按方案直接实现，避免额外防御框架／测试矩阵，真实录音和不能代做的效果验收交用户。不部署、重启、commit/push、重跑旧材料、改模型或提示词；开工时已有 `src/dictation/cleanup.py` 未提交改动，本轮保持原样。
+
+### 实现与有界选择
+
+- 新增 `src/dictation/document.py`：UTF-16 文本操作、独立 document_version、1000项操作重映射窗口、听写轮次样本边界和来源范围。所有变更映射锚点；人工改动／删除／撤销使来源失效，不靠搜索句子定位。Runtime 最终结果立即落字，迟到整理只能更新未触碰来源。暂停旧尾句按旧样本轮次入文，继续使用显式的新目标。
+- `document.apply` 完整计算并校验候选正文、范围、轮次和日志后才落入候选；Service `commit_document` 是人工编辑／语音／逐句修正／全文应用共用提交入口，持久化成功后才发布内存状态。全文应用连同来源失效、document_revision 和清 suggestion 一次提交，只发一次 applied；追溯 artifact 在前，失败不应用。继续也将新锚点与恢复状态一起提交。权威 session.json 最后写入，诊断事件日志失败不反转已提交响应。
+- 新前端显式 editor_version=1；历史转换保留旧投影与换行，未转换旧接口保持原合同；转换后拒绝旧覆盖接口绕过版本保护。Storage.render_draft 继续统一 GET／TXT／整理输入。超出1000项重映射窗口或相交冲突时保留本地稿、要求显式合并，不引入 CRDT／全局对齐。
+- 新增 `dictationDocument.ts`：应用级每会话缓冲、待提交事务、幂等重试、多窗口不相交合并、失败恢复副本和独立预览草稿。每个远端 op 先规划完整 mapped pending，全部检查通过才一起推进 queue／base／version／text；双 pending 的后项冲突不污染恢复副本。各窗口恢复副本分开，其他窗口的已保存快照不能删掉本窗口未保存编辑。
+- 新增 `DictationEditor.vue`：无行号／代码配色／富文本工具栏；连续正文、独立语音撤销单位、输入法期间缓冲后台更新、插入标记与回到听写位置、不抢选区／焦点／滚动。全文原稿／候选／只读行内差异复用同一编辑空间，应用人工候选，丢弃人工预览需确认；过期预览禁用应用。术语用直接工具栏按钮，避免浮动菜单覆盖正文。识别记录按需展开，音频明确为原始分句录音。
+- 页面／常驻面板共用正文缓冲；继续前 flush 正文并原子确认版本／目标，冲突保持暂停。开始新音频会话时将当前正文和光标作为起稿快照，暂停／继续仍为同一会话。原模型、8路／2预览线程／8整理并发与原录音资源生命周期保持。
+
+### 验证与交接
+
+定向用例覆盖迟到旧尾句归旧位置、emoji／换行、来源人工保护与删除不复活、幂等／重映射／冲突、失败不动锚点和版本、一次全文应用只提交一次、artifact失败不落半状态、GET／TXT一致。浏览器通过真实编辑器＋隔离 Python API／磁盘保存，语音和整理为确定性 fixture，不作为ASR／模型效果证据。最终 `.venv/bin/python -m pytest` **862 passed / 58.27s**（`tmp/dictation-notebook-pytest-final.log`），`npm --prefix frontend run build` 类型检查／生产构建通过（`tmp/dictation-notebook-build-final.log`），既有 `dictation-state.mjs` 通过。新增6个 Python 用例和一个整合浏览器场景，不加大矩阵／长时录音测试。
+
+浏览器最终 `tmp/dictation-notebook-1793030893853/report.json` **9项通过、0页面异常**，使用本机已有 Chromium 1247（通过 DICTATION_TEST_CHROMIUM 指定，不下载安装）；已读取1159×756、390px深色截图，正文内部滚动、单套操作区和术语按钮均无遮挡。实际API会话产物位于同目录 `project/data/dictation/`，已通过HTTP和实际TXT核对。早期轮次分别暴露本机Playwright预期1248但仅缓存1247、测试驱动误用旧版CM私有DOM属性、about:blank中测试模块导入失败；修正驱动后全路径通过，失败日志保留，没有作为效果验收证据。
+
+按 `docs/REVIEW_CHECKLIST.md` 自评：批准范围内、项目.venv、无上游回写、旧会话通过可选模式兼容；三处事务反馈均已修复并有确定性断言。既有前端大chunk提示与FastAPI测试依赖弃用警告仍在，不阻塞当前工程检查。更新了旧浏览器驱动的编辑／回听入口，实际模型／物理采音脚本本轮未重跑。
+
+修改文件：新增 `src/dictation/document.py`、`frontend/src/components/DictationEditor.vue`、`frontend/src/composables/dictationDocument.ts`、`tests/test_dictation_notebook.py`、`tests/dictation_notebook_server.py`、`frontend/tests/dictation-notebook.mjs`；修改 `src/dictation/{schemas,service,storage}.py`、`src/web/dictation.py`、`frontend/src/{App.vue,views/DictationView.vue,components/DictationDock.vue,composables/useDictation.ts}`、`frontend/package{,-lock}.json`、`frontend/tests/{dictation,dictation-layout,dictation-multisession,dictation-ownership,dictation-proofreading}.mjs`、`frontend/tests/README.md`、`docs/DICTATION.md`及本事项。
+
+按用户要求，**真实短录音和物理中文输入法／本人设备效果留给用户**：新隔离会话依次执行「听写三句 → 暂停 → 文中定位 → 继续 → 修改词语 → 整理 → 编辑预览 → 应用 → 下载」，核对原位置迟到尾句、不复活已删正文、保存与TXT，以及小窗／跨页常驻面板。此前人工质量／4h上传／10分钟多设备验收缺口保持；未自动关闭事项。
+
+### 界面反馈：听写中正文高度与框内启动（2026-10-26）
+
+用户指出浮动录音面板出现时正文太小，手机更明显，并要求在空白编辑框内直接启动；随后明确面板可拖曳，不要改面板尺寸或引入无关调整。本次不改 DictationDock 的布局、尺寸、拖曳、收起或采音控制。只从编辑器高度公式中移除浮动面板高度扣减，收紧正文内边距／临时识别条／操作区；空白区显示麦克风启动按钮，直接打字仍可用，框内与下方不重复显示启动按钮。
+
+修改：`frontend/src/components/DictationEditor.vue`、`frontend/src/views/DictationView.vue`、`frontend/tests/dictation-notebook.mjs`、`frontend/tests/README.md`、`docs/DICTATION.md`及本事项。没有后端、模型、提示词、服务部署／重启、Git提交或旧材料重跑。
+
+验证：`.venv/bin/python -m pytest` **862 passed / 60.65s**（`tmp/dictation-editor-space-pytest.log`）；前端类型／生产构建通过（`tmp/dictation-editor-space-build.log`，保留既有大chunk提示）。浏览器 `tmp/dictation-notebook-1793032776689/report.json` **10项通过、0页面异常**，已读取空白启动及拖动中面板的桌面／手机截图；启动检查用Chromium虚拟麦克风，HTTP／WS会话为fixture，不作真实ASR效果证据。
+
+实测 `recording-layouts.json`：1159×756正文滚动视口约348px高，390×844约432px高；浮动面板仍为310×197px，拖曳前后尺寸完全一致，拖动也不改变正文高度。按REVIEW_CHECKLIST核对范围、.venv、实际UI、原协议及已有改动保留；物理设备／真实识别效果继续交用户验收。
+
+### 修复「正在识别」长文本撑宽页面（2026-10-26）
+
+用户手机截图显示长句撑宽页面，随后定位到「正在识别」临时预览，并确认浮动面板实际存在。本次仅修预览宽度／换行，不改面板的尺寸、位置或拖曳逻辑。根因是上一轮的单行nowrap文本经自动最小宽度的Grid列撑大了整列；CodeMirror虽已启用lineWrapping，也只能在被撑宽的容器内折行。
+
+`DictationView.vue` 将页面单列明确为 `minmax(0,1fr)`；`DictationEditor.vue` 让临时文字flex收缩、保留label、按可用宽度自动换行（含无空格URL），限高两行并在栏内纵向滚动。同步 `docs/DICTATION.md` 与浏览器用例／说明。DictationDock没有本轮新增修改，原有连续正文复制改动保留。
+
+验证：`.venv/bin/python -m pytest` **862 passed / 60.22s**（`tmp/dictation-partial-wrap-pytest.log`）；前端类型／构建通过（`tmp/dictation-partial-wrap-build.log`）。整合浏览器 **10项通过、0页面异常**（`tmp/dictation-notebook-1793033520903/report.json`）；超长中文＋连续URL临时识别，在1159／390／375px下页面scrollWidth均等于视口宽度，正文和临时栏无横向滚动，预览高度约42px。已读取桌面、390px与375×667手机截图；原310×197px面板尺寸和拖曳检查仍通过。按REVIEW_CHECKLIST核对范围与产物；没有部署、重启、commit/push或真实模型调用，实际采音质量仍交用户。
+
+### 按截图调整听写默认模型（2026-10-26）
+
+用户要求将设置默认值改为截图组合：逐句轻度整理默认开启，逐句 `gemini-3.5-flash-lite`／`medium`，全文 `gemini-3.8-flash-high`／默认 `high`。只修改 `DictationSettings` 的3项默认值；设置页、恢复默认、无显式覆盖的新会话统一从服务端配置读取，不再另加前端预设。显式浏览器偏好仍优先，旧会话冻结配置与旧字段缺省兼容保持，不改识别模型、提示词或网关地址。`src/dictation/cleanup.py` 原有工作区修改未触碰。
+
+修改：`src/dictation/schemas.py`、`tests/test_dictation.py`、`tests/test_dictation_lifecycle.py`、`tests/test_dictation_document.py`、`tests/test_dictation_limits.py`、`frontend/tests/dictation-notebook.mjs`、`frontend/tests/README.md`、`docs/DICTATION.md`及本事项。新增1个默认模型实际请求载荷测试（HTTP发送被stub），既有显式覆盖测试改用不同于新默认的GPT组合；旧会话用例显式构造Luna／low快照，继续验证不会被新默认改写。
+
+验证：`.venv/bin/python -m pytest` **863 passed / 58.75s**（`tmp/dictation-default-models-pytest-final.log`）；首轮遗漏一个旧会话fixture的显式low设定，补齐fixture而不放宽原断言后全通过。浏览器 **11项通过、0页面异常**（`tmp/dictation-notebook-1793034256116/report.json`）；已读取实际设置截图 `default-model-settings.png`，核对两模型、medium／high、默认启用、恢复默认以及手动选择刷新保留。前端源码未改，上一轮构建证据仍适用；按REVIEW_CHECKLIST核对范围和兼容。无真实模型／付费调用、部署、重启、commit/push或关闭事项。
+
+### 连续记事本独立评审与修复（2026-10-26）
+
+用户授权审核上述前后端改动、直接修复并保存一个 commit，不部署／push。本次审查保留既有模型默认值、正文空间及浮动面板取舍；开工前独立存在的 `src/dictation/cleanup.py` 提示词修改不编辑、不纳入该提交。
+
+- **P1，迟到整理吞掉新语音**：复现旧句「甲乙」中间继续听写后得到「甲插入的新话乙」，旧句整理返回竟变为「甲乙。」。`document.apply` 现在将插入新语音造成的旧来源相交也标为 touched，旧整理只留建议；新来源仍可正常整理。新增服务级回归检查正文、建议和实际 TXT。
+- **P1，逐句整理破坏撤销历史**：CodeMirror 的非历史整段替换会消掉先前语音插入的逆操作。把逐句修正作为独立撤销项；先撤销修正，再撤销语音，原始音频不变。用实际编辑器验证两步撤销。
+- **P1，异步等待期间的编辑遗漏**：继续听写在麦克风权限等待结束后再次 flush，再发版本化插入目标；新会话准备期间编辑器暂时只读，避免快照创建后仍向旧缓冲输入。测试延迟 getUserMedia，权限等待中插入新文字，核对 resume 时服务端版本和位置。
+- **P1，应用请求期间新增预览修改丢失**：仅当当前候选仍等于提交候选时清预览，否则保留后续修改并提示导出；失效判断同时核对 suggestion ID，防止建议已被放弃但版本未变时仍可点应用。
+- **P2，旧响应恢复已放弃预览**：正文缓冲对保存响应和输入法待处理快照也按 revision／event_sequence 拒绝旧状态。历史会话首次转换已验证，未发现丢字，不修改其实现。
+
+最终验证：`.venv/bin/python -m pytest` **864 passed / 59.47s**（`tmp/dictation-review-pytest.log`）；类型检查／生产构建通过（`tmp/dictation-review-build.log`），既有大chunk警告保留；状态／采音所有权脚本通过（`tmp/dictation-review-state.log`）。浏览器 **16项通过、0页面异常**，产物 `tmp/dictation-notebook-1793036755226/`，含真实编辑器、隔离Python API和磁盘TXT；已实际查看桌面、窄屏及同区预览截图。用例首次扩展暴露第二窗口在点击前自动进入预览的时序假设，已固定轮询时序而非放宽断言；该失败轮次不作成功证据。
+
+按 `docs/REVIEW_CHECKLIST.md` 自评：当前听写范围内、项目.venv、无上游回写，实际API／文件样例与界面检查完成；语音和整理为确定性fixture，未重跑ASR、调用付费模型或使用物理麦克风。本人设备／真实识别质量仍由用户验收。同步 DICTATION、测试说明和 PIPELINE_PLAN 中已漂移的默认模型说明；事项保持 open。

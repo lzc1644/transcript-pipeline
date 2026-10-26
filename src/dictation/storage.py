@@ -49,18 +49,20 @@ class Storage:
 
     def save(self, state):
         directory = self.path(state["id"])
-        atomic_json(directory / "session.json", state)
         text = self.render_draft(state)
         tmp = directory / "draft.txt.tmp"
         tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, directory / "draft.txt")
         atomic_json(directory / "metrics.json", state.get("metrics", {}))
+        # session.json is the authority and the final commit point. Derived
+        # files may be regenerated on retry; nothing fallible follows this write.
+        atomic_json(directory / "session.json", state)
 
     @staticmethod
     def render_draft(state):
-        # An explicitly applied/edited whole draft remains authoritative until
-        # an explicit return to utterance editing. Background cleanup cannot
-        # silently revoke it.
+        # Continuous notebooks and legacy applied/edited whole drafts both use
+        # the independently stored body. Legacy unconverted sessions retain
+        # their original newline-separated utterance projection.
         if state.get("document_text") is not None:
             return state["document_text"]
         return "\n".join(u["text"] for u in state["utterances"] if u.get("raw_text") or u.get("edited"))

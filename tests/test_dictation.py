@@ -58,25 +58,28 @@ def test_session_model_choices_are_frozen_independently_for_both_cleanup_passes(
     async def run():
         service = DictationService(root, cleanup_factory=fake_cleanup)
         chosen = await service.create("owner", SessionRequest(
-            cleanup_model="gemini-3.5-flash-lite", document_cleanup_model="gemini-3.8-flash-high",
-            cleanup_reasoning_effort="medium", document_reasoning_effort="xhigh"), start=False)
+            cleanup_model="gpt-6-luna", document_cleanup_model="gpt-6.1-sol",
+            cleanup_reasoning_effort="low", document_reasoning_effort="xhigh"), start=False)
         config = chosen["worker_config"]
         assert config["qwen_model"] == "Qwen/Qwen3-ASR-0.6B"
-        assert config["cleanup_model"] == "gemini-3.5-flash-lite"
-        assert config["document_cleanup_model"] == "gemini-3.8-flash-high"
-        assert config["reasoning_effort"] == "medium"
+        assert config["cleanup_model"] == "gpt-6-luna"
+        assert config["document_cleanup_model"] == "gpt-6.1-sol"
+        assert config["reasoning_effort"] == "low"
         assert config["document_reasoning_effort"] == "xhigh"
-        assert chosen["config"]["cleanup_model"] == "gemini-3.5-flash-lite"
-        assert chosen["config"]["document_cleanup_model"] == "gemini-3.8-flash-high"
-        assert chosen["config"]["reasoning_effort"] == "medium"
+        assert chosen["config"]["cleanup_model"] == "gpt-6-luna"
+        assert chosen["config"]["document_cleanup_model"] == "gpt-6.1-sol"
+        assert chosen["config"]["reasoning_effort"] == "low"
         assert chosen["config"]["document_reasoning_effort"] == "xhigh"
         await service.runtimes[chosen["id"]].release_recognition()
         default = await service.create("owner", SessionRequest(), start=False)
         assert default["worker_config"]["qwen_model"] == "Qwen/Qwen3-ASR-0.6B"
-        assert default["worker_config"]["cleanup_model"] == "gpt-6-luna"
-        assert default["worker_config"]["document_cleanup_model"] == "gpt-6-luna"
-        assert default["worker_config"]["reasoning_effort"] == "low"
+        assert default["worker_config"]["cleanup_model"] == "gemini-3.5-flash-lite"
+        assert default["worker_config"]["document_cleanup_model"] == "gemini-3.8-flash-high"
+        assert default["worker_config"]["reasoning_effort"] == "medium"
         assert default["worker_config"]["document_reasoning_effort"] == "high"
+        assert default["config"]["cleanup"] is True
+        for key in ("cleanup_model", "document_cleanup_model", "reasoning_effort", "document_reasoning_effort"):
+            assert default["config"][key] == default["worker_config"][key]
         await service.close()
     asyncio.run(run())
 

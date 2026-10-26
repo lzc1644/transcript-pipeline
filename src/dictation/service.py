@@ -6,6 +6,7 @@ import base64
 from collections import deque
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import struct
@@ -16,6 +17,7 @@ import wave
 from src.config_loader import load_settings
 from src.codex_lb_client import CodexLBClientError
 from src.dictation.cleanup import Cleanup, DEFAULT_CLEANUP_TIMEOUT_SECONDS
+from src.dictation import document
 from src.dictation.schemas import SessionRequest, load_dictation_settings
 from src.dictation.storage import ACTIVE, Storage, atomic_json, public_state
 from src.dictation.scheduler import Conflict, RecognitionBusy, RecognitionScheduler
@@ -348,6 +350,8 @@ class Runtime:
                 if self.audio_clock is not None:
                     u["final_latency_seconds"] = time.monotonic() - self.sample_time(u["last_voice_sample"])
                 self.manager.storage.artifact(self.state["id"], "asr", uid, result)
+                if self.state.get("editor_version") == 1:
+                    self.manager.commit_document(self.state, lambda draft: document.insert_utterance(draft, u))
                 self.save()
                 self.emit("asr.final", utterance_id=uid, text=result["text"], revision=u["revision"])
                 await self.release_if_asr_done()
@@ -526,7 +530,7 @@ class Runtime:
             self.emit("session.pausing")
             await self.send_cpu({"op": "pause"})
 
-    async def resume(self, next_sequence, samples):
+    async def resume(self, next_sequence, samples, document_version=None, insertion_position=None):
         async with self.packet_lock:
             self.check_boundary(next_sequence, samples)
             if self.state["status"] == "listening" and self.pause_boundary == (next_sequence, samples):
@@ -534,16 +538,34 @@ class Runtime:
                 return
             if self.state["status"] != "paused":
                 raise Conflict("只有已确认暂停的会话才能继续；请返回录音窗口检查状态")
-            self.state.update(status="listening", phase="正在听音")
-            self.ready_at = self.last_audio_at = time.monotonic()
+            notebook = self.state.get("editor_version") == 1
+            if notebook:
+                if self.state.get("document_suggestion"):
+                    raise Conflict("请先应用或放弃全文整理预览")
+                if document_version != self.state["document_version"]:
+                    raise Conflict("正文位置已更新，请同步后再继续")
+            resumed = time.monotonic()
+            def resume_state(candidate):
+                if notebook:
+                    document.start_turn(candidate, samples,
+                        insertion_position if insertion_position is not None else document.length(candidate["document_text"]))
+                candidate.update(status="listening", phase="正在听音")
+                candidate["metrics"] = dict(candidate["metrics"])
+                if self.pause_started_at is not None:
+                    metrics = candidate["metrics"]
+                    metrics["paused_wall_seconds"] = metrics.get("paused_wall_seconds", 0) + resumed - self.pause_started_at
+                boundaries = [dict(b) for b in candidate["pause_boundaries"]]
+                boundaries[-1]["resumed_at"] = now()
+                candidate["pause_boundaries"] = boundaries
+            if notebook:
+                self.manager.commit_document(self.state, resume_state)
+            else:
+                resume_state(self.state)
+                self.save()
+            self.ready_at = self.last_audio_at = resumed
             self.idle_start_sample = samples
             self.new_audio_span = True
-            if self.pause_started_at is not None:
-                metrics = self.state["metrics"]
-                metrics["paused_wall_seconds"] = metrics.get("paused_wall_seconds", 0) + self.last_audio_at - self.pause_started_at
             self.pause_started_at = None
-            self.state["pause_boundaries"][-1]["resumed_at"] = now()
-            self.save()
             self.emit("session.resumed")
 
     def sample_time(self, sample, *, endpoint=True):
@@ -738,17 +760,22 @@ class DictationService:
         state["revision"] += 1
         state["updated_at"] = now()
         runtime = self.runtimes.get(state["id"])
-        if event and runtime:
-            data = {"utterance_id": uid}
-            if uid:
-                data["revision"] = runtime.utterance(uid)["revision"]
-            runtime.emit(event, **data)
-        if event and not runtime:
+        notification = None
+        if event:
             state["event_sequence"] += 1
-            self.storage.record(state["id"], {"type": event, "session_id": state["id"],
-                                "utterance_id": uid, "revision": state["revision"],
-                                "event_sequence": state["event_sequence"]})
+            notification = {"type": event, "session_id": state["id"], "utterance_id": uid,
+                "revision": next(u["revision"] for u in state["utterances"] if u["id"] == uid) if uid else state["revision"],
+                "event_sequence": state["event_sequence"]}
         self.storage.save(state)
+        if notification:
+            try:
+                self.storage.record(state["id"], notification)
+            except OSError:
+                # A diagnostic log failure cannot reverse an acknowledged body.
+                logging.getLogger(__name__).exception("会话已保存，但状态事件日志写入失败")
+            if runtime:
+                runtime.events.append(notification)
+                runtime.changed.set()
 
     def list(self, owner):
         return sorted([public_state(s) for s in self.storage.all() if s["owner"] == owner],
@@ -778,6 +805,12 @@ class DictationService:
                          "cleanup_timeout_seconds", "document_cleanup_timeout_seconds", "decode_timeout_seconds",
                          "streaming_model_id", "streaming_revision", "qwen_model", "qwen_revision",
                          "max_upload_mb", "max_upload_minutes", "segmentation")}}
+            if request.editor_version == 1:
+                state["document_text"] = request.initial_text
+                document.enable(state, self.storage.render_draft)
+                state["dictation_turns"][0]["position"] = (request.insertion_position if request.insertion_position is not None
+                    else document.length(request.initial_text))
+                document.index(request.initial_text, state["dictation_turns"][0]["position"])
             if upload_name:
                 state["upload_name"] = upload_name
             from src.web.frontend_settings import load_frontend_settings
@@ -921,7 +954,11 @@ class DictationService:
             u.update(cleaned_text=result["text"],
                      needs_review=result["needs_review"] or u.get("boundary") == "hard_limit", status="cleaned")
             u.pop("error", None)
-            if not u["edited"] and u["revision"] == revision:
+            can_apply = not u["edited"] and u["revision"] == revision
+            if state.get("editor_version") == 1:
+                can_apply = can_apply and self.commit_document(state,
+                    lambda draft: document.clean_utterance(draft, u, result["text"]))
+            if can_apply:
                 u["text"] = result["text"]
                 u.pop("suggestion", None)
             else:
@@ -936,6 +973,8 @@ class DictationService:
 
     def edit(self, sid, owner, uid, revision, text, discard_document=False):
         state = self.get(sid, owner)
+        if state.get("editor_version") == 1:
+            raise Conflict("此会话使用连续正文，请刷新并通过版本化正文接口编辑")
         u = next((u for u in state["utterances"] if u["id"] == uid), None)
         if not u:
             raise KeyError("语句不存在")
@@ -954,12 +993,54 @@ class DictationService:
 
     def edit_draft(self, sid, owner, revision, text):
         state = self.get(sid, owner)
+        if state.get("editor_version") == 1:
+            raise Conflict("此会话使用连续正文，请刷新并通过版本化正文接口编辑")
         if state["revision"] != revision:
             raise Conflict("正文已更新；你的编辑未被覆盖，请刷新后重试")
         if state["status"] in ACTIVE:
             raise Conflict("整篇编辑需等待停止后的处理完成")
         state.update(document_text=text, document_revision=revision + 1)
         self.commit(state, event="document.edited")
+        return public_state(state)
+
+    def commit_document(self, state, mutate, *, event=None):
+        # document.py constructs new text/ranges/turns/logs rather than mutating
+        # shared containers. Persist that candidate before publishing it to the
+        # runtime; failed writes leave the live document and its version intact.
+        candidate = dict(state)
+        result = mutate(candidate)
+        projection = self.projections.get(state["id"], "")
+        try:
+            self.commit(candidate, event=event)
+        except OSError:
+            self.projections[state["id"]] = projection
+            raise
+        state.clear()
+        state.update(candidate)
+        return result
+
+    def enable_document(self, sid, owner, revision):
+        state = self.get(sid, owner)
+        if state.get("editor_version") != 1:
+            if state["revision"] != revision:
+                raise Conflict("会话已更新，请同步后打开正文")
+            self.commit_document(state, lambda draft: document.enable(draft, self.storage.render_draft), event="document.enabled")
+        return public_state(state)
+
+    def edit_document(self, sid, owner, request):
+        state = self.get(sid, owner)
+        if state.get("editor_version") != 1:
+            raise Conflict("请先打开连续正文编辑模式")
+        self.commit_document(state, lambda draft: document.edit(draft, request.operation_id, request.base_version,
+            [c.model_dump(by_alias=True) for c in request.changes]), event="document.edited")
+        return public_state(state)
+
+    def discard_suggestion(self, sid, owner, suggestion_id):
+        state = self.get(sid, owner)
+        suggestion = state.get("document_suggestion")
+        if suggestion and suggestion["id"] == suggestion_id:
+            state.pop("document_suggestion", None)
+            self.commit(state, event="document.discarded")
         return public_state(state)
 
     async def cancel(self, sid, owner, *, internal=False):
@@ -1023,14 +1104,32 @@ class DictationService:
         if state["status"] in ACTIVE:
             raise Conflict("请先停止并等待本次识别结束，再重试整理")
         if request.scope == "apply":
+            if request.operation_id and any(op["id"] == request.operation_id for op in state.get("document_operations", [])):
+                return public_state(state)
             suggestion = state.get("document_suggestion")
-            if (not suggestion or suggestion["id"] != request.suggestion_id or request.revision != state["revision"]
+            notebook = state.get("editor_version") == 1
+            if (not suggestion or suggestion["id"] != request.suggestion_id
+                    or (request.base_content_revision != state.get("content_revision", 0) if notebook else request.revision != state["revision"])
                     or suggestion["base_content_revision"] != state.get("content_revision", 0)):
                 raise Conflict("正文或建议版本已变化，请重新预览差异")
-            state["document_text"] = suggestion["text"]
-            state["document_revision"] = state["revision"] + 1
-            state.pop("document_suggestion", None)
-            self.commit(state, event="document.applied")
+            text = request.text if notebook and request.text is not None else suggestion["text"]
+            if notebook:
+                def apply_preview(draft):
+                    document.apply(draft, [{"from": 0, "to": document.length(draft["document_text"]), "insert": text}],
+                                   operation_id=request.operation_id, kind="apply")
+                    for source in draft["document_sources"]:
+                        source["touched"] = True
+                    draft["document_revision"] = draft["revision"] + 1
+                    draft.pop("document_suggestion", None)
+                self.storage.artifact(sid, "cleaned", "document-" + uuid4().hex,
+                    {"suggestion_id": suggestion["id"], "original": suggestion["original"],
+                     "model_text": suggestion["text"], "applied_text": text})
+                self.commit_document(state, apply_preview, event="document.applied")
+            else:
+                state["document_text"] = text
+                state["document_revision"] = state["revision"] + 1
+                state.pop("document_suggestion", None)
+                self.commit(state, event="document.applied")
             return public_state(state)
         if request.scope == "document":
             original = self.storage.render_draft(state)
@@ -1056,12 +1155,15 @@ class DictationService:
                 state["document_cleanup_error"] = message
                 self.commit(state, event="document.failed")
                 raise CleanupFailed(message, timed_out=timed_out) from exc
-            if state.get("content_revision", 0) != content_revision:
-                raise Conflict("整理期间正文已修改，未应用迟到结果，请重新预览")
-            state["document_suggestion"] = {"id": uuid4().hex, "original": original,
+            suggestion = {"id": uuid4().hex, "original": original,
                 "text": result["text"], "needs_review": result["needs_review"],
                 "metrics": result.get("metrics", {}), "base_content_revision": content_revision}
-            self.storage.artifact(sid, "cleaned", "document-" + state["document_suggestion"]["id"], state["document_suggestion"])
+            self.storage.artifact(sid, "cleaned", "document-" + suggestion["id"], suggestion)
+            if state.get("content_revision", 0) != content_revision:
+                state["document_cleanup_error"] = "整理期间正文已修改，旧建议已留存记录；请以新正文重新整理。"
+                self.commit(state, event="document.failed")
+                raise Conflict("整理期间正文已修改，未应用迟到结果，请重新预览")
+            state["document_suggestion"] = suggestion
             self.commit(state, event="document.suggested")
             return public_state(state)
         targets = [u for u in state["utterances"] if u.get("raw_text") and

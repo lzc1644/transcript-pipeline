@@ -12,7 +12,8 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from src.dictation.schemas import CleanupRequest, DraftEditRequest, EditRequest, SessionRequest, load_dictation_settings
+from src.dictation.schemas import (CleanupRequest, DraftEditRequest, EditRequest, SessionRequest,
+    DocumentEditRequest, DocumentEnableRequest, load_dictation_settings)
 from src.dictation.service import CleanupFailed, Conflict, DictationService, UploadLimit, WorkerIPCError
 from src.dictation.storage import public_state
 from src.dictation.streaming_asr import PREVIEW_THREADS
@@ -39,6 +40,8 @@ def api_errors():
         raise HTTPException(408, "上传接收超过期限，请重新上传") from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(503, "正文保存失败，请保留本地编辑并重试或导出") from exc
 
 
 def owner(request):
@@ -140,6 +143,24 @@ def install_dictation(app, root: Path):
         with api_errors():
             return service.edit_draft(sid, owner(request), body.revision, body.text)
 
+    @router.post("/sessions/{sid}/document")
+    async def enable_document(sid: str, request: Request, body: DocumentEnableRequest):
+        validate_origin(request)
+        with api_errors():
+            return service.enable_document(sid, owner(request), body.revision)
+
+    @router.patch("/sessions/{sid}/document")
+    async def edit_document(sid: str, request: Request, body: DocumentEditRequest):
+        validate_origin(request)
+        with api_errors():
+            return service.edit_document(sid, owner(request), body)
+
+    @router.delete("/sessions/{sid}/suggestions/{suggestion_id}")
+    async def discard_suggestion(sid: str, suggestion_id: str, request: Request):
+        validate_origin(request)
+        with api_errors():
+            return service.discard_suggestion(sid, owner(request), suggestion_id)
+
     @router.post("/sessions/{sid}/cleanup")
     async def cleanup(sid: str, request: Request, body: CleanupRequest):
         validate_origin(request)
@@ -197,7 +218,8 @@ def install_dictation(app, root: Path):
     @router.post("/uploads")
     async def upload(request: Request, response: Response, filename: str, terms: str = "[]", cleanup: bool = True,
                      cleanup_model: str | None = None, document_cleanup_model: str | None = None,
-                     cleanup_reasoning_effort: str | None = None, document_reasoning_effort: str | None = None):
+                     cleanup_reasoning_effort: str | None = None, document_reasoning_effort: str | None = None,
+                     editor_version: int | None = None):
         validate_origin(request)
         suffix = Path(filename).suffix.lower()
         if suffix not in AUDIO_EXTENSIONS:
@@ -205,7 +227,7 @@ def install_dictation(app, root: Path):
         identifier = owner(request) if request.cookies.get(COOKIE) else secrets.token_urlsafe(32)
         with api_errors():
             length = int(request.headers.get("content-length", "0"))
-            body = SessionRequest(terms=json.loads(terms), cleanup=cleanup,
+            body = SessionRequest(editor_version=editor_version, terms=json.loads(terms), cleanup=cleanup,
                                   cleanup_model=cleanup_model, document_cleanup_model=document_cleanup_model,
                                   cleanup_reasoning_effort=cleanup_reasoning_effort,
                                   document_reasoning_effort=document_reasoning_effort)
@@ -265,7 +287,11 @@ def install_dictation(app, root: Path):
                     elif command.get("type") == "pause":
                         await runtime.pause(command.get("next_sequence"), command.get("samples"))
                     elif command.get("type") == "resume":
-                        await runtime.resume(command.get("next_sequence"), command.get("samples"))
+                        try:
+                            await runtime.resume(command.get("next_sequence"), command.get("samples"),
+                                                 command.get("document_version"), command.get("insertion_position"))
+                        except Conflict as exc:
+                            await websocket.send_json({"type": "session.control_rejected", "error": str(exc), "snapshot": public_state(state)})
                     elif command.get("type") == "cancel":
                         await service.cancel(sid, identifier)
                         return

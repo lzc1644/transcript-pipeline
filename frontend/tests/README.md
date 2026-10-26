@@ -23,3 +23,19 @@ WORKBENCH_FILTER='soft light|reduced motion' CDP_URL=http://127.0.0.1:9339 WORKB
 本次使用 Chrome 154 验证。Moli 1.1.10 对该页面出现 DOM 存在但布局为零的兼容问题，不应在失败时用强制点击跳过可见性检查。
 
 检查完关闭自己启动的服务和临时浏览器；不要终止用户已有进程。
+
+## 连续听写记事本
+
+```bash
+npm --prefix frontend run test:dictation-notebook
+# 使用本机已经安装的其他 Chromium（可选，不下载浏览器）
+DICTATION_TEST_CHROMIUM=/path/to/chrome-headless-shell npm --prefix frontend run test:dictation-notebook
+```
+
+此用例自行启动隔离的 Python API（8027）与 Vite（5177），数据和截图写入新的 `tmp/dictation-notebook-<timestamp>/`；可用 `DICTATION_TEST_OUTPUT` 指定新目录。使用真实 CodeMirror、HTTP 和文件保存；语音／整理结果为确定性 fixture。启动／布局检查使用 Chromium 虚拟麦克风，不访问物理设备、GPU 或远端模型，不连接／重启当前服务。`dictation-layout.mjs` 保留为该用例的兼容入口，无需重复执行。
+
+覆盖听写默认模型／思考强度、恢复默认及已保存的手动选项刷新保留；正文输入／emoji／撤销、在途编辑与后台插入合并、双 pending 冲突不污染恢复副本、失败刷新恢复、双窗口同步、不抢选区和滚动、同区整理候选的编辑／应用／撤销／过期拒绝，以及1159×756和390px深色布局。空白编辑区直接启动、听写前后正文高度、浮动面板原尺寸及拖曳后编辑器高度不变，也在同一场景内检查。临时识别使用超长中文和无空格URL，检查两行限高、栏内纵向滚动，以及375×667手机上正文和页面都没有横向溢出。
+
+`dictation.mjs` 和 `dictation-proofreading.mjs` 的编辑／回听入口已跟随新 UI 更新；前者仍需显式费用授权，后者会使用实际ASR。它们不是上面这项免模型回归的一部分；真实短录音、中文输入法和本人设备效果由使用者另行验收。
+
+评审回归另覆盖历史稿首次转换、过期保存响应／输入法缓冲快照不恢复已放弃的预览、逐句修正后的两步撤销、应用期间继续修改预览不丢稿，以及开始准备时只读／继续听写在麦克风权限等待后再次保存定位。跨窗口过期预览用例控制第二窗口的轮询时序，避免依赖恰好赶在一秒轮询前点击。

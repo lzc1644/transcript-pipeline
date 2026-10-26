@@ -12,7 +12,7 @@ const base = 'http://127.0.0.1:5176';
 const server = spawn(process.execPath, [`${root}/frontend/node_modules/vite/bin/vite.js`, '--host', '127.0.0.1', '--port', '5176', '--strictPort'],
   { cwd: `${root}/frontend`, stdio: ['ignore', log.fd, log.fd] });
 const id = 'e'.repeat(32);
-let state = { id, status: 'listening', phase: '正在听音', revision: 1, event_sequence: 1, next_sequence: 0, samples: 16000,
+let state = { id, editor_version: 1, document_version: 0, document_operations: [], status: 'listening', phase: '正在听音', revision: 1, event_sequence: 1, next_sequence: 0, samples: 16000,
   created_at: new Date().toISOString(), mode: 'live', config: { terms: [], cleanup: false, cleanup_model: 'gpt-6-luna' },
   draft_text: '', utterances: [{ id: '1', revision: 1, status: 'finalizing', asr_queue_state: 'queued',
     raw_text: '', text: '', preview: 'Alice 的预算是1500元', edited: false, needs_review: false }] };
@@ -42,11 +42,13 @@ try {
   const page = await context.newPage();
   page.on('pageerror', e => errors.push(e.message));
   await page.goto(`${base}/dictation?session=${id}`);
-  await page.getByText('正在等待共享识别', { exact: true }).waitFor();
-  await page.getByText('识别容量：最多 2 个活动会话', { exact: false }).waitFor();
+  await page.getByText('正在等待共享识别', { exact: false }).waitFor();
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByText('当前识别容量 2/2', { exact: false }).waitFor();
+  await page.getByRole('button', { name: '完成', exact: true }).click();
   await page.screenshot({ path: `${output}/queued-desktop.png`, fullPage: true });
   state.utterances[0].asr_queue_state = 'running'; state.revision++;
-  await page.getByText('正在最终识别', { exact: true }).waitFor();
+  await page.getByText('正在最终识别', { exact: false }).waitFor();
   checks.push('queued and running are distinct; capacity is visible');
   state = { ...state, mode: 'upload', status: 'waiting', phase: 'GPU 正被批量转录占用，请等待完成；文件已保留，请重试开始转写', utterances: [], revision: state.revision + 1 };
   await page.goto(`${base}/dictation?session=${id}`);
@@ -55,7 +57,7 @@ try {
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
   await page.screenshot({ path: `${output}/waiting-mobile.png`, fullPage: true });
   await page.getByRole('button', { name: '重试开始转写', exact: true }).click();
-  await page.getByText('模型准备期间请稍候', { exact: false }).waitFor();
+  await page.getByText('准备 CPU 预览和 GPU 最终识别模型', { exact: true }).waitFor();
   assert.equal(retries, 1); assert.equal(uploads, 0);
   checks.push('waiting upload has an explicit retry, no duplicate upload, 390px controls fit');
   state = { ...state, status: 'waiting', phase: '当前语音识别容量已满，请稍后重试；文件已保留，请重试开始转写', revision: state.revision + 1 };

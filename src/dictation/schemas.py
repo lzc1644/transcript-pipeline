@@ -20,6 +20,9 @@ ReasoningEffort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
 class SessionRequest(StrictModel):
+    editor_version: Literal[1] | None = None
+    initial_text: str = Field(default="", max_length=200000)
+    insertion_position: int | None = Field(default=None, ge=0)
     terms: list[str] = Field(default_factory=list, max_length=50)
     cleanup: bool = True
     cleanup_model: CleanupModel | None = None
@@ -46,11 +49,31 @@ class DraftEditRequest(StrictModel):
     text: str = Field(max_length=200000)
 
 
+class TextChange(StrictModel):
+    # UTF-16 code units, matching CodeMirror/JavaScript (not Python indices).
+    from_: int = Field(alias="from", ge=0)
+    to: int = Field(ge=0)
+    insert: str = Field(max_length=200000)
+
+
+class DocumentEditRequest(StrictModel):
+    operation_id: str = Field(min_length=1, max_length=100)
+    base_version: int = Field(ge=0)
+    changes: list[TextChange] = Field(max_length=1000)
+
+
+class DocumentEnableRequest(StrictModel):
+    revision: int = Field(ge=0)
+
+
 class CleanupRequest(StrictModel):
     scope: Literal["failed", "utterance", "document", "apply"] = "failed"
     utterance_id: str | None = None
     revision: int | None = None
     suggestion_id: str | None = None
+    base_content_revision: int | None = None
+    text: str | None = Field(default=None, max_length=200000)
+    operation_id: str | None = Field(default=None, max_length=100)
 
 
 class DictationSettings(StrictModel):
@@ -59,10 +82,10 @@ class DictationSettings(StrictModel):
     cpu_python: str = ".venv/dictation-py312/bin/python"
     final_python: str = ".venv/asr-py312/bin/python"
     model_dir: str = "data/models/dictation"
-    cleanup_model: str = "gpt-6-luna"
-    cleanup_reasoning_effort: str = "low"
+    cleanup_model: str = "gemini-3.5-flash-lite"
+    cleanup_reasoning_effort: str = "medium"
     cleanup_timeout_seconds: int = Field(default=3600, ge=1, le=3600)
-    document_cleanup_model: str = "gpt-6-luna"
+    document_cleanup_model: str = "gemini-3.8-flash-high"
     document_reasoning_effort: str = "high"
     document_cleanup_timeout_seconds: int = Field(default=3600, ge=1, le=3600)
     decode_timeout_seconds: int = Field(default=900, ge=1, le=3600)

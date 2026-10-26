@@ -26,7 +26,9 @@ def test_whole_document_payload_uses_current_edited_body_high_and_independent_bu
     async def run():
         service = DictationService(root)
         state = await completed(service)
-        # Existing sessions predate the dedicated document settings.
+        # Existing sessions retain their frozen Luna/low preset, not today's defaults.
+        for config in (state["config"], state["worker_config"]):
+            config.update(cleanup_model="gpt-6-luna", reasoning_effort="low")
         state["worker_config"].pop("document_cleanup_model")
         state["worker_config"].pop("document_cleanup_timeout_seconds")
         service.edit(state["id"], "owner", "1", 1, "预算1500元，不是15000元。")
@@ -47,6 +49,23 @@ def test_whole_document_payload_uses_current_edited_body_high_and_independent_bu
         assert payload["reasoning"] == {"effort": "low"} and payload["instructions"] == INSTRUCTIONS
         assert payload["max_output_tokens"] == 4096 and timeout == 3600
         assert json.loads(payload["input"])["current_text"] == "原稿"
+    asyncio.run(run())
+
+
+def test_default_cleanup_payloads_use_the_settings_preset(root, monkeypatch):
+    sent = []
+    def response(client, payload, **kwargs):
+        sent.append(payload)
+        return json.dumps({"text": "整理后文本。", "needs_review": False})
+    monkeypatch.setattr(SessionGatewayClient, "codex_responses_text", response)
+    async def run():
+        service = DictationService(root)
+        state = await completed(service)
+        await service.cleanup(state["id"], "owner", CleanupRequest(scope="utterance", utterance_id="1"))
+        await service.cleanup(state["id"], "owner", CleanupRequest(scope="document"))
+        assert [(payload["model"], payload["reasoning"]["effort"]) for payload in sent] == [
+            ("gemini-3.5-flash-lite", "medium"), ("gemini-3.8-flash-high", "high")]
+        await service.close()
     asyncio.run(run())
 
 

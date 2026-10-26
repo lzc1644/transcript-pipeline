@@ -106,7 +106,7 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => {
                 <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
               </n-button>
             </header>
-            <main id="main-content" class="app-content" tabindex="-1" :style="{ paddingBottom: dockHeight ? `${dockHeight + 32}px` : undefined }">
+            <main id="main-content" class="app-content" tabindex="-1" :style="{ paddingBottom: dockHeight ? `${dockHeight + 32}px` : undefined, '--dictation-dock-height': `${dockHeight}px` }">
               <router-view v-slot="{ Component }"><transition name="page" mode="out-in"><component :is="Component" /></transition></router-view>
             </main>
           </div>

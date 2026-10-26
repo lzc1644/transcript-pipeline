@@ -55,7 +55,7 @@ try {
     await page.goto(`${base}/dictation`);
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await page.getByLabel('少量术语', { exact: false }).fill('WebSocket');
-    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.getByRole('button', { name: '完成', exact: true }).click();
     const created = page.waitForResponse(r => r.url().endsWith('/api/dictation/sessions') && r.request().method() === 'POST');
     await page.getByRole('button', { name: '开始听写', exact: true }).click();
     const response = await created;
@@ -84,12 +84,10 @@ try {
     await writeFile(`${output}/live.json`, JSON.stringify(state, null, 2));
     await page.screenshot({ path: `${output}/live-desktop.png`, fullPage: true });
   });
-  await check('manual sentence edit, immutable clipboard snapshot, GET and TXT agree', async () => {
-    await page.locator('.dictation-utterance').first().getByRole('button', { name: '编辑', exact: true }).click();
-    await page.getByRole('textbox', { name: /编辑第/ }).fill('预算1500元，不是15000元。');
-    await page.getByRole('button', { name: '保存', exact: true }).click();
-    await page.getByText('预算1500元，不是15000元。', { exact: true }).waitFor();
-    await page.getByRole('button', { name: '复制已完成文字' }).click();
+  await check('continuous document edit, immutable clipboard snapshot, GET and TXT agree', async () => {
+    await page.getByRole('textbox', { name: '正文编辑器', exact: true }).fill('预算1500元，不是15000元。');
+    await page.locator('.notebook-save').filter({ hasText: /^已保存$/ }).waitFor();
+    await page.getByRole('button', { name: '复制正文', exact: true }).click();
     const clipboard = await page.evaluate(() => navigator.clipboard.readText());
     const snapshot = await page.evaluate(async id => fetch(`/api/dictation/sessions/${id}`).then(r => r.json()), sid);
     const txt = await page.evaluate(async id => fetch(`/api/dictation/sessions/${id}/draft.txt`).then(r => r.text()), sid);
@@ -97,12 +95,11 @@ try {
   });
   await check('whole-document diff preview → apply → save → GET/TXT consistency', async () => {
     await page.getByRole('button', { name: '整理全文', exact: true }).click();
-    await page.getByRole('region', { name: '全文整理差异预览' }).waitFor({ timeout: 3610000 });
-    await page.getByRole('button', { name: '确认应用全文稿' }).click();
-    await page.getByRole('button', { name: '编辑全文', exact: true }).click();
-    await page.getByRole('textbox', { name: '编辑全文', exact: true }).fill('人工全文：不是不能做，是现在不做。');
-    await page.getByRole('button', { name: '保存全文', exact: true }).click();
-    await page.getByText('人工全文：不是不能做，是现在不做。', { exact: true }).waitFor();
+    await page.getByRole('textbox', { name: '整理预览编辑器', exact: true }).waitFor({ timeout: 3610000 });
+    await page.getByRole('textbox', { name: '整理预览编辑器', exact: true }).fill('人工全文：不是不能做，是现在不做。');
+    await page.getByRole('button', { name: '应用到正文', exact: true }).click();
+    await page.getByRole('textbox', { name: '正文编辑器', exact: true }).waitFor();
+    await page.locator('.notebook-save').filter({ hasText: /^已保存$/ }).waitFor();
     const state = await page.evaluate(async id => fetch(`/api/dictation/sessions/${id}`).then(r => r.json()), sid);
     const txt = await page.evaluate(async id => fetch(`/api/dictation/sessions/${id}/draft.txt`).then(r => r.text()), sid);
     assert.equal(state.draft_text, txt);
@@ -119,7 +116,7 @@ try {
     assert.equal(await popup.getByLabel('少量术语', { exact: false }).inputValue(), 'WebSocket');
     assert(await popup.locator('.app-sidebar').isHidden());
     assert(await popup.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
-    const paper = await popup.locator('.dictation-paper').boundingBox();
+    const paper = await popup.locator('.dictation-notebook').boundingBox();
     const controls = await popup.locator('.dictation-controls').boundingBox();
     assert(paper && controls && controls.y >= paper.y + paper.height);
     await popup.screenshot({ path: `${output}/compact-settings.png`, fullPage: true });
@@ -136,7 +133,7 @@ try {
     }
     assert(uploadComplete, 'upload did not complete');
     await page.waitForTimeout(1200);
-    const text = await page.locator('.dictation-paper').innerText();
+    const text = await page.getByRole('textbox', { name: '正文编辑器', exact: true }).innerText();
     assert(text.includes('Monday') || text.includes('monday'));
     const states = await page.evaluate(() => fetch('/api/dictation/sessions').then(r => r.json()));
     const uploaded = states.find(s => s.mode === 'upload');

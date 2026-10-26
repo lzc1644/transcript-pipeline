@@ -51,7 +51,9 @@ def test_manual_retry_uses_current_deadlines_without_rewriting_legacy_snapshot(r
         service = DictationService(root)
         state = await completed(service)
         for cfg in (state['worker_config'], state['config']):
-            cfg.update(cleanup_timeout_seconds=20, document_cleanup_timeout_seconds=120)
+            cfg.update(cleanup_model='gpt-6-luna', document_cleanup_model='gpt-6-luna',
+                reasoning_effort='low', document_reasoning_effort='high',
+                cleanup_timeout_seconds=20, document_cleanup_timeout_seconds=120)
         assert service.cleaner(state).client.timeout_seconds == 20  # Automatic work stays frozen.
         assert service.cleaner(state).document_timeout == 120
         await service.cleanup(state['id'], 'owner', CleanupRequest(scope='utterance', utterance_id='1'))
@@ -60,6 +62,8 @@ def test_manual_retry_uses_current_deadlines_without_rewriting_legacy_snapshot(r
         persisted = service.storage.load(state['id'])
         assert persisted['worker_config']['cleanup_timeout_seconds'] == 20
         assert persisted['worker_config']['document_cleanup_timeout_seconds'] == 120
+        assert persisted['worker_config']['cleanup_model'] == 'gpt-6-luna'
+        assert persisted['worker_config']['reasoning_effort'] == 'low'
         assert state['document_suggestion']['metrics']['timeout_seconds'] == 3600
     asyncio.run(run())
 

@@ -4,11 +4,12 @@ import { PcmCapture, type CaptureSource } from "./dictationCapture";
 import { createLocalRecorder } from "./dictationDrafts";
 import { validateTerms } from "./dictationTerms";
 import { DictationPlayback } from "./dictationPlayback";
+import { createDictationDocuments, type DocumentOperation } from "./dictationDocument";
 
 export interface Utterance {
   id: string; revision: number; status: string; text: string; raw_text: string; preview: string;
   asr_queue_state?: "queued" | "running"; queue_wait_seconds?: number;
-  edited: boolean; error?: string; suggestion?: string; needs_review: boolean; start_sample?: number; end_sample?: number | null;
+  edited: boolean; error?: string; suggestion?: string; cleaned_text?: string; needs_review: boolean; start_sample?: number; end_sample?: number | null;
 }
 export interface DictationConfig {
   max_active_sessions: number; active_sessions: number;
@@ -20,9 +21,12 @@ export interface DictationConfig {
 export interface DictationSession {
   id: string; status: string; phase: string; revision: number; event_sequence: number; next_sequence: number; samples: number;
   created_at: string; mode: string; utterances: Utterance[]; draft_text: string; error?: string;
+  editor_version?: number; document_version?: number; content_revision?: number;
+  document_operations?: DocumentOperation[];
+  dictation_turns?: { id: number; start_sample: number; position: number }[];
   document_text?: string; document_cleanup_error?: string; phase_key?: string;
   progress?: { total_samples?: number; transcribed_samples: number; asr_failed: number; cleanup_total: number; cleanup_done: number; cleanup_failed: number };
-  document_suggestion?: { id: string; original: string; text: string; metrics?: { strategy: string; chunk_count: number } };
+  document_suggestion?: { id: string; original: string; text: string; base_content_revision: number; metrics?: { strategy: string; chunk_count: number } };
   config: { cleanup_model: string; document_cleanup_model?: string; reasoning_effort?: string;
     document_reasoning_effort?: string; terms: string[]; cleanup: boolean;
     cleanup_timeout_seconds?: number; document_cleanup_timeout_seconds?: number };
@@ -88,6 +92,18 @@ function createDictationController() {
     }
     return response.json();
   }
+  const documents = createDictationDocuments(api);
+  const enabling = new Set<string>();
+  async function enableDocument(value: DictationSession) {
+    if (value.editor_version === 1 || enabling.has(value.id)) return;
+    enabling.add(value.id);
+    try {
+      const next = await api(`/sessions/${value.id}/document`, { method: "POST", body: JSON.stringify({ revision: value.revision }) });
+      if (session.value?.id === value.id) applyView(next);
+      if (recordingSession.value?.id === value.id) applyRecording(next);
+    } catch (cause) { error.value = cause instanceof Error ? cause.message : String(cause); }
+    finally { enabling.delete(value.id); }
+  }
   function failWaiter(message = "采音操作已结束") { waiter?.reject(new Error(message)); waiter = null; }
   function waitForStatus(expected: string) {
     failWaiter();
@@ -105,10 +121,14 @@ function createDictationController() {
     finally { audioGeneration++; }
   }
   function applyView(value: DictationSession, token = selection.token()) {
-    if (!disposed && selection.accept(value, token)) session.value = value;
+    if (!disposed && selection.accept(value, token)) {
+      documents.receive(value); session.value = value;
+      if (value.editor_version !== 1) void enableDocument(value);
+    }
   }
   function applyRecording(value: DictationSession, token = recording.token()) {
     if (disposed || !recording.accept(value, token)) return;
+    documents.receive(value);
     recordingSession.value = value;
     if (value.error) error.value = value.error;
     if (waiter?.expected === value.status) { const waiting = waiter; waiter = null; waiting.resolve(); }
@@ -211,6 +231,7 @@ function createDictationController() {
         utterance.preview = message.text;
         if (state.id === selection.token().id) applyView(state);
       }
+      if (message.type === "session.control_rejected") { error.value = message.error; failWaiter(message.error); }
       if (message.type === "session.error") {
         error.value = message.error; failWaiter(message.error);
         void releaseAudio(false).catch(() => {});
@@ -225,9 +246,9 @@ function createDictationController() {
     };
     ownedSocket.onerror = () => { if (recording.current(token)) connection.value = "网络连接异常，请检查网络；不会自动重新开启麦克风"; };
   }
-  function sendControl(type: string) {
+  function sendControl(type: string, target: object = {}) {
     if (socket?.readyState !== WebSocket.OPEN) throw new Error("连接中断，暂停未确认；麦克风已关闭。等待重连后重试，或结束听写。");
-    socket.send(JSON.stringify({ type, next_sequence: sequence, samples }));
+    socket.send(JSON.stringify({ type, next_sequence: sequence, samples, ...target }));
   }
   async function captureFailure(cause: unknown, generation: number) {
     if (generation !== operation || disposed) return;
@@ -242,8 +263,10 @@ function createDictationController() {
     else void captureFailure(cause, operation);
   }
   async function start(terms: string[], cleanup: boolean, cleanupModel = "", documentCleanupModel = "",
-    cleanupEffort = "", documentEffort = "", options: { signal?: AbortSignal; capture?: CaptureSource } = {}): Promise<DictationStartResult> {
+    cleanupEffort = "", documentEffort = "", options: { signal?: AbortSignal; capture?: CaptureSource; document?: { text: string; position: number } } = {}): Promise<DictationStartResult> {
     if (options.signal?.aborted) return { status: "rejected", reason: "准备已取消" };
+    if (session.value?.document_suggestion || (session.value && documents.get(session.value.id).preview.value))
+      return { status: "rejected", reason: "请先应用或放弃全文整理预览" };
     if (busy.value || recognizing.value || captureAction.value || local.active.value || local.busy.value || deviceBusy.value || uploadUncertain.value)
       return { status: "rejected", reason: "录音、上传或模型正忙，请先结束当前操作。" };
     const generation = ++operation, taskGeneration = ++creation;
@@ -268,6 +291,7 @@ function createDictationController() {
       await liveCapture.prepare("live", deviceFailure);
       if (disposed || generation !== operation || taskGeneration !== creation) return { status: "rejected", reason: "准备已取消" };
       const state = await api("/sessions", { method: "POST", body: JSON.stringify({ terms, cleanup,
+        editor_version: 1, initial_text: options.document?.text ?? "", insertion_position: options.document?.position ?? null,
         cleanup_model: cleanupModel || null, document_cleanup_model: documentCleanupModel || null,
         cleanup_reasoning_effort: cleanupEffort || null, document_reasoning_effort: documentEffort || null }) });
       if (disposed || generation !== operation || taskGeneration !== creation) {
@@ -310,15 +334,25 @@ function createDictationController() {
     const generation = ++operation, token = recording.token();
     captureAction.value = "resuming"; error.value = "";
     try {
+      const buffer = documents.get(token.id!);
+      if (buffer.preview.value || recordingSession.value?.document_suggestion) throw new Error("请先应用或放弃全文整理预览");
+      await buffer.flush();
       playback.stop();
       await liveCapture.prepare("live", deviceFailure);
       if (disposed || generation !== operation) return;
       const latest: DictationSession = await api(`/sessions/${token.id}`);
       applyRecording(latest, token);
       if (generation !== operation || latest.status !== "paused") throw new Error("会话已停止或不再可恢复");
+      // Microphone permission/preparation can take seconds. Edits made during
+      // that wait must reach the server before we bind the new voice anchor.
+      await buffer.flush();
+      if (disposed || generation !== operation || recordingSession.value?.status !== "paused")
+        throw new Error("会话已停止或不再可恢复");
       sequence = latest.next_sequence; samples = latest.samples; pending = [];
       const confirmed = waitForStatus("listening");
-      try { sendControl("resume"); } catch (cause) { failWaiter(String(cause)); }
+      try { sendControl("resume", latest.editor_version === 1
+        ? { document_version: buffer.version, insertion_position: buffer.cursor } : {}); }
+      catch (cause) { failWaiter(String(cause)); }
       await confirmed;
       if (generation === operation && !disposed) await beginCapture(generation, token);
     } catch (cause) {
@@ -385,7 +419,7 @@ function createDictationController() {
     try {
       terms = validateTerms(terms);
       await loadConfig();
-      const query = new URLSearchParams({ filename: file.name, terms: JSON.stringify(terms), cleanup: String(cleanup) });
+      const query = new URLSearchParams({ filename: file.name, terms: JSON.stringify(terms), cleanup: String(cleanup), editor_version: "1" });
       if (cleanupModel) query.set("cleanup_model", cleanupModel);
       if (documentCleanupModel) query.set("document_cleanup_model", documentCleanupModel);
       if (cleanupEffort) query.set("cleanup_reasoning_effort", cleanupEffort);
@@ -439,13 +473,31 @@ function createDictationController() {
   async function cleanup(scope: string, utteranceId?: string) {
     if (!session.value) return;
     const token = selection.token();
-    const body = { scope, utterance_id: utteranceId, revision: session.value.revision, suggestion_id: session.value.document_suggestion?.id };
+    const buffer = documents.get(token.id!);
+    await buffer.flush();
+    const preview = buffer.preview.value;
+    const body = { scope, utterance_id: utteranceId, revision: session.value.revision,
+      suggestion_id: preview?.id ?? session.value.document_suggestion?.id,
+      base_content_revision: preview?.base, text: scope === "apply" ? preview?.text : undefined,
+      operation_id: scope === "apply" ? `apply-${preview?.id ?? session.value.document_suggestion?.id}` : undefined };
     busy.value = true; cleanupScope.value = scope; error.value = "";
     try {
       if (scope !== "apply") await loadConfig();
       apply(await api(`/sessions/${token.id}/cleanup`, { method: "POST", body: JSON.stringify(body) }), token);
+      const remainingPreview = buffer.preview.value;
+      if (scope === "apply" && remainingPreview && remainingPreview.id === body.suggestion_id) {
+        if (remainingPreview.text === body.text) buffer.clearPreview();
+        else buffer.error.value = "应用期间预览又有修改，新增修改已保留；可复制或下载预览后重新整理。";
+      }
     }
     finally { busy.value = false; cleanupScope.value = null; }
+  }
+  async function discardPreview(id: string) {
+    const buffer = documents.get(id), preview = buffer.preview.value;
+    if (!preview) return;
+    const state = await api(`/sessions/${id}/suggestions/${preview.id}`, { method: "DELETE" });
+    buffer.clearPreview();
+    if (session.value?.id === id) applyView(state);
   }
   async function remove(id: string) {
     if (recording.token().id === id && recognizing.value) {
@@ -523,7 +575,7 @@ function createDictationController() {
     clearInterval(pollTimer); window.removeEventListener("pagehide", unload);
     navigator.mediaDevices?.removeEventListener("devicechange", deviceChanged);
   });
-  return { session, recordingSession, local, playback, selectedDeviceId, microphoneDevices, deviceBusy, inputWarning, listMicrophones, chooseMicrophone, fileAction, fileControl, uploadProgress, uploadUncertain, cancelUpload, confirmUploadChecked, history, error, busy, cleanupScope, level, connection, capturing,
+  return { session, recordingSession, documents, discardPreview, local, playback, selectedDeviceId, microphoneDevices, deviceBusy, inputWarning, listMicrophones, chooseMicrophone, fileAction, fileControl, uploadProgress, uploadUncertain, cancelUpload, confirmUploadChecked, history, error, busy, cleanupScope, level, connection, capturing,
     captureAction, captureLabel, active, recognizing, ownsCapture, partial, start, pause, resume, stop, cancel, upload,
     select, showRecording, refresh, loadHistory, serverConfig, loadConfig, edit, editDraft, cleanup, remove, probeMicrophone, cancelMicrophoneProbe };
 }

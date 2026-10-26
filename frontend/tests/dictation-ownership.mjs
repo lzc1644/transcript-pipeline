@@ -13,7 +13,7 @@ const server = spawn(process.execPath, [`${root}/frontend/node_modules/vite/bin/
   { cwd: `${root}/frontend`, stdio: ['ignore',log.fd,log.fd] });
 const historyId = 'a'.repeat(32), taskId = 'b'.repeat(32);
 const makeState = (id, status, text, mode = 'live') => ({ id, status, phase: status === 'completed' ? '已完成' : '正在转录上传录音', mode,
-  revision: 1, event_sequence: 1, samples: 16000, next_sequence: 0, created_at: new Date().toISOString(),
+  revision: 1, event_sequence: 1, editor_version: 1, document_version: 0, document_operations: [], samples: 16000, next_sequence: 0, created_at: new Date().toISOString(),
   config: { terms: [], cleanup: false, cleanup_model: 'gpt-6-luna' }, draft_text: text,
   utterances: [{ id: '1', revision: 1, raw_text: text, text, status: 'raw', preview: '', edited: false, needs_review: false }] });
 let historical = makeState(historyId, 'completed', '历史正文，不能被上传响应抢走。');
