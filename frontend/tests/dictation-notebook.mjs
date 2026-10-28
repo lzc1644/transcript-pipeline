@@ -30,6 +30,8 @@ try {
       window.notebookView = () => m.EditorView.findFromDOM(document.querySelector('.cm-editor'));
     });
   }, base);
+  let seeded;
+  if (!process.env.DICTATION_TEST_UNIFIED_ONLY) {
   // Use a genuinely untrusted HTTP origin. localhost is a secure context and
   // would hide missing secure-context-only APIs such as crypto.randomUUID.
   const httpOrigin = 'http://dictation-http.test';
@@ -155,7 +157,7 @@ try {
 
   const page = await context.newPage();
   page.on('pageerror', e => errors.push(e.stack || e.message));
-  const seeded = await (await context.request.post(`${base}/api/notebook-fixture/seed`)).json();
+  seeded = await (await context.request.post(`${base}/api/notebook-fixture/seed`)).json();
   const id = seeded.id, endpoint = `${base}/api/dictation/sessions/${id}`;
   const snapshot = async () => (await context.request.get(endpoint)).json();
   await page.goto(`${base}/dictation?session=${id}`);
@@ -350,6 +352,9 @@ try {
   }
   checks.push('1159x756 and 390px dark layout, one editor, internal scrolling and unobscured toolbar');
 
+  }
+  seeded ??= await (await context.request.post(`${base}/api/notebook-fixture/seed`)).json();
+
   // Start from inside an empty editor, then measure the actual recording UI.
   // The microphone is Chromium's virtual device; HTTP/WS session events are fixtures.
   const recordingLayouts = [];
@@ -363,26 +368,80 @@ try {
       utterances:[{id:'1',revision:0,status:'partial',text:'',raw_text:'',
         preview:'正在识别的长句没有预先插入换行。'.repeat(160) + 'https://example.test/' + 'a'.repeat(600),
         edited:false,needs_review:false}] };
-    let starts = 0;
-    const resumeChecks = [];
+    let starts = 0, sendLiveSnapshot, releaseControl;
+    let holdNextControl, heldControl, rejectResume = false, rejectPause = false, failSave = false, holdSave = false, releaseSave;
+    const controlQueue = [], controls = [], resumeChecks = [];
+    const mapPosition = (position, changes, assoc=1) => {
+      let offset = 0;
+      for (const c of changes) {
+        if (position < c.from) break;
+        if (position <= c.to) return c.from + offset + (assoc > 0 ? c.insert.length : 0);
+        offset += c.insert.length - (c.to - c.from);
+      }
+      return position + offset;
+    };
+    const applyChanges = (changes, kind, operationId, utteranceId) => {
+      for (const change of [...changes].reverse())
+        liveState.draft_text = liveState.draft_text.slice(0,change.from) + change.insert + liveState.draft_text.slice(change.to);
+      for (const turn of liveState.dictation_turns) turn.position = mapPosition(turn.position, changes);
+      liveState.document_version++; liveState.content_revision = (liveState.content_revision ?? 0) + 1;
+      liveState.revision++; liveState.event_sequence++;
+      liveState.document_operations.push({id:operationId,version:liveState.document_version,changes,kind,utterance_id:utteranceId});
+    };
+    const saveDocument = async route => {
+      if (holdSave) { holdSave=false; await new Promise(resolve => releaseSave=resolve); }
+      if (failSave) return route.fulfill({status:503,json:{detail:'fixture: cursor save unavailable'}});
+      const request = route.request().postDataJSON();
+      let changes=request.changes;
+      // Match the real API's versioned rebase when ASR wins a held save race.
+      for (const operation of liveState.document_operations.filter(op => op.version > request.base_version))
+        changes=changes.map(change => ({...change,from:mapPosition(change.from,operation.changes),
+          to:mapPosition(change.to,operation.changes,change.from===change.to ? 1 : -1)}));
+      applyChanges(changes, 'user', request.operation_id);
+      return route.fulfill({json:liveState});
+    };
+    const speech = (text, turn = liveState.dictation_turns.at(-1)) => {
+      const utteranceId = `fixture-speech-${liveState.document_version}`;
+      liveState.utterances.push({id:utteranceId,text,raw_text:text,revision:1,start_sample:turn.start_sample,
+        status:'raw',edited:false,needs_review:false,preview:''});
+      applyChanges([{from:turn.position,to:turn.position,insert:text}], 'speech', utteranceId, utteranceId);
+      sendLiveSnapshot();
+    };
     await livePage.route('**/api/dictation/sessions', route => {
       if (route.request().method() !== 'POST') return route.continue();
       starts++; return route.fulfill({ json:liveState });
     });
     await livePage.route(`**/api/dictation/sessions/${liveId}`, route => route.fulfill({ json:liveState }));
-    await livePage.route(`**/api/dictation/sessions/${liveId}/document`, route => {
-      const request = route.request().postDataJSON();
-      assert.equal(request.base_version, liveState.document_version);
-      for (const change of [...request.changes].reverse())
-        liveState.draft_text = liveState.draft_text.slice(0,change.from) + change.insert + liveState.draft_text.slice(change.to);
-      liveState.document_version++; liveState.content_revision = (liveState.content_revision ?? 0) + 1;
-      liveState.revision++; liveState.event_sequence++;
-      liveState.document_operations.push({id:request.operation_id,version:liveState.document_version,changes:request.changes,kind:'user'});
-      return route.fulfill({json:liveState});
-    });
+    await livePage.route(`**/api/dictation/sessions/${liveId}/document`, saveDocument);
     await livePage.routeWebSocket('**/api/dictation/sessions/*/stream', socket => {
-      const sendSnapshot = () => socket.send(JSON.stringify({type:'session.snapshot',snapshot:liveState}));
-      sendSnapshot();
+      sendLiveSnapshot = () => socket.send(JSON.stringify({type:'session.snapshot',snapshot:liveState}));
+      const applyControl = command => {
+        if (command.type === 'pause' && rejectPause) {
+          rejectPause = false;
+          socket.send(JSON.stringify({type:'session.control_rejected',error:'fixture: pause not confirmed'}));
+          return;
+        }
+        if (command.type === 'resume') {
+          resumeChecks.push({version:command.document_version, position:command.insertion_position,
+            serverVersion:liveState.document_version, serverLength:liveState.draft_text.length});
+          if (rejectResume) {
+            rejectResume = false;
+            socket.send(JSON.stringify({type:'session.control_rejected',error:'fixture: insertion version rejected'}));
+            return;
+          }
+          assert.equal(command.document_version, liveState.document_version);
+          liveState.dictation_turns.push({id:liveState.dictation_turns.length+1,start_sample:command.samples,position:command.insertion_position});
+        }
+        liveState.status = command.type === 'stop' ? 'completed' : command.type === 'pause' ? 'paused' : 'listening';
+        liveState.phase = liveState.status === 'completed' ? '已停止，处理完成' : liveState.status === 'paused' ? '已暂停' : '正在听音';
+        liveState.revision++; liveState.event_sequence++; sendLiveSnapshot();
+      };
+      releaseControl = () => {
+        const command = heldControl; heldControl = undefined;
+        applyControl(command);
+        for (const queued of controlQueue.splice(0)) applyControl(queued);
+      };
+      sendLiveSnapshot();
       socket.onMessage(message => {
         if (typeof message !== 'string') {
           const view = new DataView(message.buffer, message.byteOffset, message.byteLength);
@@ -393,11 +452,17 @@ try {
         }
         const command = JSON.parse(message);
         if (!['stop','pause','resume'].includes(command.type)) return;
-        if (command.type === 'resume') resumeChecks.push({version:command.document_version,
-          position:command.insertion_position, serverVersion:liveState.document_version, serverLength:liveState.draft_text.length});
-        liveState.status = command.type === 'stop' ? 'completed' : command.type === 'pause' ? 'paused' : 'listening';
-        liveState.phase = liveState.status === 'completed' ? '已停止，处理完成' : liveState.status === 'paused' ? '已暂停' : '正在听音';
-        liveState.revision++; liveState.event_sequence++; sendSnapshot();
+        controls.push(command);
+        if (heldControl) { controlQueue.push(command); return; }
+        if (holdNextControl === command.type) {
+          holdNextControl = undefined; heldControl = command;
+          if (command.type === 'pause') {
+            liveState.status='pausing'; liveState.phase='正在暂停，完成暂停前的尾句';
+            liveState.revision++; liveState.event_sequence++; sendLiveSnapshot();
+          }
+          return;
+        }
+        applyControl(command);
       });
     });
     await livePage.goto(`${base}/dictation`);
@@ -451,7 +516,7 @@ try {
     assert(wrapped.partialScrollWidth <= wrapped.partialWidth + 1, `${name}: long Chinese and URL must wrap in the partial`);
     assert(wrapped.partialHeight <= wrapped.lineHeight * 2 + 1 && wrapped.partialScrollHeight > wrapped.partialHeight,
       `${name}: partial must scroll vertically within two lines`);
-    assert.equal(panel.width, 310, `${name}: original floating-panel width must be preserved`);
+    assert.equal(panel.width, 236, `${name}: compact floating-panel width must be preserved`);
     const handle = await dock.locator('.dictation-dock__drag-bar').boundingBox();
     await livePage.mouse.move(handle.x + handle.width/2, handle.y + handle.height/2);
     await livePage.mouse.down();
@@ -472,6 +537,229 @@ try {
       recordingLayouts.push({name:'375px phone long partial',wrapped:phone});
     }
     if (name === 'desktop') {
+      const caret = () => livePage.evaluate(() => window.notebookView().state.selection.main.to);
+      const liveText = () => livePage.evaluate(() => window.notebookView().state.doc.toString());
+      const listening = () => livePage.waitForFunction(() => document.querySelector('.dictation-dock__signal')?.classList.contains('is-on'));
+      const selectAt = position => livePage.evaluate(position => {
+        window.notebookView().dispatch({selection:{anchor:position},scrollIntoView:true});
+      }, position);
+      const until = async predicate => {
+        for (let i=0; i<200; i++) { if (predicate()) return; await new Promise(r => setTimeout(r,20)); }
+        assert.fail('fixture condition did not settle');
+      };
+      const waitText = text => livePage.waitForFunction(text => window.notebookView().state.doc.toString() === text, text);
+      const waitSaved = () => livePage.locator('.notebook-save').filter({hasText:/^已保存$/}).waitFor();
+      assert.equal(await livePage.locator('.dictation-insertion-anchor').count(),0);
+      assert.equal(await caret(),liveState.dictation_turns.at(-1).position);
+      speech('连续语音一。'); await waitText(liveState.draft_text);
+      assert.equal(await caret(), liveState.dictation_turns.at(-1).position);
+      speech('连续语音二。'); await waitText(liveState.draft_text);
+      assert.equal(await caret(), liveState.dictation_turns.at(-1).position);
+      await livePage.getByRole('textbox',{name:'正文编辑器',exact:true}).focus();
+      const beforeTyping = resumeChecks.length, typingOldTurn=liveState.dictation_turns.at(-1);
+      holdSave=true;
+      await livePage.keyboard.type('键盘补充。',{delay:160}); await livePage.keyboard.press('Enter');
+      await until(() => !!releaseSave);
+      assert.equal(liveState.status,'paused');
+      assert.equal(await dock.locator('.dictation-dock__signal.is-on').count(),0);
+      speech('键入前迟到尾句。',typingOldTurn);
+      await livePage.waitForFunction(() => window.notebookView().state.doc.toString().includes('键入前迟到尾句。'));
+      assert((await liveText()).endsWith('键盘补充。\n'));
+      assert.equal(resumeChecks.length,beforeTyping,'new speech capture must wait for the blocked keyboard/Enter save');
+      releaseSave(); releaseSave=undefined;
+      await waitSaved(); await listening();
+      assert.equal(resumeChecks.length,beforeTyping+1,'continuous typing/Enter should share one new boundary');
+      assert.equal(await caret(),liveState.dictation_turns.at(-1).position);
+      speech('键入后新语音。'); await waitText(liveState.draft_text);
+      assert(liveState.draft_text.endsWith('键盘补充。\n键入后新语音。'));
+      assert.equal(await caret(),liveState.dictation_turns.at(-1).position);
+      checks.push('one caret advances through continuous speech; typing/Enter pause until a blocked save commits, old tails stay old and newly captured speech follows the typed newline');
+
+      const oldTurn = liveState.dictation_turns[0];
+      await livePage.getByRole('button',{name:'回到光标',exact:true}).click();
+      // Actual mouse click into a different paragraph, not a synthetic selection.
+      await livePage.locator('.cm-scroller').evaluate(e => e.scrollTop = 0);
+      await livePage.locator('.cm-line').nth(2).click({position:{x:65,y:10}});
+      await listening();
+      assert.equal(await caret(),liveState.dictation_turns.at(-1).position);
+      const clicked = await caret();
+      speech('这里开始听写。'); await waitText(liveState.draft_text);
+      assert.equal(await caret(),clicked + '这里开始听写。'.length);
+      const beforeOld = await caret();
+      speech('迟到旧句。',oldTurn); await waitText(liveState.draft_text);
+      assert.equal(await caret(),beforeOld,'old-turn speech must not steal the moved caret');
+      await livePage.screenshot({path:`${output}/unified-cursor-desktop.png`,fullPage:true,caret:'initial' });
+      checks.push('real mouse relocation binds a new audio turn; late old speech stays at its original paragraph without stealing the caret');
+
+      let before = resumeChecks.length;
+      await livePage.keyboard.press('ArrowLeft'); await livePage.keyboard.press('ArrowLeft'); await livePage.keyboard.press('ArrowLeft');
+      await listening();
+      assert.equal(resumeChecks.length,before+1,'rapid arrow moves should coalesce into one boundary');
+      assert.equal(await caret(),liveState.dictation_turns.at(-1).position);
+      await livePage.keyboard.press('Enter'); await livePage.keyboard.insertText('移动后键入。'); await waitSaved(); await listening();
+      speech('换行后语音。'); await waitText(liveState.draft_text);
+      assert.equal(await caret(),liveState.dictation_turns.at(-1).position);
+      checks.push('rapid keyboard moves coalesce; Enter and subsequent typing/speech share the new visible insertion point');
+
+      const selectedOriginal = liveState.draft_text.slice(1,4), selectionBase = liveState.draft_text;
+      await livePage.evaluate(() => window.notebookView().dispatch({selection:{anchor:1,head:4},scrollIntoView:true}));
+      await listening();
+      speech('选区末尾。'); await waitText(liveState.draft_text);
+      assert.equal(liveState.draft_text,selectionBase.slice(0,4)+'选区末尾。'+selectionBase.slice(4));
+      assert.equal(liveState.draft_text.slice(1,4),selectedOriginal);
+      assert.equal(await caret(),4+'选区末尾。'.length);
+      await livePage.keyboard.press('Control+z'); await waitSaved();
+      assert.equal(await liveText(),selectionBase);
+      await livePage.keyboard.press('Control+Shift+z'); await waitSaved(); await listening();
+      assert.equal(await caret(),liveState.dictation_turns.at(-1).position);
+      checks.push('selection-end speech preserves selected original text, advances to one caret and remains independently undoable/redoable');
+
+      // IME events + CodeMirror transactions exercise the integration; physical
+      // Chinese IME candidate-window behavior remains a device acceptance step.
+      before = resumeChecks.length;
+      await livePage.evaluate(() => {
+        const view=window.notebookView();
+        view.dispatch({selection:{anchor:25},scrollIntoView:true});
+        view.contentDOM.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));
+        view.dispatch({changes:{from:25,insert:'中文组词'},selection:{anchor:29}});
+      });
+      await until(() => liveState.status === 'paused');
+      const duringIME = await liveText();
+      speech('组词时旧句。');
+      await livePage.waitForTimeout(180);
+      assert.equal(await liveText(),duringIME,'remote speech must remain deferred while composing');
+      assert.equal(resumeChecks.length,before,'composition must not automatically resume capture');
+      await livePage.evaluate(() => window.notebookView().contentDOM.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true})));
+      await listening(); await waitSaved();
+      assert.equal(await liveText(),liveState.draft_text);
+      assert.equal(await caret(),liveState.dictation_turns.at(-1).position);
+      checks.push('composition holds automatic resume and buffers remote speech until compositionend, then saves/rebinds the resulting caret');
+
+      holdNextControl='resume';
+      await selectAt(45); await until(() => !!heldControl);
+      assert(await dock.getByText('正在切换输入位置 · 麦克风暂时关闭，请稍候再说',{exact:true}).isVisible());
+      await selectAt(60); await selectAt(75);
+      releaseControl(); await listening();
+      assert.equal(resumeChecks.at(-1).position,75);
+      assert.equal(await caret(),75);
+      checks.push('movement during delayed resume confirmation never starts at the obsolete target; latest cursor wins');
+
+      await livePage.evaluate(() => {
+        const NativeContext=window.AudioContext;
+        window.AudioContext=class extends NativeContext {
+          constructor(...args) {
+            super(...args); window.AudioContext=NativeContext; window.movingContext=this;
+            const add=this.audioWorklet.addModule.bind(this.audioWorklet);
+            this.audioWorklet.addModule=async (...args) => {
+              await new Promise(resolve => window.releaseMoveWorklet=resolve); return add(...args);
+            };
+          }
+        };
+        window.notebookView().dispatch({selection:{anchor:80},scrollIntoView:true});
+      });
+      await livePage.waitForFunction(() => !!window.releaseMoveWorklet);
+      await selectAt(85);
+      await livePage.evaluate(() => window.releaseMoveWorklet());
+      await listening();
+      assert.equal(resumeChecks.at(-1).position,85);
+      assert.equal(await livePage.evaluate(() => window.movingContext.state),'closed');
+      checks.push('movement during worklet startup closes the obsolete lease and restarts the same transition at the latest caret');
+
+      for (const phase of ['pause','resume']) {
+        if (phase === 'pause') await dock.getByTitle('收起面板',{exact:true}).click();
+        holdNextControl=phase;
+        await selectAt(phase === 'pause' ? 90 : 100); await until(() => !!heldControl);
+        const resumeCount = resumeChecks.length;
+        await dock.getByRole('button',{name:'暂停听写',exact:true}).click();
+        releaseControl();
+        await dock.getByRole('button',{name:'继续听写',exact:true}).waitFor();
+        await livePage.waitForTimeout(180);
+        assert.equal(liveState.status,'paused');
+        assert.equal(await dock.locator('.dictation-dock__signal.is-on').count(),0);
+        assert.equal(resumeChecks.length,resumeCount+(phase === 'resume' ? 1 : 0));
+        await dock.getByRole('button',{name:'继续听写',exact:true}).click(); await listening();
+        if (phase === 'pause') await dock.getByTitle('展开面板',{exact:true}).click();
+      }
+      checks.push('expanded/collapsed explicit pause cancels automatic recovery during server pausing and resume acknowledgement races');
+
+      await livePage.evaluate(() => {
+        const original=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+        window.cursorPermissionRequests=0;
+        navigator.mediaDevices.getUserMedia=constraints => { window.cursorPermissionRequests++; return original(constraints); };
+      });
+      holdSave=true;
+      await selectAt(110); await livePage.keyboard.insertText('等待保存。');
+      await until(() => !!releaseSave);
+      const permissionBeforeSave=await livePage.evaluate(() => window.cursorPermissionRequests);
+      await dock.getByRole('button',{name:'暂停听写',exact:true}).click();
+      releaseSave(); releaseSave=undefined;
+      await dock.getByRole('button',{name:'继续听写',exact:true}).waitFor();
+      await livePage.waitForTimeout(180);
+      assert.equal(await livePage.evaluate(() => window.cursorPermissionRequests),permissionBeforeSave,
+        'a cancelled save wait must not acquire a fresh microphone lease');
+      assert.equal(await dock.locator('.dictation-dock__signal.is-on').count(),0);
+      await dock.getByRole('button',{name:'继续听写',exact:true}).click(); await listening();
+      checks.push('explicit pause while relocation is saving invalidates the transition before any new microphone permission/lease');
+
+      failSave=true;
+      await selectAt(120); await livePage.keyboard.insertText('保存失败保留。');
+      await livePage.getByRole('alert').filter({hasText:'输入位置未切换'}).first().waitFor();
+      assert.equal(liveState.status,'paused');
+      assert.equal(await dock.locator('.dictation-dock__signal.is-on').count(),0);
+      assert((await liveText()).includes('保存失败保留。'));
+      failSave=false;
+      await livePage.getByRole('button',{name:'重试保存',exact:true}).click(); await waitSaved();
+      await dock.getByRole('button',{name:'继续听写',exact:true}).click(); await listening();
+      rejectResume=true;
+      await selectAt(135);
+      await livePage.getByRole('alert').filter({hasText:'fixture: insertion version rejected'}).first().waitFor();
+      assert.equal(liveState.status,'paused');
+      assert.equal(await dock.locator('.dictation-dock__signal.is-on').count(),0);
+      await livePage.screenshot({path:`${output}/unified-cursor-recoverable-error.png`,fullPage:true});
+      await dock.getByRole('button',{name:'继续听写',exact:true}).click(); await listening();
+      rejectPause=true;
+      await selectAt(140);
+      await livePage.getByRole('alert').filter({hasText:'fixture: pause not confirmed'}).first().waitFor();
+      assert.equal(liveState.status,'listening');
+      assert.equal(await dock.locator('.dictation-dock__signal.is-on').count(),0);
+      await dock.getByRole('button',{name:'暂停听写',exact:true}).click();
+      await dock.getByRole('button',{name:'继续听写',exact:true}).waitFor();
+      await dock.getByRole('button',{name:'继续听写',exact:true}).click(); await listening();
+      checks.push('failed save, rejected resume and unconfirmed pause keep audio off with local text and explicit recovery controls');
+
+      const reader = await context.newPage(); reader.on('pageerror',error => errors.push(error.message));
+      await reader.route(`**/api/dictation/sessions/${liveId}`,route => route.fulfill({json:liveState}));
+      await reader.route(`**/api/dictation/sessions/${liveId}/document`,saveDocument);
+      await reader.goto(`${base}/dictation?compact=1&session=${liveId}`);
+      await reader.getByRole('textbox',{name:'正文编辑器',exact:true}).waitFor();
+      await reader.waitForFunction(text => window.notebookView?.()?.state.doc.toString() === text,liveState.draft_text);
+      before=controls.length;
+      await reader.evaluate(() => window.notebookView().dispatch({selection:{anchor:5}}));
+      await reader.getByRole('textbox',{name:'正文编辑器',exact:true}).focus();
+      await reader.keyboard.insertText('旁窗。');
+      await reader.locator('.notebook-save').filter({hasText:/^已保存$/}).waitFor();
+      await waitText(liveState.draft_text);
+      assert.equal(controls.length,before);
+      assert.equal(await dock.locator('.dictation-dock__signal.is-on').count(),1);
+      await reader.close();
+      await livePage.getByRole('button',{name:'历史结果',exact:true}).click();
+      await livePage.getByRole('button',{name:'打开',exact:true}).first().click();
+      await livePage.getByRole('textbox',{name:'正文编辑器',exact:true}).waitFor();
+      await livePage.evaluate(() => window.notebookView().dispatch({selection:{anchor:2}}));
+      await livePage.waitForTimeout(180);
+      assert.equal(controls.length,before);
+      await livePage.getByRole('button',{name:'整理全文',exact:true}).click();
+      await livePage.getByRole('textbox',{name:'整理预览编辑器',exact:true}).waitFor();
+      await livePage.evaluate(() => window.notebookView().dispatch({changes:{from:0,insert:'历史预览。'},selection:{anchor:5}}));
+      assert.equal(controls.length,before);
+      livePage.once('dialog',dialog => dialog.accept());
+      await livePage.getByRole('button',{name:'放弃',exact:true}).click();
+      await dock.getByRole('button',{name:'正文',exact:true}).click();
+      await waitText(liveState.draft_text);
+      checks.push('a second window, history and cleanup-preview editing cannot rebind the owner microphone or interrupt its capture');
+    }
+    if (name === 'desktop') {
+      const resumeBeforePermission = resumeChecks.length;
       await dock.getByRole('button', { name:'暂停听写', exact:true }).click();
       await dock.getByRole('button', { name:'继续听写', exact:true }).waitFor();
       await livePage.evaluate(() => {
@@ -492,13 +780,32 @@ try {
         window.releaseResumePermission();
       });
       await livePage.waitForFunction(() => document.querySelector('.dictation-dock__signal')?.classList.contains('is-on'));
-      assert.equal(resumeChecks.length,1);
-      assert.equal(resumeChecks[0].version,resumeChecks[0].serverVersion);
-      assert.equal(resumeChecks[0].position,resumeChecks[0].serverLength);
+      assert.equal(resumeChecks.length,resumeBeforePermission+1);
+      assert.equal(resumeChecks.at(-1).version,resumeChecks.at(-1).serverVersion);
+      assert.equal(resumeChecks.at(-1).position,resumeChecks.at(-1).serverLength);
       assert(liveState.draft_text.endsWith('权限等待期间补写。'));
       checks.push('resume saves edits made during microphone permission before sending its insertion anchor');
     }
+    if (name === 'desktop') {
+      await livePage.evaluate(() => {
+        const original=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+        navigator.mediaDevices.getUserMedia=async constraints => {
+          await new Promise(resolve => window.releaseMovePermission=resolve);
+          navigator.mediaDevices.getUserMedia=original;
+          const stream=await original(constraints); window.lateMoveTracks=stream.getTracks(); return stream;
+        };
+        window.notebookView().dispatch({selection:{anchor:165},scrollIntoView:true});
+      });
+      await livePage.waitForFunction(() => !!window.releaseMovePermission);
+      const resumeBeforeStop=resumeChecks.length;
+      await dock.getByRole('button',{name:'结束听写',exact:true}).click();
+      await livePage.evaluate(() => window.releaseMovePermission());
+      await livePage.waitForFunction(() => window.lateMoveTracks?.every(track => track.readyState==='ended'));
+      assert.equal(resumeChecks.length,resumeBeforeStop);
+      checks.push('ending during automatic microphone preparation cancels its lease; late permission closes every track and cannot resume');
+    } else {
     await dock.getByRole('button', { name:'结束听写', exact:true }).click();
+    }
     await dock.waitFor({ state:'hidden' });
     await livePage.close();
   }
@@ -508,6 +815,8 @@ try {
   await writeFile(`${output}/report.json`, JSON.stringify({ checks, errors, real_editor_api_storage:true, speech_and_cleanup:'deterministic fixtures', physical_microphone:false },null,2));
   console.log(output + '\n' + checks.join('\n'));
 } catch (error) {
+  for (const [index,page] of (browser?.contexts().flatMap(context => context.pages()) ?? []).entries())
+    await page.screenshot({path:`${output}/failure-page-${index}.png`,fullPage:true}).catch(() => {});
   await writeFile(`${output}/failure.json`, JSON.stringify({ error: String(error), checks, errors },null,2));
   throw error;
 } finally {

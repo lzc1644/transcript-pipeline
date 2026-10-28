@@ -4,7 +4,7 @@ import { createDictationId } from "./dictationId";
 import type { DictationSession } from "./useDictation";
 
 export interface TextChange { from: number; to: number; insert: string }
-export interface DocumentOperation { id: string; version: number; changes: TextChange[]; kind: string }
+export interface DocumentOperation { id: string; version: number; changes: TextChange[]; kind: string; utterance_id?: string | null }
 type Pending = { id: string; changes: ChangeSet; payload?: object };
 type API = (path: string, init?: RequestInit) => Promise<any>;
 // Window names survive refresh; unlike sessionStorage, a new popup doesn't
@@ -33,14 +33,16 @@ export class DictationDocument {
   version = 0;
   cursor = 0;
   composing = false;
+  // Only the owning controller detaches this while an audio boundary is switching.
+  voiceDetached = false;
   private base = "";
   private pending: Pending[] = [];
-  private listeners = new Set<(changes: ChangeSet, kind: string) => void>();
+  private listeners = new Set<(changes: ChangeSet, kind: string, advanceCursor?: boolean) => void>();
   private flight: Promise<void> | null = null;
   private timer?: ReturnType<typeof setTimeout>;
   private deferred?: DictationSession;
   private initialized = false;
-  constructor(readonly id: string, private api: API) {
+  constructor(readonly id: string, private api: API, private cursorChanged?: (buffer: DictationDocument, edited?: boolean) => void) {
     if (!id) {
       try { this.text.value = JSON.parse(localStorage.getItem(this.key) ?? "null")?.text ?? ""; }
       catch {}
@@ -57,7 +59,7 @@ export class DictationDocument {
       else localStorage.removeItem(this.key);
     } catch { this.error.value = "本浏览器无法保存恢复副本，请保持页面打开并导出当前文本。"; }
   }
-  subscribe(listener: (changes: ChangeSet, kind: string) => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+  subscribe(listener: (changes: ChangeSet, kind: string, advanceCursor?: boolean) => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
   private publish(changes: ChangeSet, kind: string) {
     this.text.value = changes.apply(asText(this.text.value)).toString();
     this.cursor = changes.mapPos(this.cursor, 1);
@@ -77,7 +79,20 @@ export class DictationDocument {
         if (this.pending.length) { this.status.value = "failed"; this.error.value = "已恢复尚未提交的本地编辑，请重试保存或下载备份。"; }
       }
     } catch { this.error.value = "无法读取本地恢复副本，请检查浏览器存储。"; }
-    this.cursor = this.text.value.length;
+    this.cursor = this.pending.length ? this.text.value.length
+      : Math.min(state.dictation_turns?.at(-1)?.position ?? this.text.value.length, this.text.value.length);
+  }
+  /** User selection, unlike remote mappings, may move the current audio target. */
+  placeCursor(position: number, edited = false) {
+    this.cursor = position;
+    this.cursorChanged?.(this, edited);
+  }
+  get voicePosition() {
+    if (this.status.value === "conflict") return undefined;
+    let position = this.snapshot.value?.dictation_turns?.at(-1)?.position;
+    if (position === undefined) return undefined;
+    for (const pending of this.pending) position = pending.changes.mapPos(position, 1);
+    return position;
   }
   receive(state: DictationSession) {
     if (this.initialized && (state.document_version ?? 0) < this.version) return;
@@ -116,7 +131,11 @@ export class DictationDocument {
         if (!own) {
           this.text.value = nextText;
           this.cursor = remote.mapPos(this.cursor, 1);
-          for (const listener of this.listeners) listener(remote, op.kind);
+          const turn = state.dictation_turns?.at(-1);
+          const utterance = state.utterances?.find(u => u.id === op.utterance_id);
+          const advance = !this.voiceDetached && op.kind === "speech" && !!turn
+            && utterance?.start_sample !== undefined && utterance.start_sample >= turn.start_sample;
+          for (const listener of this.listeners) listener(remote, op.kind, advance);
         }
       }
       if (!this.pending.length && this.text.value !== state.draft_text)
@@ -155,6 +174,7 @@ export class DictationDocument {
       const state = this.deferred; this.deferred = undefined;
       if (state) this.receive(state);
       if (this.pending.length) void this.flush().catch(() => {});
+      this.cursorChanged?.(this);
     }
   }
   async flush(): Promise<void> {
@@ -208,10 +228,10 @@ export class DictationDocument {
   get hasPending() { return this.pending.length > 0; }
 }
 
-export function createDictationDocuments(api: API) {
+export function createDictationDocuments(api: API, cursorChanged?: (buffer: DictationDocument, edited?: boolean) => void) {
   const buffers = new Map<string, DictationDocument>();
   function get(id: string) {
-    if (!buffers.has(id)) buffers.set(id, new DictationDocument(id, api));
+    if (!buffers.has(id)) buffers.set(id, new DictationDocument(id, api, cursorChanged));
     return buffers.get(id)!;
   }
   return { get, receive(state: DictationSession) { if (state.editor_version === 1) get(state.id).receive(state); } };

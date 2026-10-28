@@ -11,11 +11,12 @@ interface Position {
 
 const emit = defineEmits<{ height: [value: number] }>();
 const router = useRouter(), message = useMessage(), d = useDictation();
-const { recordingSession, recognizing, capturing, captureAction, captureLabel, level, connection, error } = d;
+const { recordingSession, recognizing, capturing, captureAction, captureLabel, movingCursor, level, connection, error } = d;
 const collapsed = ref(false), panel = ref<HTMLElement | null>(null);
 const showDetails = ref(false);
 
 const compactStatus = computed(() => {
+  if (movingCursor.value) return "切换位置中";
   if (captureAction.value) return { starting: "准备中", pausing: "暂停中", resuming: "继续中", stopping: "结束中" }[captureAction.value];
   if (recordingSession.value?.status === "paused") return "已暂停";
   if (recordingSession.value?.status === "draining") return "收尾中";
@@ -60,7 +61,7 @@ function onPointerDown(e: PointerEvent) {
   dragStartPos = { x: rect.left, y: rect.top };
   isDragging.value = true;
   try {
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    panel.value.setPointerCapture(e.pointerId);
   } catch {}
 }
 
@@ -84,7 +85,7 @@ function onPointerUp(e: PointerEvent) {
   if (isDragging.value) {
     isDragging.value = false;
     try {
-      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      panel.value?.releasePointerCapture(e.pointerId);
     } catch {}
     if (customPosition.value) {
       sessionStorage.setItem("transcript-pipeline:dock-pos", JSON.stringify(customPosition.value));
@@ -163,16 +164,17 @@ async function openText() {
       transform: 'none'
     } : undefined"
     aria-label="常驻语音控制"
+    title="按住任意非功能键区域拖动面板 · 双击复位位置"
+    @pointerdown="onPointerDown"
+    @pointermove="onPointerMove"
+    @pointerup="onPointerUp"
+    @pointercancel="onPointerUp"
+    @dblclick="resetPosition"
   >
     <!-- Top Drag Handle Bar -->
     <div
       class="dictation-dock__drag-bar"
-      title="按住拖动面板 · 双击复位位置"
-      @pointerdown="onPointerDown"
-      @pointermove="onPointerMove"
-      @pointerup="onPointerUp"
-      @pointercancel="onPointerUp"
-      @dblclick="resetPosition"
+      :class="{ 'is-active': (recognizing && capturing) || localCapturing }"
     >
       <div class="dictation-dock__handle" aria-hidden="true" />
     </div>
@@ -181,18 +183,31 @@ async function openText() {
     <section v-if="localActive && localDraft" class="dictation-dock__local" aria-label="本地录音控制">
       <div class="dictation-dock__header" role="status">
         <div class="dictation-dock__title-group">
-          <span class="dictation-dock__signal" :class="{ 'is-on': localCapturing }" aria-hidden="true">{{ localCapturing ? '●' : 'Ⅱ' }}</span>
-          <strong>{{ localCapturing ? '本地录音中' : '本地录音已暂停' }}</strong>
+          <span
+            class="dictation-dock__signal"
+            :class="{ 'is-on': localCapturing, 'is-paused': !localCapturing }"
+            aria-hidden="true"
+          >
+            <svg v-if="!localCapturing" viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+              <rect x="2.5" y="1.5" width="3.5" height="13" rx="1.5" />
+              <rect x="10" y="1.5" width="3.5" height="13" rx="1.5" />
+            </svg>
+            <span v-else class="dictation-dock__dot" />
+          </span>
           <span class="dictation-dock__time">{{ clock(recordedSamples) }}</span>
+          <span class="sr-only">{{ localCapturing ? '本地录音中' : '本地录音已暂停' }}</span>
         </div>
         <button
           type="button"
           class="win-header-btn"
           :aria-expanded="!collapsed"
           :title="collapsed ? '展开面板' : '收起面板'"
+          :aria-label="collapsed ? '展开面板' : '收起面板'"
           @click="collapsed = !collapsed"
         >
-          <span class="win-header-btn-text">{{ collapsed ? '展开' : '收起' }}</span>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="win-chevron-icon" :class="{ 'is-collapsed': collapsed }">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
         </button>
       </div>
 
@@ -208,7 +223,7 @@ async function openText() {
             aria-label="更多设置"
             @click="showDetails = !showDetails"
           >
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83-2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
@@ -250,8 +265,8 @@ async function openText() {
             title="结束录音"
             @click="action(local.end)"
           >
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-              <rect x="5" y="5" width="14" height="14" rx="2" />
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2.5" />
             </svg>
             <span class="sr-only">结束录音</span>
           </button>
@@ -261,18 +276,20 @@ async function openText() {
         <div class="dictation-dock__actions">
           <button
             type="button"
-            class="win-chip-btn"
+            class="win-chip-btn win-action-btn"
+            title="录音草稿"
+            aria-label="录音草稿"
             @click="router.push('/dictation?mode=record')"
           >
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
               <polyline points="14 2 14 8 20 8"/>
             </svg>
-            <span>录音草稿</span>
+            <span class="sr-only">录音草稿</span>
           </button>
         </div>
 
-        <p class="dictation-dock__note">{{ localBusy ? '正在保存' : '已保存' }} {{ clock(localDraft.samples) }} · 本地录音不占识别资源</p>
+        <p v-if="localBusy" class="dictation-dock__note">正在保存...</p>
         <p v-if="d.inputWarning.value" class="dictation-dock__note" role="status">{{ d.inputWarning.value }}</p>
         <p v-if="local.error.value" class="dictation-dock__error" role="alert">{{ local.error.value }}</p>
       </template>
@@ -303,23 +320,34 @@ async function openText() {
     <section v-if="recognizing && recordingSession" class="dictation-dock__live" aria-label="活动识别控制">
       <div class="dictation-dock__header" role="status">
         <div class="dictation-dock__title-group">
-          <span class="dictation-dock__signal" :class="{ 'is-on': capturing }" aria-hidden="true">{{ recordingSession.status === 'paused' ? 'Ⅱ' : '●' }}</span>
-          <strong>{{ recordingSession.mode === 'upload' ? recordingSession.phase : collapsed ? compactStatus : captureLabel }}</strong>
+          <span
+            class="dictation-dock__signal"
+            :class="{ 'is-on': capturing, 'is-paused': recordingSession.status === 'paused' }"
+            aria-hidden="true"
+          >
+            <svg v-if="recordingSession.status === 'paused'" viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+              <rect x="2.5" y="1.5" width="3.5" height="13" rx="1.5" />
+              <rect x="10" y="1.5" width="3.5" height="13" rx="1.5" />
+            </svg>
+            <span v-else class="dictation-dock__dot" />
+          </span>
           <span class="dictation-dock__time">{{ duration }}</span>
+          <span class="sr-only">{{ recordingSession.mode === 'upload' ? recordingSession.phase : collapsed ? compactStatus : captureLabel }}</span>
         </div>
         <button
           type="button"
           class="win-header-btn"
           :aria-expanded="!collapsed"
           :title="collapsed ? '展开面板' : '收起面板'"
+          :aria-label="collapsed ? '展开面板' : '收起面板'"
           @click="collapsed = !collapsed"
         >
-          <span class="win-header-btn-text">{{ collapsed ? '展开' : '收起' }}</span>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="win-chevron-icon" :class="{ 'is-collapsed': collapsed }">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
         </button>
       </div>
 
-      <p v-if="recordingSession.status === 'waiting'" class="dictation-dock__note">文件已保留，无需重新上传。<button type="button" :disabled="!!d.fileAction.value" @click="action(() => d.fileControl(recordingSession!.id, 'resume'))">重试开始转写</button></p>
-      <p v-if="recordingSession.utterances.some(u => u.status === 'finalizing' && u.asr_queue_state !== 'running')" class="dictation-dock__note" role="status">正在等待共享识别 · 按会话轮转</p>
       <!-- Expanded Content -->
       <template v-if="!collapsed">
         <!-- Hero Row: [⚙ Settings] [🎙 Hero Mic Toggle] [⏹ Stop] -->
@@ -333,7 +361,7 @@ async function openText() {
             aria-label="更多设置"
             @click="showDetails = !showDetails"
           >
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3" />
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83-2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
             </svg>
@@ -346,10 +374,10 @@ async function openText() {
             type="button"
             class="win-mic-btn"
             :class="{ 'is-listening': capturing, 'is-paused': recordingSession.status === 'paused' }"
-            :disabled="!!captureAction || !['listening','paused'].includes(recordingSession.status)"
-            :aria-label="recordingSession.status === 'paused' ? '继续听写' : '暂停听写'"
-            :title="recordingSession.status === 'paused' ? '继续听写' : '暂停听写'"
-            @click="action(recordingSession.status === 'paused' ? d.resume : d.pause)"
+            :disabled="!movingCursor && (!!captureAction || !['listening','paused'].includes(recordingSession.status))"
+            :aria-label="!movingCursor && recordingSession.status === 'paused' ? '继续听写' : '暂停听写'"
+            :title="!movingCursor && recordingSession.status === 'paused' ? '继续听写' : '暂停听写'"
+            @click="action(!movingCursor && recordingSession.status === 'paused' ? d.resume : d.pause)"
           >
             <span
               class="win-mic-pulse"
@@ -364,7 +392,7 @@ async function openText() {
               <path d="M5 10a7 7 0 0 0 14 0" />
               <line x1="12" y1="19" x2="12" y2="22" />
             </svg>
-            <span class="win-mic-label">{{ recordingSession.status === 'paused' ? '继续听写' : '暂停听写' }}</span>
+            <span class="win-mic-label">{{ !movingCursor && recordingSession.status === 'paused' ? '继续听写' : '暂停听写' }}</span>
           </button>
 
           <button
@@ -395,55 +423,57 @@ async function openText() {
             title="结束听写"
             @click="action(() => d.stop(recordingSession!.id))"
           >
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-              <rect x="5" y="5" width="14" height="14" rx="2" />
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2.5" />
             </svg>
             <span class="sr-only">结束听写</span>
           </button>
         </div>
 
-        <!-- Pill Actions Row -->
+        <!-- Actions Row -->
         <div class="dictation-dock__actions">
           <button
             type="button"
-            class="win-chip-btn"
+            class="win-chip-btn win-action-btn"
             :disabled="!recordingSession.draft_text"
-            title="复制已完成正文"
+            title="复制正文"
+            aria-label="复制正文"
             @click="copy"
           >
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
             </svg>
-            <span>复制正文</span>
+            <span class="sr-only">复制正文</span>
           </button>
           <button
             type="button"
-            class="win-chip-btn"
-            title="前往正文视图"
+            class="win-chip-btn win-action-btn"
+            title="正文"
+            aria-label="正文"
             @click="openText"
           >
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
               <polyline points="14 2 14 8 20 8"/>
               <line x1="16" y1="13" x2="8" y2="13"/>
               <line x1="16" y1="17" x2="8" y2="17"/>
             </svg>
-            <span>正文</span>
+            <span class="sr-only">正文</span>
           </button>
           <button
             type="button"
-            class="win-chip-btn win-chip-btn--danger"
-            title="取消本次会话的后续整理"
+            class="win-chip-btn win-chip-btn--danger win-action-btn"
+            title="取消后续处理"
+            aria-label="取消后续处理"
             @click="action(() => d.cancel(recordingSession!.id))"
           >
-            取消后续处理
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9"/>
+              <line x1="5.6" y1="5.6" x2="18.4" y2="18.4"/>
+            </svg>
+            <span class="sr-only">取消后续处理</span>
           </button>
-        </div>
-
-        <!-- Audio Volume Meter (Active when listening) -->
-        <div v-if="capturing" class="dictation-dock__meter-wrap">
-          <meter min="0" max="1" :value="level" aria-label="活动麦克风音量" />
         </div>
 
         <!-- Extra Details Tray (Toggled by Settings Gear) -->
@@ -457,6 +487,10 @@ async function openText() {
             <span>当前输入：</span>
             <span>{{ captureLabel || '默认音频流' }}</span>
           </div>
+          <div v-if="['paused','pausing'].includes(recordingSession.status)" class="dictation-dock__details-row text-muted">
+            <span>会话状态：</span>
+            <span>暂停保留名额，不占 GPU</span>
+          </div>
         </div>
 
         <!-- Upload Progress -->
@@ -468,11 +502,13 @@ async function openText() {
           <span> · 识别失败 {{ recordingSession.progress.asr_failed }} 段 · 整理 {{ recordingSession.progress.cleanup_done }}/{{ recordingSession.progress.cleanup_total }} · 整理失败 {{ recordingSession.progress.cleanup_failed }} 段</span>
         </div>
 
+        <p v-if="recordingSession.status === 'waiting'" class="dictation-dock__note">文件已保留，无需重新上传。<button type="button" :disabled="!!d.fileAction.value" @click="action(() => d.fileControl(recordingSession!.id, 'resume'))">重试开始转写</button></p>
+        <p v-if="recordingSession.utterances.some(u => u.status === 'finalizing' && u.asr_queue_state !== 'running')" class="dictation-dock__note" role="status">正在等待共享识别 · 按会话轮转</p>
+
         <!-- Warnings & Alerts -->
         <p v-if="d.inputWarning.value && !localActive" class="dictation-dock__note" role="status">{{ d.inputWarning.value }}</p>
         <p v-if="connection" class="dictation-dock__note" role="status">{{ connection }}</p>
         <p v-if="error" class="dictation-dock__error" role="alert">{{ error }}</p>
-        <p v-if="['paused','pausing'].includes(recordingSession.status) || captureAction === 'resuming'" class="dictation-dock__note">暂停保留会话名额，不独占 GPU；其他用户仍可识别。关闭录音窗口或断网超过宽限期后会结束会话。</p>
       </template>
 
       <!-- Collapsed Quick Controls -->
@@ -481,18 +517,18 @@ async function openText() {
           type="button"
           class="win-collapsed-toggle"
           :class="{ 'is-listening': capturing }"
-          :disabled="!!captureAction || !!d.fileAction.value || !['listening','paused','draining'].includes(recordingSession.status) || (recordingSession.mode === 'live' && recordingSession.status === 'draining')"
-          :aria-label="recordingSession.status === 'paused' ? '继续听写' : '暂停听写'"
-          @click="action(recordingSession.mode === 'upload' ? () => d.fileControl(recordingSession!.id, recordingSession!.status === 'paused' ? 'resume' : 'pause') : recordingSession.status === 'paused' ? d.resume : d.pause)"
+          :disabled="(!movingCursor && (!!captureAction || !['listening','paused','draining'].includes(recordingSession.status))) || !!d.fileAction.value || (recordingSession.mode === 'live' && recordingSession.status === 'draining')"
+          :aria-label="!movingCursor && recordingSession.status === 'paused' ? '继续听写' : '暂停听写'"
+          @click="action(recordingSession.mode === 'upload' ? () => d.fileControl(recordingSession!.id, recordingSession!.status === 'paused' ? 'resume' : 'pause') : !movingCursor && recordingSession.status === 'paused' ? d.resume : d.pause)"
         >
-          <svg v-if="recordingSession.status === 'paused'" viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
+          <svg v-if="!movingCursor && recordingSession.status === 'paused'" viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
             <polygon points="6,4 20,12 6,20" />
           </svg>
           <svg v-else viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
             <rect x="6" y="4" width="4" height="16" rx="1" />
             <rect x="14" y="4" width="4" height="16" rx="1" />
           </svg>
-          <span>{{ recordingSession.status === 'paused' ? '继续' : '暂停' }}</span>
+          <span>{{ !movingCursor && recordingSession.status === 'paused' ? '继续' : '暂停' }}</span>
         </button>
       </div>
     </section>
@@ -507,14 +543,14 @@ async function openText() {
   --win-dock-shadow: 0 16px 36px rgba(45, 42, 38, 0.12), 0 3px 10px rgba(45, 42, 38, 0.04);
   --win-mic-bg: #ffffff;
   --win-mic-border: #dcdad3;
-  --win-mic-color: #62646f;
+  --win-mic-color: #2d3139;
   --win-mic-active-bg: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
   --win-mic-active-color: #ffffff;
   --win-mic-active-glow: 0 8px 24px rgba(79, 70, 229, 0.42), 0 2px 6px rgba(79, 70, 229, 0.25);
   --win-mic-shadow: 0 4px 12px rgba(45, 42, 38, 0.08), 0 1px 3px rgba(45, 42, 38, 0.04);
   --win-side-bg: #f5f4ef;
   --win-side-border: #dcdad3;
-  --win-side-color: #555761;
+  --win-side-color: #374151;
   --win-chip-bg: #ffffff;
   --win-chip-border: #dcdad3;
   --win-handle-bg: rgba(90, 88, 85, 0.32);
@@ -528,7 +564,7 @@ async function openText() {
   --win-dock-shadow: 0 18px 44px rgba(0, 0, 0, 0.55), 0 3px 10px rgba(0, 0, 0, 0.3);
   --win-mic-bg: #2a2b30;
   --win-mic-border: rgba(255, 255, 255, 0.12);
-  --win-mic-color: #a1a2af;
+  --win-mic-color: #f1f2f6;
   --win-mic-active-bg: linear-gradient(135deg, #818cf8 0%, #6366f1 100%);
   --win-mic-active-color: #ffffff;
   --win-mic-active-glow: 0 8px 24px rgba(99, 102, 241, 0.5), 0 2px 8px rgba(99, 102, 241, 0.3);
@@ -552,9 +588,9 @@ async function openText() {
   bottom: 16px;
   left: calc(240px + (100vw - 240px) / 2);
   transform: translateX(-50%);
-  width: 310px;
-  max-width: calc(100vw - 24px);
-  padding: 6px 14px 14px;
+  width: 236px;
+  max-width: calc(100vw - 16px);
+  padding: 4px 10px 10px;
   background: var(--win-dock-bg);
   backdrop-filter: blur(24px) saturate(160%);
   -webkit-backdrop-filter: blur(24px) saturate(160%);
@@ -563,17 +599,23 @@ async function openText() {
   box-shadow: var(--win-dock-shadow);
   user-select: none;
   box-sizing: border-box;
+  touch-action: none;
+  cursor: grab;
   transition: box-shadow var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out);
 }
 
 .dictation-dock.is-dragging {
-  box-shadow: 0 22px 50px rgba(45, 42, 38, 0.22), 0 4px 12px rgba(45, 42, 38, 0.08);
+  box-shadow: 0 20px 44px rgba(45, 42, 38, 0.22), 0 4px 12px rgba(45, 42, 38, 0.08);
+  cursor: grabbing !important;
+}
+
+.dictation-dock.is-dragging * {
   cursor: grabbing !important;
 }
 
 .dictation-dock.is-collapsed {
-  width: 250px;
-  padding: 4px 12px 10px;
+  width: 190px;
+  padding: 4px 10px 8px;
 }
 
 /* Top Drag Handle Bar */
@@ -581,24 +623,28 @@ async function openText() {
   display: flex;
   justify-content: center;
   align-items: center;
-  height: 14px;
-  cursor: grab;
-  padding: 2px 0 6px;
+  height: 12px;
+  padding: 1px 0 3px;
   touch-action: none;
+  pointer-events: none;
 }
 
 .dictation-dock__handle {
-  width: 36px;
+  width: 44px;
   height: 4px;
   border-radius: 999px;
   background: var(--win-handle-bg);
   transition: background var(--motion-fast) var(--ease-out), width var(--motion-fast) var(--ease-out);
 }
 
-.dictation-dock__drag-bar:hover .dictation-dock__handle,
+.dictation-dock__drag-bar.is-active .dictation-dock__handle {
+  background: var(--primary, #6366f1);
+}
+
+.dictation-dock:hover .dictation-dock__handle,
 .dictation-dock.is-dragging .dictation-dock__handle {
   background: var(--primary, #4f46e5);
-  width: 44px;
+  width: 52px;
 }
 
 /* Header & Status Row */
@@ -606,9 +652,8 @@ async function openText() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 2px 0 6px;
-  border-bottom: 1px solid var(--win-divider);
+  gap: 6px;
+  padding: 1px 2px 2px;
 }
 
 .dictation-dock__title-group {
@@ -616,16 +661,6 @@ async function openText() {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  flex: 1;
-}
-
-.dictation-dock__title-group strong {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .dictation-dock__signal {
@@ -633,38 +668,50 @@ async function openText() {
   align-items: center;
   justify-content: center;
   width: 12px;
-  font-size: 10px;
+  height: 12px;
   color: var(--text-muted);
   transition: color var(--motion-fast);
 }
 
 .dictation-dock__signal.is-on {
-  color: var(--color-success, #18784a);
-  text-shadow: 0 0 6px rgba(24, 120, 74, 0.45);
+  color: var(--color-success, #10b981);
+}
+
+.dictation-dock__signal.is-paused {
+  color: #f97316;
+}
+
+.dictation-dock__dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
 }
 
 .dictation-dock__time {
   font-size: 12px;
-  font-weight: 500;
-  color: var(--text-secondary);
+  font-weight: 600;
+  color: var(--text-primary);
   font-variant-numeric: tabular-nums;
-  margin-left: auto;
   padding: 1px 6px;
   background: var(--win-tray-bg);
-  border-radius: 4px;
+  border-radius: 5px;
+  line-height: 1.25;
 }
 
 .win-header-btn {
   background: transparent;
   border: none;
   cursor: pointer;
-  padding: 2px 6px;
-  font-size: 12px;
+  touch-action: manipulation;
+  padding: 3px;
   color: var(--text-secondary);
   border-radius: 6px;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  justify-content: center;
   transition: all var(--motion-fast) var(--ease-out);
 }
 
@@ -673,25 +720,37 @@ async function openText() {
   color: var(--text-primary);
 }
 
-/* Hero Controls Trio (Win+H Style: Left Settings, Center Mic, Right Stop) */
+.win-chevron-icon {
+  width: 14px;
+  height: 14px;
+  display: block;
+  transition: transform var(--motion-fast) var(--ease-out);
+}
+
+.win-chevron-icon.is-collapsed {
+  transform: rotate(180deg);
+}
+
+/* Hero Controls Trio (Left Settings, Center Mic, Right Stop) */
 .dictation-dock__hero {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 24px;
-  padding: 14px 0 8px;
+  gap: 14px;
+  padding: 4px 0 6px;
 }
 
 /* Center Hero Mic Button */
 .win-mic-btn {
   position: relative;
-  width: 58px;
-  height: 58px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  touch-action: manipulation;
   border: 1px solid var(--win-mic-border);
   outline: none;
   background: var(--win-mic-bg);
@@ -730,7 +789,7 @@ async function openText() {
 .win-mic-btn.is-listening::before {
   content: "";
   position: absolute;
-  inset: -7px;
+  inset: -6px;
   border-radius: 50%;
   border: 2px solid var(--primary, #4f46e5);
   opacity: 0.45;
@@ -750,8 +809,8 @@ async function openText() {
 }
 
 .win-mic-icon {
-  width: 27px;
-  height: 27px;
+  width: 22px;
+  height: 22px;
   position: relative;
   z-index: 2;
   transition: transform var(--motion-fast);
@@ -763,7 +822,7 @@ async function openText() {
 
 .win-mic-pulse {
   position: absolute;
-  inset: -6px;
+  inset: -5px;
   border-radius: 50%;
   background: radial-gradient(circle, rgba(79, 70, 229, 0.35) 0%, rgba(79, 70, 229, 0) 72%);
   pointer-events: none;
@@ -787,18 +846,19 @@ async function openText() {
 
 /* Flanking Buttons (Settings & Stop) */
 .win-side-btn {
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  touch-action: manipulation;
   border: 1px solid var(--win-side-border);
   outline: none;
   background: var(--win-side-bg);
   color: var(--win-side-color);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
   transition: all var(--motion-fast) var(--ease-out);
 }
 
@@ -830,28 +890,29 @@ async function openText() {
   border-color: var(--primary, #4f46e5);
 }
 
-/* Pill Actions Row */
+/* Actions Row - Equal 3 pill buttons */
 .dictation-dock__actions {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin-top: 6px;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 2px;
 }
 
 .win-chip-btn {
+  flex: 1;
+  height: 32px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 4px 10px;
-  border-radius: 999px;
+  justify-content: center;
+  padding: 0;
+  border-radius: 10px;
   background: var(--win-chip-bg);
-  color: var(--text-primary);
+  color: var(--win-side-color, #4b5563);
   border: 1px solid var(--win-chip-border);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   cursor: pointer;
+  touch-action: manipulation;
   transition: all var(--motion-fast) var(--ease-out);
 }
 
@@ -859,6 +920,11 @@ async function openText() {
   background: var(--primary-alpha-10, #eeedff);
   border-color: var(--primary, #4f46e5);
   color: var(--primary, #4f46e5);
+  transform: translateY(-1px);
+}
+
+.win-chip-btn:active:not(:disabled) {
+  transform: scale(0.96);
 }
 
 .win-chip-btn--danger:hover:not(:disabled) {
@@ -868,7 +934,7 @@ async function openText() {
 }
 
 .win-chip-btn:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: not-allowed;
 }
 
@@ -876,12 +942,12 @@ async function openText() {
 .dictation-dock__meter-wrap {
   display: flex;
   justify-content: center;
-  margin-top: 8px;
+  margin-top: 6px;
 }
 
 .dictation-dock meter {
-  width: 90px;
-  height: 6px;
+  width: 80px;
+  height: 5px;
   border-radius: 999px;
   overflow: hidden;
 }
@@ -891,20 +957,21 @@ async function openText() {
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-top: 6px;
+  margin-top: 4px;
 }
 
 .win-collapsed-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 5px;
+  font-size: 11px;
   font-weight: 500;
-  padding: 4px 12px;
+  padding: 3px 10px;
   border-radius: 999px;
   background: var(--win-chip-bg);
   border: 1px solid var(--win-chip-border);
   cursor: pointer;
+  touch-action: manipulation;
   color: var(--text-primary);
   transition: all var(--motion-fast);
 }
@@ -924,11 +991,11 @@ async function openText() {
 
 /* Details Tray & Notes */
 .dictation-dock__details-tray {
-  margin-top: 8px;
-  padding: 8px 10px;
+  margin-top: 6px;
+  padding: 6px 8px;
   background: var(--win-tray-bg);
   border-radius: 8px;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
 }
 
@@ -936,8 +1003,8 @@ async function openText() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 4px;
+  gap: 6px;
+  margin-bottom: 3px;
 }
 
 .dictation-dock__details-row:last-child {
@@ -950,15 +1017,15 @@ async function openText() {
   color: var(--primary);
   cursor: pointer;
   padding: 0;
-  font-size: 12px;
+  font-size: 11px;
   text-decoration: underline;
 }
 
 .dictation-dock__note,
 .dictation-dock__error {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
-  margin: 6px 0 0;
+  margin: 4px 0 0;
   overflow-wrap: anywhere;
   text-align: center;
 }
@@ -967,13 +1034,13 @@ async function openText() {
   color: var(--color-error);
   font-weight: 500;
   background: var(--color-error-bg);
-  padding: 4px 8px;
-  border-radius: 6px;
+  padding: 3px 6px;
+  border-radius: 5px;
 }
 
 .dictation-dock__local + .dictation-dock__live {
-  margin-top: 12px;
-  padding-top: 12px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid var(--win-divider);
 }
 

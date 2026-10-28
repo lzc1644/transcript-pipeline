@@ -1,15 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { NButton } from "naive-ui";
-import { Annotation, Compartment, EditorState, StateEffect, StateField, Text, Transaction, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType, keymap, placeholder } from "@codemirror/view";
+import { Annotation, Compartment, EditorState, StateEffect, Text, Transaction, type Extension } from "@codemirror/state";
+import { EditorView, keymap, placeholder } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, isolateHistory, undo, redo } from "@codemirror/commands";
 import { unifiedMergeView } from "@codemirror/merge";
 import type { DictationDocument } from "../composables/dictationDocument";
 
 const props = defineProps<{
   buffer: DictationDocument;
-  insertionPosition?: number;
   listening?: boolean;
   partialText: string;
   showStart?: boolean;
@@ -35,34 +34,11 @@ const statusText = computed(() => ({
 }[props.buffer.status.value]));
 
 const external = Annotation.define<boolean>();
-const anchorEffect = StateEffect.define<number | null>();
 const editingMode = new Compartment();
 function editable(readOnly: boolean) {
   const locked = readOnly || !!props.starting;
   return [EditorState.readOnly.of(locked), EditorView.editable.of(!locked)];
 }
-
-class VoiceAnchor extends WidgetType {
-  toDOM() {
-    const span = document.createElement("span");
-    span.className = "dictation-insertion-anchor";
-    span.title = "听写插入位置 · 暂停后定位，再继续可换位置";
-    span.setAttribute("aria-label", "听写插入位置");
-    return span;
-  }
-}
-
-const anchorField = StateField.define<number | null>({
-  create: () => null,
-  update(value, tr) {
-    let next = value === null ? null : tr.changes.mapPos(value, 1);
-    for (const effect of tr.effects) if (effect.is(anchorEffect)) next = effect.value;
-    return next;
-  },
-  provide: field => EditorView.decorations.from(field, value => (
-    value === null ? Decoration.none : Decoration.set([Decoration.widget({ widget: new VoiceAnchor(), side: 1 }).range(value)])
-  )),
-});
 
 let view: EditorView | undefined;
 let bodyState: EditorState | undefined;
@@ -72,7 +48,7 @@ let showing = "body";
 let follow = true;
 
 function position() {
-  return Math.min(props.insertionPosition ?? props.buffer.text.value.length, props.buffer.text.value.length);
+  return Math.min(props.buffer.cursor, props.buffer.text.value.length);
 }
 
 function extensions(readOnly = false, label = "正文编辑器"): Extension[] {
@@ -90,20 +66,21 @@ function extensions(readOnly = false, label = "正文编辑器"): Extension[] {
       ...historyKeymap,
       ...defaultKeymap,
     ]),
-    anchorField,
     editingMode.of(editable(readOnly)),
     EditorView.contentAttributes.of({
       "aria-label": readOnly ? (mode.value === "diff" ? "整理修改差异" : "原稿") : label,
       "spellcheck": "false",
     }),
-    placeholder("在这里输入，或开始听写。Enter 换段；暂停后定位，再继续可在文中插入。"),
+    placeholder("在这里输入，或开始听写。Enter 换段；听写跟随当前光标。"),
     EditorView.updateListener.of(update => {
       if (update.docChanged && !update.transactions.every(tr => tr.annotation(external))) {
         if (showing === "body") props.buffer.local(update.changes);
         else if (showing === "preview") props.buffer.editPreview(update.state.doc.toString());
       }
       if (showing === "body" && (update.selectionSet || update.docChanged)) {
-        props.buffer.cursor = update.state.selection.main.to;
+        const cursor = update.state.selection.main.to;
+        if (update.transactions.some(tr => !tr.annotation(external))) props.buffer.placeCursor(cursor, update.docChanged);
+        else props.buffer.cursor = cursor;
       }
     }),
     EditorView.domEventHandlers({
@@ -150,7 +127,6 @@ function display() {
   if (!preview.value) {
     showing = "body";
     view.setState(bodyState!);
-    view.dispatch({ effects: anchorEffect.of(props.listening ? position() : null) });
   } else if (mode.value === "result") {
     showing = "preview";
     previewState ??= createState(preview.value.text, [], false, "整理预览编辑器");
@@ -179,14 +155,19 @@ function connect() {
   const previous = props.buffer.editorState;
   bodyState = previous?.doc.toString() === props.buffer.text.value
     ? previous.update({ effects: StateEffect.reconfigure.of(extensions()) }).state
-    : createState(props.buffer.text.value);
+    : createState(props.buffer.text.value).update({ selection: { anchor: props.buffer.cursor } }).state;
   previewState = undefined;
   showing = "body";
   view?.setState(bodyState);
-  unsubscribe = props.buffer.subscribe((changes, kind) => {
+  unsubscribe = props.buffer.subscribe((changes, kind, advanceCursor) => {
     const target = showing === "body" ? view!.state : bodyState!;
+    const insertion = target.selection.main.to;
+    // A current-turn insertion advances the one real caret, including an
+    // insertion at a selection's end. Old-turn results only map the selection.
+    const advance = advanceCursor && changes.touchesRange(insertion, insertion);
     const transaction = target.update({
       changes,
+      selection: advance ? { anchor: changes.mapPos(insertion, 1) } : undefined,
       // A non-history replacement erases the inverse of the original speech
       // insertion. Keep cleanup as a separate undo step, followed by speech.
       annotations: [external.of(true), Transaction.addToHistory.of(["speech", "cleanup", "apply"].includes(kind)), isolateHistory.of("full")],
@@ -235,9 +216,6 @@ watch(mode, display);
 watch(() => props.starting, () => {
   view?.dispatch({ effects: editingMode.reconfigure(editable(showing === "readonly")) });
 });
-watch(() => [props.insertionPosition, props.listening], () => {
-  if (showing === "body") view?.dispatch({ effects: anchorEffect.of(props.listening ? position() : null) });
-});
 
 onMounted(() => {
   view = new EditorView({ parent: host.value, state: createState(props.buffer.text.value) });
@@ -262,9 +240,9 @@ onBeforeUnmount(() => {
         <n-button size="tiny" quaternary :disabled="starting || (!!preview && mode !== 'result')" @click="view && undo(view)">撤销</n-button>
         <n-button size="tiny" quaternary :disabled="starting || (!!preview && mode !== 'result')" @click="view && redo(view)">重做</n-button>
         <n-button size="tiny" quaternary title="将选中文本加入常用术语库" @click="addTerm">存为术语</n-button>
-        <n-button v-if="listening && !preview" size="tiny" quaternary aria-label="回到听写位置" @click="backToVoice">
-          <span class="voice-return-long">回到听写位置</span>
-          <span class="voice-return-short">听写位置</span>
+        <n-button v-if="listening && !preview" size="tiny" quaternary aria-label="回到光标" @click="backToVoice">
+          <span class="voice-return-long">回到光标</span>
+          <span class="voice-return-short">光标</span>
         </n-button>
       </div>
     </header>
@@ -653,21 +631,6 @@ onBeforeUnmount(() => {
   background: var(--surface-raised);
   padding: 2px 6px;
   border-radius: 4px;
-}
-
-:deep(.dictation-insertion-anchor) {
-  display: inline-block;
-  width: 0;
-  height: 1.25em;
-  vertical-align: text-bottom;
-  border-left: 2px dashed var(--primary);
-  margin: 0 2px;
-  animation: anchor-pulse 1.2s infinite ease-in-out;
-}
-
-@keyframes anchor-pulse {
-  0%, 100% { opacity: 1; border-left-color: var(--primary); }
-  50% { opacity: 0.35; border-left-color: transparent; }
 }
 
 @media (max-width: 600px) {

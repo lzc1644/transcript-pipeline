@@ -4,7 +4,7 @@ import { PcmCapture, type CaptureSource } from "./dictationCapture";
 import { createLocalRecorder } from "./dictationDrafts";
 import { validateTerms } from "./dictationTerms";
 import { DictationPlayback } from "./dictationPlayback";
-import { createDictationDocuments, type DocumentOperation } from "./dictationDocument";
+import { createDictationDocuments, type DictationDocument, type DocumentOperation } from "./dictationDocument";
 
 export interface Utterance {
   id: string; revision: number; status: string; text: string; raw_text: string; preview: string;
@@ -43,12 +43,14 @@ function createDictationController() {
   const error = ref(""), connection = ref("");
   const busy = ref(false), cleanupScope = ref<string | null>(null);
   const level = ref(0), capturing = ref(false);
+  const movingCursor = ref(false);
   const captureAction = ref<"" | "starting" | "pausing" | "resuming" | "stopping">("");
   const active = computed(() => !!session.value && activeStates.includes(session.value.status));
   const recognizing = computed(() => !!recordingSession.value && activeStates.includes(recordingSession.value.status));
   const ownsCapture = computed(() => recognizing.value && recordingSession.value?.mode === "live");
   const partial = computed(() => session.value?.utterances.filter(u => ["partial", "finalizing", "asr_failed"].includes(u.status)) ?? []);
   const captureLabel = computed(() => {
+    if (movingCursor.value) return "正在切换输入位置 · 麦克风暂时关闭，请稍候再说";
     const labels = { starting: "正在准备麦克风与识别模型", pausing: "正在暂停 · 麦克风已关闭", resuming: "正在继续 · 等待麦克风与会话确认", stopping: "正在结束 · 麦克风已关闭" };
     if (captureAction.value) return labels[captureAction.value];
     const state = recordingSession.value;
@@ -92,7 +94,65 @@ function createDictationController() {
     }
     return response.json();
   }
-  const documents = createDictationDocuments(api);
+  const cursorQuietMs = 300;
+  let placement = 0, lastMovement = 0;
+  let continueAfterMove = false;
+  let movementWake: (() => void) | undefined;
+  const documents = createDictationDocuments(api, followCursor);
+  function cancelCursorMove() {
+    continueAfterMove = false;
+    movingCursor.value = false;
+    movementWake?.();
+  }
+  function followCursor(buffer: DictationDocument, edited = false) {
+    // A history/preview editor or another window has no recording token/lease.
+    if (disposed || buffer.id !== recording.token().id || buffer.preview.value || !ownsCapture.value
+        || (!capturing.value && !movingCursor.value && captureAction.value !== "resuming")) return;
+    // Even typing at the mapped anchor needs an audio boundary: a delayed
+    // save must not let newly captured speech commit before the typed text.
+    if (!edited && !buffer.voiceDetached && buffer.cursor === buffer.voicePosition) return;
+    placement++; lastMovement = Date.now(); buffer.voiceDetached = true;
+    movementWake?.();
+    if (captureAction.value === "resuming" && startingCapture === operation) {
+      // A caret move during worklet startup closes that same lease immediately.
+      void releaseAudio(true).catch(() => {});
+    }
+    if (movingCursor.value || captureAction.value) return;
+    if (!liveCapture.isOwner("live")) return;
+    movingCursor.value = true; continueAfterMove = true;
+    const generation = ++operation, token = recording.token();
+    captureAction.value = "pausing";
+    void (async () => {
+      let resuming = false;
+      try {
+        await pauseBoundary(generation);
+        if (generation !== operation || !continueAfterMove || disposed) return;
+        resuming = true;
+        await resumeAtCursor(generation, token, true);
+      } catch (cause) {
+        if (generation === operation) {
+          await releaseAudio(true).catch(() => {});
+          if (resuming && generation === operation && recordingSession.value?.status === "listening" && socket?.readyState === WebSocket.OPEN)
+            await pauseBoundary(generation).catch(() => {});
+          if (generation !== operation) return;
+          error.value = `输入位置未切换，麦克风保持关闭；请确认暂停后继续，或结束：${cause instanceof Error ? cause.message : String(cause)}`;
+        }
+      } finally {
+        if (generation === operation) { cancelCursorMove(); captureAction.value = ""; }
+      }
+    })();
+  }
+  async function settleCursor(buffer: DictationDocument, generation: number) {
+    // Stop immediately, but coalesce rapid clicks/arrow keys before reopening.
+    while (generation === operation && continueAfterMove && !disposed
+        && (buffer.composing || Date.now() - lastMovement < cursorQuietMs)) {
+      await new Promise<void>(resolve => {
+        const timer = buffer.composing ? undefined : setTimeout(() => done(), Math.max(1, cursorQuietMs - (Date.now() - lastMovement)));
+        const done = () => { clearTimeout(timer); movementWake = undefined; resolve(); };
+        movementWake = done;
+      });
+    }
+  }
   const enabling = new Set<string>();
   async function enableDocument(value: DictationSession) {
     if (value.editor_version === 1 || enabling.has(value.id)) return;
@@ -134,6 +194,7 @@ function createDictationController() {
     if (waiter?.expected === value.status) { const waiting = waiter; waiter = null; waiting.resolve(); }
     if (value.mode === "live" && (!activeStates.includes(value.status) || value.status === "draining")) {
       if (captureAction.value === "starting" || captureAction.value === "resuming") ++operation;
+      cancelCursorMove();
       failWaiter("会话已结束，不能继续采音");
       if (liveCapture.isOwner("live")) void releaseAudio(false).catch(cause => { error.value = String(cause); });
       captureAction.value = "";
@@ -190,15 +251,18 @@ function createDictationController() {
   async function beginCapture(generation: number, token: SelectionToken) {
     if (startingCapture === generation || !liveCapture.isOwner("live") || !liveCapture.prepared || !recording.current(token) || generation !== operation) return;
     startingCapture = generation;
-    const epoch = ++audioGeneration;
-    playback.stop();
-    await liveCapture.start("live", (pcm, volume) => {
-      if (disposed || epoch !== audioGeneration || !recording.current(token)) return;
-      level.value = Math.min(1, volume * 5); sendPCM(pcm);
-    });
-    if (generation !== operation || disposed || !recording.current(token)) return;
-    capturing.value = true; captureAction.value = "";
+    try {
+      const epoch = ++audioGeneration;
+      playback.stop();
+      await liveCapture.start("live", (pcm, volume) => {
+        if (disposed || epoch !== audioGeneration || !recording.current(token)) return;
+        level.value = Math.min(1, volume * 5); sendPCM(pcm);
+      });
+      if (generation !== operation || disposed || !recording.current(token)) return;
+      capturing.value = true; captureAction.value = "";
+    } finally { if (startingCapture === generation) startingCapture = -1; }
   }
+
   function connect(token: SelectionToken) {
     if (disposed || !recording.current(token)) return;
     const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -313,56 +377,87 @@ function createDictationController() {
       if (startBusyOwner === taskGeneration) { startBusyOwner = null; busy.value = false; }
     }
   }
+  async function pauseBoundary(generation: number) {
+    await releaseAudio(true);
+    if (generation !== operation || disposed) return;
+    const confirmed = waitForStatus("paused");
+    try { sendControl("pause"); } catch (cause) { failWaiter(String(cause)); }
+    await confirmed;
+  }
   async function pause() {
     if (!ownsCapture.value) throw new Error("请返回原录音窗口暂停；本窗口不拥有麦克风。");
-    if (captureAction.value || recordingSession.value?.status === "paused") return;
+    const wasMoving = movingCursor.value;
+    // Explicit pause wins even while an automatic pause has already started.
+    cancelCursorMove();
+    if (captureAction.value === "pausing") return;
+    if (captureAction.value && !(wasMoving && captureAction.value === "resuming")) return;
+    if (!captureAction.value && recordingSession.value?.status === "paused") return;
     const generation = ++operation;
-    captureAction.value = "pausing";
-    try {
-      await releaseAudio(true);
-      if (generation !== operation || disposed) return;
-      const confirmed = waitForStatus("paused");
-      try { sendControl("pause"); } catch (cause) { failWaiter(String(cause)); }
-      await confirmed;
-    } catch (cause) {
+    failWaiter(); captureAction.value = "pausing";
+    try { await pauseBoundary(generation); }
+    catch (cause) {
       if (generation === operation) error.value = `暂停未确认：${cause instanceof Error ? cause.message : String(cause)}`;
     } finally { if (generation === operation) captureAction.value = ""; }
+  }
+  async function resumeAtCursor(generation: number, token: SelectionToken, automatic = false) {
+    const buffer = documents.get(token.id!);
+    buffer.voiceDetached = true;
+    while (generation === operation && !disposed && (!automatic || continueAfterMove)) {
+      if (automatic) await settleCursor(buffer, generation);
+      if (generation !== operation || disposed || (automatic && !continueAfterMove)) return;
+      captureAction.value = "resuming";
+      if (buffer.preview.value || recordingSession.value?.document_suggestion) throw new Error("请先应用或放弃全文整理预览");
+      await buffer.flush();
+      // Saving can outlive an explicit pause/end. Never acquire a new lease
+      // after that action has invalidated this transition.
+      if (generation !== operation || disposed || (automatic && !continueAfterMove)) return;
+      playback.stop();
+      await liveCapture.prepare("live", deviceFailure);
+      if (disposed || generation !== operation) return;
+      const latest: DictationSession = await api(`/sessions/${token.id}`);
+      applyRecording(latest, token);
+      if (generation !== operation) return;
+      if (recordingSession.value?.status !== "paused") throw new Error("会话已停止或不再可恢复");
+      // Include edits made during permission/preparation, not its old snapshot.
+      if (automatic) await settleCursor(buffer, generation);
+      if (generation !== operation || disposed || (automatic && !continueAfterMove)) return;
+      await buffer.flush();
+      if (disposed || generation !== operation) return;
+      if (recordingSession.value?.status !== "paused") throw new Error("会话已停止或不再可恢复");
+      sequence = recordingSession.value.next_sequence; samples = recordingSession.value.samples; pending = [];
+      const target = placement;
+      const confirmed = waitForStatus("listening");
+      try { sendControl("resume", latest.editor_version === 1
+        ? { document_version: buffer.version, insertion_position: buffer.cursor } : {}); }
+      catch (cause) { failWaiter(String(cause)); }
+      await confirmed;
+      if (generation !== operation || disposed || (automatic && !continueAfterMove)) return;
+      if (target === placement && !buffer.composing) {
+        buffer.voiceDetached = false;
+        try { await beginCapture(generation, token); }
+        catch (cause) { if (target === placement) throw cause; }
+        if (generation !== operation || disposed) return;
+        if (target === placement && !buffer.composing) return;
+      }
+      // A move while resume was in flight cannot start at its obsolete target.
+      // No audio has to be guessed or moved between turns: close and rebind.
+      buffer.voiceDetached = true; captureAction.value = "pausing";
+      await pauseBoundary(generation);
+    }
   }
   async function resume() {
     if (!ownsCapture.value) throw new Error("请返回原录音窗口继续；本窗口不能取得原窗口的采音所有权。");
     if (captureAction.value || recordingSession.value?.status !== "paused") return;
     const generation = ++operation, token = recording.token();
     captureAction.value = "resuming"; error.value = "";
-    try {
-      const buffer = documents.get(token.id!);
-      if (buffer.preview.value || recordingSession.value?.document_suggestion) throw new Error("请先应用或放弃全文整理预览");
-      await buffer.flush();
-      playback.stop();
-      await liveCapture.prepare("live", deviceFailure);
-      if (disposed || generation !== operation) return;
-      const latest: DictationSession = await api(`/sessions/${token.id}`);
-      applyRecording(latest, token);
-      if (generation !== operation || latest.status !== "paused") throw new Error("会话已停止或不再可恢复");
-      // Microphone permission/preparation can take seconds. Edits made during
-      // that wait must reach the server before we bind the new voice anchor.
-      await buffer.flush();
-      if (disposed || generation !== operation || recordingSession.value?.status !== "paused")
-        throw new Error("会话已停止或不再可恢复");
-      sequence = latest.next_sequence; samples = latest.samples; pending = [];
-      const confirmed = waitForStatus("listening");
-      try { sendControl("resume", latest.editor_version === 1
-        ? { document_version: buffer.version, insertion_position: buffer.cursor } : {}); }
-      catch (cause) { failWaiter(String(cause)); }
-      await confirmed;
-      if (generation === operation && !disposed) await beginCapture(generation, token);
-    } catch (cause) {
+    try { await resumeAtCursor(generation, token); }
+    catch (cause) {
       if (generation === operation) {
         await releaseAudio(true).catch(() => {});
-        // If resume reached the server but local startup failed, restore a real pause.
-        if (["listening"].includes(recordingSession.value?.status ?? "") && socket?.readyState === WebSocket.OPEN) {
-          const confirmed = waitForStatus("paused"); sendControl("pause");
-          await confirmed.catch(() => {});
+        if (generation === operation && ["listening"].includes(recordingSession.value?.status ?? "") && socket?.readyState === WebSocket.OPEN) {
+          await pauseBoundary(generation).catch(() => {});
         }
+        if (generation !== operation) return;
         error.value = `未能继续：${cause instanceof Error ? cause.message : String(cause)}`;
       }
     } finally { if (generation === operation) captureAction.value = ""; }
@@ -376,6 +471,7 @@ function createDictationController() {
     }
     if (captureAction.value === "stopping") return;
     const owned = id === recording.token().id;
+    cancelCursorMove();
     const generation = ++operation;
     failWaiter(); captureAction.value = "stopping";
     try {
@@ -399,7 +495,7 @@ function createDictationController() {
       if (id === selection.token().id) applyView(state);
       return;
     }
-    ++operation; failWaiter(); captureAction.value = "stopping";
+    cancelCursorMove(); ++operation; failWaiter(); captureAction.value = "stopping";
     if (recordingSession.value?.mode === "live") await releaseAudio(false).catch(cause => { error.value = String(cause); });
     try {
       if (id) {
@@ -501,7 +597,7 @@ function createDictationController() {
   }
   async function remove(id: string) {
     if (recording.token().id === id && recognizing.value) {
-      ++operation; failWaiter(); if (recordingSession.value?.mode === "live") await releaseAudio(false);
+      cancelCursorMove(); ++operation; failWaiter(); if (recordingSession.value?.mode === "live") await releaseAudio(false);
     }
     await api(`/sessions/${id}`, { method: "DELETE" });
     if (selection.token().id === id) choose(null);
@@ -563,7 +659,7 @@ function createDictationController() {
   }
   function deviceChanged() { void updateDevices().catch(() => {}); }
   navigator.mediaDevices?.addEventListener("devicechange", deviceChanged);
-  function unload() { ++creation; ++operation; playback.stop(); local.interrupt(); void audio.stop("probe", false); uploading?.abort(); failWaiter(); socket?.close(); void releaseAudio(false); }
+  function unload() { cancelCursorMove(); ++creation; ++operation; playback.stop(); local.interrupt(); void audio.stop("probe", false); uploading?.abort(); failWaiter(); socket?.close(); void releaseAudio(false); }
   window.addEventListener("pagehide", unload);
   const pollTimer = setInterval(() => {
     inputWarning.value = ((capturing.value && liveCapture.silentSeconds >= 5) || (local.capturing.value && audio.silentSeconds >= 5)) ? "麦克风持续5秒无明显输入，请检查设备静音、连接和输入音量。" : "";
@@ -576,7 +672,7 @@ function createDictationController() {
     navigator.mediaDevices?.removeEventListener("devicechange", deviceChanged);
   });
   return { session, recordingSession, documents, discardPreview, local, playback, selectedDeviceId, microphoneDevices, deviceBusy, inputWarning, listMicrophones, chooseMicrophone, fileAction, fileControl, uploadProgress, uploadUncertain, cancelUpload, confirmUploadChecked, history, error, busy, cleanupScope, level, connection, capturing,
-    captureAction, captureLabel, active, recognizing, ownsCapture, partial, start, pause, resume, stop, cancel, upload,
+    captureAction, captureLabel, movingCursor, active, recognizing, ownsCapture, partial, start, pause, resume, stop, cancel, upload,
     select, showRecording, refresh, loadHistory, serverConfig, loadConfig, edit, editDraft, cleanup, remove, probeMicrophone, cancelMicrophoneProbe };
 }
 export type DictationController = ReturnType<typeof createDictationController>;

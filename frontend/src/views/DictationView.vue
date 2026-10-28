@@ -138,7 +138,6 @@ const states: Record<string, string> = {
   partial: '临时识别',
 };
 
-const insertionPosition = computed(() => session.value?.dictation_turns?.at(-1)?.position);
 const partialText = computed(() => partial.value.map(u => {
   if (u.status === 'asr_failed') return '分句识别失败，预览未写入正文；可在识别记录回听。';
   if (u.status === 'finalizing') return `${u.asr_queue_state === 'running' ? '正在最终识别' : '正在等待共享识别'}：${u.preview}`;
@@ -526,7 +525,6 @@ onBeforeUnmount(() => {
           v-if="!session || session.editor_version === 1"
           :key="buffer.id"
           :buffer="buffer"
-          :insertion-position="insertionPosition"
           :listening="active"
           :partial-text="partialText"
           :show-start="!active"
@@ -597,7 +595,7 @@ onBeforeUnmount(() => {
             </n-button>
           </div>
         </template>
-        <span v-else class="control-phase">暂停 → 定位 → 继续，可换听写位置；录音由常驻面板控制。</span>
+        <span v-else class="control-phase">听写跟随当前光标；切换位置时稍候，显示「正在听音」后再说。</span>
 
         <n-button v-if="session" text size="small" :aria-expanded="recordsOpen" @click="recordsOpen = !recordsOpen">
           识别记录（{{ session.utterances.length }}）

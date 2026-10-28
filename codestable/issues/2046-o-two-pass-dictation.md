@@ -8,6 +8,8 @@ created: 2026-10-21
 
 # 网页双遍语音输入
 
+> 光标合同更新（2026-10-28）：下文历史记录中的独立听写插入标记与「暂停 → 定位 → 继续」操作已由 [2054 单光标听写](2054-x-ff-unified-dictation-cursor.md) 替代。当前正文和听写共用编辑光标，移位边界由原录音 controller 自动协调；本事项及尚未完成的真实设备／质量验收继续保持 open。
+
 ## 目标和授权
 
 用户批准独立语音输入模块 A→B→C→D，持续推进到完整交付。CPU INT8 Streaming Paraformer 中英预览，GPU Qwen3-ASR 0.6B 完整短句最终识别（不加载 ForcedAligner），GPT-6 Luna `none` 轻度整理。普通页和紧凑视图共用会话；录音上传、历史、人工编辑、复制、TXT 下载、重试整理及删除。不同于现有 SeACo Paraformer，不改旧流水线默认模型、阶段 6 提示词和中间 JSON。
