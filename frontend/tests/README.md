@@ -34,6 +34,8 @@ DICTATION_TEST_CHROMIUM=/path/to/chrome-headless-shell npm --prefix frontend run
 
 此用例自行启动隔离的 Python API（8027）与 Vite（5177），数据和截图写入新的 `tmp/dictation-notebook-<timestamp>/`；可用 `DICTATION_TEST_OUTPUT` 指定新目录。使用真实 CodeMirror、HTTP 和文件保存；语音／整理结果为确定性 fixture。启动／布局检查使用 Chromium 虚拟麦克风，不访问物理设备、GPU 或远端模型，不连接／重启当前服务。`dictation-layout.mjs` 保留为该用例的兼容入口，无需重复执行。
 
+同一轮使用 `http://dictation-http.test` 检查普通内网 HTTP 兼容性：浏览器实际处于非安全上下文，未注入 `randomUUID` 或伪装为 localhost。覆盖旧任务页渲染、历史稿转换与编辑、自动保存／刷新／TXT 下载，以及拒绝采音后仍可导入音频；上传检查实际 XHR 字节和参数，响应使用 fixture，不启动 ASR。`http-capabilities.json` 记录浏览器能力和操作 ID；其余 localhost 场景继续检查安全上下文与原生 UUID 路径。
+
 覆盖听写默认模型／思考强度、恢复默认及已保存的手动选项刷新保留；正文输入／emoji／撤销、在途编辑与后台插入合并、双 pending 冲突不污染恢复副本、失败刷新恢复、双窗口同步、不抢选区和滚动、同区整理候选的编辑／应用／撤销／过期拒绝，以及1159×756和390px深色布局。空白编辑区直接启动、听写前后正文高度、浮动面板原尺寸及拖曳后编辑器高度不变，也在同一场景内检查。临时识别使用超长中文和无空格URL，检查两行限高、栏内纵向滚动，以及375×667手机上正文和页面都没有横向溢出。
 
 `dictation.mjs` 和 `dictation-proofreading.mjs` 的编辑／回听入口已跟随新 UI 更新；前者仍需显式费用授权，后者会使用实际ASR。它们不是上面这项免模型回归的一部分；真实短录音、中文输入法和本人设备效果由使用者另行验收。

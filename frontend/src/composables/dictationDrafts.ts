@@ -1,4 +1,5 @@
 import { computed, ref } from "vue";
+import { createDictationId } from "./dictationId";
 import type { PcmCapture } from "./dictationCapture";
 
 const RATE = 16000, BLOCK_SAMPLES = RATE, MAX_PENDING = RATE * 5;
@@ -215,7 +216,7 @@ export function createLocalRecorder(audio: PcmCapture, canCapture: () => boolean
   }
   async function begin(id?: string) {
     if (busy.value || capturing.value || submittingId.value || !canCapture() || (active.value && draft.value?.id !== id)) throw new Error("请先结束另一项网页采音或等待提交完成");
-    busy.value = true; const generation = ++operation, target = id ?? crypto.randomUUID(); error.value = ""; clearPlayback();
+    busy.value = true; const generation = ++operation, target = id ?? createDictationId(); error.value = ""; clearPlayback();
     try {
       if (!await claimRecording(target, generation)) return;
       const config = await fetch("/api/dictation/config").then(r => { if (!r.ok) throw new Error("无法读取录音限制，请检查连接后重试"); return r.json(); });

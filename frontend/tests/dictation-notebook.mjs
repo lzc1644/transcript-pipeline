@@ -2,7 +2,7 @@
 // not model quality or physical microphone evidence.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, open, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 const root = resolve(import.meta.dirname, '../..');
@@ -30,9 +30,99 @@ try {
       window.notebookView = () => m.EditorView.findFromDOM(document.querySelector('.cm-editor'));
     });
   }, base);
+  // Use a genuinely untrusted HTTP origin. localhost is a secure context and
+  // would hide missing secure-context-only APIs such as crypto.randomUUID.
+  const httpOrigin = 'http://dictation-http.test';
+  const httpContext = await browser.newContext({ viewport: { width:1159, height:756 } });
+  await httpContext.addInitScript(origin => {
+    if (location.origin !== origin) return;
+    import('/node_modules/.vite/deps/@codemirror_view.js').then(m => {
+      window.notebookView = () => m.EditorView.findFromDOM(document.querySelector('.cm-editor'));
+    });
+  }, httpOrigin);
+  await httpContext.route(`${httpOrigin}/**`, async route => {
+    const url = new URL(route.request().url()), isAPI = url.pathname.startsWith('/api/');
+    const target = isAPI ? api : base;
+    const response = await route.fetch({ url:target + url.pathname + url.search,
+      headers:{ ...route.request().headers(), host:isAPI ? url.host : new URL(base).host } });
+    await route.fulfill({ response });
+  });
+  const httpPage = await httpContext.newPage();
+  httpPage.on('pageerror', error => errors.push(error.message));
+  const httpOperations = [], liveRequests = [];
+  httpPage.on('request', request => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === 'PATCH' && path.endsWith('/document')) httpOperations.push(request.postDataJSON().operation_id);
+    if (request.method() === 'POST' && path === '/api/dictation/sessions') liveRequests.push(request.url());
+  });
+  await httpPage.goto(`${httpOrigin}/jobs`);
+  await httpPage.getByRole('heading', { name:'任务列表', exact:true, level:2 }).waitFor();
+  await httpPage.getByText('还没有任务记录。', { exact:true }).waitFor();
+  const httpCapabilities = await httpPage.evaluate(() => ({ secure:isSecureContext, uuid:typeof crypto.randomUUID,
+    randomValues:typeof crypto.getRandomValues, microphone:typeof navigator.mediaDevices?.getUserMedia, writer:window.name }));
+  assert.equal(httpCapabilities.secure, false);
+  assert.equal(httpCapabilities.uuid, 'undefined');
+  assert.equal(httpCapabilities.randomValues, 'function');
+  assert.equal(httpCapabilities.microphone, 'undefined');
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  assert(uuid.test(httpCapabilities.writer.replace('dictation-editor-', '')));
+  await httpPage.screenshot({ path:`${output}/http-jobs.png`, fullPage:true });
+  checks.push('ordinary LAN-like HTTP renders existing jobs page with isSecureContext=false and native randomUUID absent');
+
+  const httpSeed = await httpPage.evaluate(async () => (await fetch('/api/notebook-fixture/seed?legacy=true', {method:'POST'})).json());
+  await httpPage.goto(`${httpOrigin}/dictation?session=${httpSeed.id}`);
+  const httpEditor = httpPage.getByRole('textbox', { name:'正文编辑器', exact:true });
+  await httpEditor.waitFor();
+  const httpDocText = () => httpEditor.evaluate(() => window.notebookView().state.doc.toString());
+  assert.equal(await httpDocText(), httpSeed.draft_text);
+  await httpEditor.click(); await httpPage.keyboard.press('Control+Home'); await httpPage.keyboard.insertText('HTTP人工校订😀。\n');
+  await httpPage.getByRole('status').filter({hasText:/^已保存$/}).waitFor();
+  const httpText = await httpDocText();
+  assert.equal(httpText, 'HTTP人工校订😀。\n' + httpSeed.draft_text);
+  assert(httpOperations.length > 0 && httpOperations.every(id => uuid.test(id)));
+  const httpTXT = await httpPage.evaluate(async id => (await fetch(`/api/dictation/sessions/${id}/draft.txt`)).text(), httpSeed.id);
+  assert.equal(httpTXT, httpText);
+  await httpPage.reload(); await httpEditor.waitFor();
+  assert.equal(await httpDocText(), httpText);
+  assert.equal(await httpPage.evaluate(() => window.name), httpCapabilities.writer);
+  const [httpDownload] = await Promise.all([httpPage.waitForEvent('download'), httpPage.getByRole('button', {name:'下载 TXT',exact:true}).click()]);
+  assert.equal(await readFile(await httpDownload.path(), 'utf8'), httpText);
+  await httpPage.screenshot({ path:`${output}/http-history-editor.png`, fullPage:true });
+  checks.push('insecure HTTP converts legacy history, edits with UUID operation IDs, autosaves, reloads and downloads matching TXT');
+
+  await httpPage.getByRole('button', {name:'开始听写',exact:true}).click();
+  await httpPage.getByRole('alert').filter({hasText:'麦克风需要 HTTPS 或本机 localhost；也可上传录音。'}).waitFor();
+  assert.deepEqual(liveRequests, []);
+  await httpPage.getByRole('button', {name:'录音转写',exact:true}).click();
+  const localStart = httpPage.getByRole('button', {name:'新建本地录音',exact:true});
+  await localStart.click();
+  await httpPage.getByRole('alert').filter({hasText:'此浏览器不支持跨窗口录音锁'}).waitFor();
+  assert(await localStart.isEnabled(), 'HTTP draft ID creation must not leave the recorder stuck busy');
+  checks.push('insecure HTTP blocks microphone capture, creates no live session and releases local-recorder busy state');
+
+  // Observe the actual browser XHR and bytes, but fixture its result: this
+  // regression must not start an ASR worker or call an external model.
+  const uploadBytes = Buffer.from('HTTP upload regression fixture');
+  let httpUpload;
+  await httpContext.route(`${httpOrigin}/api/dictation/uploads?**`, async route => {
+    httpUpload = { url:route.request().url(), bytes:route.request().postDataBuffer() };
+    await route.fulfill({json:{ ...httpSeed, editor_version:1, draft_text:httpText, mode:'upload', status:'completed' }});
+  });
+  await httpPage.getByRole('button', {name:'导入音频',exact:true}).click();
+  await httpPage.getByLabel('选择录音文件', {exact:true}).setInputFiles({name:'http.wav',mimeType:'audio/wav',buffer:uploadBytes});
+  await httpEditor.waitFor();
+  assert.deepEqual(httpUpload.bytes, uploadBytes);
+  assert.equal(new URL(httpUpload.url).searchParams.get('editor_version'), '1');
+  assert.deepEqual(liveRequests, []);
+  checks.push('insecure HTTP sends original upload bytes and editor_version=1 without requesting microphone (ASR response fixture)');
+  await writeFile(`${output}/http-capabilities.json`, JSON.stringify({ ...httpCapabilities, operation_ids:httpOperations,
+    microphone_sessions:liveRequests.length, upload_bytes:httpUpload.bytes.length },null,2));
+  await httpContext.close();
+
   const settingsPage = await context.newPage();
   settingsPage.on('pageerror', error => errors.push(error.message));
   await settingsPage.goto(`${base}/dictation`);
+  assert(await settingsPage.evaluate(() => isSecureContext && typeof crypto.randomUUID === 'function'));
   await settingsPage.getByRole('button', {name:'设置',exact:true}).click();
   assert(await settingsPage.getByRole('checkbox', {name:'使用逐句轻度整理'}).isChecked());
   for (const [selector,expected] of [['#dictation-cleanup-model','gemini-3.5-flash-lite'],['#dictation-cleanup-effort','medium'],

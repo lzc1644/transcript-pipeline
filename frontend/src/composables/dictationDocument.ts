@@ -1,5 +1,6 @@
 import { ChangeSet, Text, type EditorState } from "@codemirror/state";
 import { ref, shallowRef } from "vue";
+import { createDictationId } from "./dictationId";
 import type { DictationSession } from "./useDictation";
 
 export interface TextChange { from: number; to: number; insert: string }
@@ -8,7 +9,7 @@ type Pending = { id: string; changes: ChangeSet; payload?: object };
 type API = (path: string, init?: RequestInit) => Promise<any>;
 // Window names survive refresh; unlike sessionStorage, a new popup doesn't
 // inherit its opener's name. Each editor owns its pending-edit recovery copy.
-const writer = window.name || (window.name = `dictation-editor-${crypto.randomUUID()}`);
+const writer = window.name || (window.name = `dictation-editor-${createDictationId()}`);
 const asText = (value: string) => Text.of(value.split("\n"));
 export function changesJSON(changes: ChangeSet): TextChange[] {
   const result: TextChange[] = [];
@@ -141,7 +142,7 @@ export class DictationDocument {
     this.text.value = changes.apply(asText(this.text.value)).toString();
     const last = this.pending.at(-1);
     if (last && !last.payload) last.changes = last.changes.compose(changes);
-    else this.pending.push({ id: crypto.randomUUID(), changes });
+    else this.pending.push({ id: createDictationId(), changes });
     this.remember();
     if (this.id && !["failed", "conflict"].includes(this.status.value)) {
       this.status.value = "saving";
