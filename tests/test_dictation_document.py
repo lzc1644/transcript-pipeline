@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.codex_lb_client import CodexLBClientError
+from src.llm.gateway import GatewayClient
 from src.dictation.cleanup import Cleanup, DOCUMENT_CHUNK_CHARS, DOCUMENT_INSTRUCTIONS, INSTRUCTIONS, SessionGatewayClient
 from src.dictation.schemas import CleanupRequest
 from src.dictation.service import CleanupFailed, Conflict, DictationService
@@ -22,7 +23,7 @@ def test_whole_document_payload_uses_current_edited_body_high_and_independent_bu
     def response(client, payload, **kwargs):
         seen.append((payload, client.timeout_seconds, client.require_stream_completed))
         return json.dumps({"text": json.loads(payload["input"])["current_text"] + "。", "needs_review": False})
-    monkeypatch.setattr(SessionGatewayClient, "codex_responses_text", response)
+    monkeypatch.setattr(GatewayClient, "codex_responses_text", response)
     async def run():
         service = DictationService(root)
         state = await completed(service)
@@ -57,7 +58,7 @@ def test_default_cleanup_payloads_use_the_settings_preset(root, monkeypatch):
     def response(client, payload, **kwargs):
         sent.append(payload)
         return json.dumps({"text": "整理后文本。", "needs_review": False})
-    monkeypatch.setattr(SessionGatewayClient, "codex_responses_text", response)
+    monkeypatch.setattr(GatewayClient, "codex_responses_text", response)
     async def run():
         service = DictationService(root)
         state = await completed(service)
@@ -74,7 +75,7 @@ def test_sentence_and_document_models_and_efforts_are_independent(monkeypatch):
     def response(client, payload, **kwargs):
         sent.append(payload)
         return json.dumps({"text": "整理后文本。", "needs_review": False})
-    monkeypatch.setattr(SessionGatewayClient, "codex_responses_text", response)
+    monkeypatch.setattr(GatewayClient, "codex_responses_text", response)
     cleaner = Cleanup(CodexLBSettings(base_url="http://testserver"), model="gemini-3.5-flash-lite",
                       document_model="gemini-3.8-flash-high", reasoning_effort="medium",
                       document_reasoning_effort="xhigh")
@@ -125,14 +126,14 @@ def test_document_api_explains_failure_preserves_body_and_can_retry(root, failur
 
 
 def test_long_document_chunks_share_one_total_deadline_and_do_not_return_partial(monkeypatch):
-    import src.dictation.cleanup as module
+    import src.llm.tasks.dictation as module
     clock, seen = [0.0], []
     monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     def response(client, payload, **kwargs):
         seen.append(client.timeout_seconds)
         clock[0] += 6
         return '{"text":"一段完整结果","needs_review":false}'
-    monkeypatch.setattr(SessionGatewayClient, "codex_responses_text", response)
+    monkeypatch.setattr(GatewayClient, "codex_responses_text", response)
     cleaner = Cleanup(CodexLBSettings(), document_timeout=10)
     with pytest.raises(TimeoutError, match="未发布不完整建议"):
         cleaner.document("字" * (DOCUMENT_CHUNK_CHARS * 3), [], [])
@@ -145,7 +146,7 @@ def test_long_document_is_explicitly_chunked_in_cleanup_not_service(monkeypatch)
         data = json.loads(payload["input"])
         seen.append(data)
         return json.dumps({"text": data["current_text"], "needs_review": False})
-    monkeypatch.setattr(SessionGatewayClient, "codex_responses_text", response)
+    monkeypatch.setattr(GatewayClient, "codex_responses_text", response)
     text = "字" * (DOCUMENT_CHUNK_CHARS + 1)
     result = Cleanup(CodexLBSettings()).document(text, [], [])
     assert result["metrics"]["strategy"] == "chunked" and result["metrics"]["chunk_count"] == 2

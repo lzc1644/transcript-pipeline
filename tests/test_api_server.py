@@ -1349,7 +1349,10 @@ def test_stage_file_run_uses_isolated_workspace_and_downloads_result(tmp_path: P
         logger,
         backend_override=None,
         prepare_reference_progress_callback=None,
+        *,
+        gateway_connection=None,
     ) -> int:
+        assert gateway_connection is not None
         _ = logger, backend_override, prepare_reference_progress_callback
         assert stage_name == "transcribe"
         assert (loaded_settings.path_for("audio_dir") / "source.wav").read_bytes() == b"audio-bytes"
@@ -1560,7 +1563,10 @@ def test_post_job_applies_saved_frontend_model_settings(tmp_path: Path, monkeypa
         logger,
         backend_override=None,
         prepare_reference_progress_callback=None,
+        *,
+        gateway_connection=None,
     ) -> int:
+        assert gateway_connection is not None
         _ = logger, prepare_reference_progress_callback
         if stage_name == "refine":
             seen["backend_override"] = backend_override or ""
@@ -1767,7 +1773,10 @@ def test_post_job_rerun_executes_selected_stage_suffix(tmp_path: Path, monkeypat
         logger,
         backend_override=None,
         prepare_reference_progress_callback=None,
+        *,
+        gateway_connection=None,
     ) -> int:
+        assert gateway_connection is not None
         _ = logger, backend_override, prepare_reference_progress_callback
         called_stages.append(stage_name)
         if stage_name == "export-markdown":
@@ -1873,7 +1882,10 @@ def test_post_batch_item_rerun_executes_suffix_and_updates_batch_state(tmp_path:
         logger,
         backend_override=None,
         prepare_reference_progress_callback=None,
+        *,
+        gateway_connection=None,
     ) -> int:
+        assert gateway_connection is not None
         _ = logger, backend_override, prepare_reference_progress_callback
         called_stages.append(stage_name)
         if stage_name == "export-markdown":
@@ -1978,7 +1990,10 @@ def test_single_job_stops_after_partial_reference_ocr_and_keeps_task_resumable(
         logger,
         backend_override=None,
         prepare_reference_progress_callback=None,
+        *,
+        gateway_connection=None,
     ) -> int:
+        assert gateway_connection is not None
         _ = logger, backend_override, prepare_reference_progress_callback
         called_stages.append(stage_name)
         if stage_name == "prepare-reference":
@@ -2177,7 +2192,10 @@ def test_web_batch_staggers_remote_pipeline_and_persists_per_item_progress(tmp_p
         logger,
         backend_override=None,
         prepare_reference_progress_callback=None,
+        *,
+        gateway_connection=None,
     ) -> int:
+        assert gateway_connection is not None
         _ = logger, backend_override, prepare_reference_progress_callback
         job_id = job_loaded_settings.path_for("videos_dir").parents[1].name
         if stage_name == "transcribe" and job_id == "job-b":

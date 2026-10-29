@@ -908,11 +908,21 @@ class DictationService:
         timeout = settings.cleanup_timeout_seconds if settings else cfg["cleanup_timeout_seconds"]
         document_timeout = settings.document_cleanup_timeout_seconds if settings else cfg.get(
             "document_cleanup_timeout_seconds", DEFAULT_CLEANUP_TIMEOUT_SECONDS)
-        kwargs = {"project_root": self.root,
-                  "document_model": cfg.get("document_cleanup_model", "gpt-6-luna"),
-                  "reasoning_effort": cfg.get("reasoning_effort", "low"),
-                  "document_reasoning_effort": cfg.get("document_reasoning_effort", "high"),
-                  "document_timeout": document_timeout} if self.cleanup_factory is Cleanup else {}
+        kwargs = {}
+        if self.cleanup_factory is Cleanup:
+            from src.llm.gateway import connection_from_settings
+            from src.web.frontend_settings import load_frontend_settings
+            gateway = self.gateway(state)
+            frontend = load_frontend_settings(self.root)
+            connection = connection_from_settings(
+                gateway, api_key=os.getenv(gateway.api_key_env, "") or frontend.codex_lb_api_key,
+                bypass_proxy=frontend.codex_lb_bypass_proxy,
+            )
+            kwargs = {"connection": connection,
+                      "document_model": cfg.get("document_cleanup_model", "gpt-6-luna"),
+                      "reasoning_effort": cfg.get("reasoning_effort", "low"),
+                      "document_reasoning_effort": cfg.get("document_reasoning_effort", "high"),
+                      "document_timeout": document_timeout}
         return self.cleanup_factory(self.gateway(state), cfg["cleanup_model"], timeout, **kwargs)
 
     async def external(self, function, *args, runtime=None):

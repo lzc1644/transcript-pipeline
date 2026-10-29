@@ -89,7 +89,7 @@ def test_discover_cuda_runtime_library_dirs_supports_namespace_packages(monkeypa
     }
 
     monkeypatch.setattr(
-        "src.asr_utils.importlib.util.find_spec",
+        "src.asr.file.importlib.util.find_spec",
         lambda name: specs.get(name),
     )
     monkeypatch.setattr(Path, "exists", lambda self: str(self) in {"/tmp/cublas", "/tmp/cudnn"})
@@ -105,7 +105,7 @@ def test_find_python_package_dirs_returns_empty_when_parent_namespace_missing(
     def fake_find_spec(_name: str):
         raise ModuleNotFoundError("No module named 'nvidia'")
 
-    monkeypatch.setattr("src.asr_utils.importlib.util.find_spec", fake_find_spec)
+    monkeypatch.setattr("src.asr.file.importlib.util.find_spec", fake_find_spec)
 
     assert find_python_package_dirs("nvidia.cublas.lib") == []
 
@@ -120,7 +120,7 @@ def test_configure_cuda_runtime_from_venv_prepends_env_and_preloads_libs(tmp_pat
     (cudnn_dir / "libcudnn.so.9").write_text("", encoding="utf-8")
 
     monkeypatch.setattr(
-        "src.asr_utils.discover_cuda_runtime_library_dirs",
+        "src.asr.file.discover_cuda_runtime_library_dirs",
         lambda: [cublas_dir, cudnn_dir],
     )
     monkeypatch.setenv("LD_LIBRARY_PATH", "/usr/lib/wsl/lib")
@@ -135,7 +135,7 @@ def test_configure_cuda_runtime_from_venv_prepends_env_and_preloads_libs(tmp_pat
             _ = mode
             loaded_paths.append(path)
 
-    monkeypatch.setattr("src.asr_utils.ctypes", FakeCtypes)
+    monkeypatch.setattr("src.asr.file.ctypes", FakeCtypes)
 
     configured_dirs = configure_cuda_runtime_from_venv()
 
@@ -153,7 +153,7 @@ def test_build_cuda_runtime_fix_hint_mentions_export_when_runtime_dirs_exist(tmp
     cudnn_dir = tmp_path / "cudnn"
 
     monkeypatch.setattr(
-        "src.asr_utils.discover_cuda_runtime_library_dirs",
+        "src.asr.file.discover_cuda_runtime_library_dirs",
         lambda: [cublas_dir, cudnn_dir],
     )
 
@@ -171,9 +171,9 @@ def test_load_faster_whisper_model_surfaces_cuda_hint_on_library_error(tmp_path:
     loaded_settings.active_profile.asr_compute_type = "float16"
     loaded_settings.active_profile.asr_model_size = "large-v3"
 
-    monkeypatch.setattr("src.asr_utils.configure_cuda_runtime_from_venv", lambda: [])
+    monkeypatch.setattr("src.asr.file.configure_cuda_runtime_from_venv", lambda: [])
     monkeypatch.setattr(
-        "src.asr_utils.build_cuda_runtime_fix_hint",
+        "src.asr.file.build_cuda_runtime_fix_hint",
         lambda: "HINT: export LD_LIBRARY_PATH=...",
     )
 
@@ -181,7 +181,7 @@ def test_load_faster_whisper_model_surfaces_cuda_hint_on_library_error(tmp_path:
         def __init__(self, *_args, **_kwargs) -> None:
             raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
 
-    monkeypatch.setattr("src.asr_utils.import_whisper_model_class", lambda: FakeWhisperModel)
+    monkeypatch.setattr("src.asr.file.import_whisper_model_class", lambda: FakeWhisperModel)
 
     with pytest.raises(CudaUnavailableError) as exc_info:
         load_faster_whisper_model(loaded_settings)
@@ -201,7 +201,7 @@ def test_resolve_cached_faster_whisper_model_path_uses_local_files_only(
         assert local_files_only is True
         return str(expected_path)
 
-    monkeypatch.setattr("src.asr_utils.import_faster_whisper_download_model", lambda: fake_download_model)
+    monkeypatch.setattr("src.asr.file.import_faster_whisper_download_model", lambda: fake_download_model)
 
     resolved = resolve_cached_faster_whisper_model_path("large-v3-turbo", tmp_path)
 
@@ -222,9 +222,9 @@ def test_load_faster_whisper_model_prefers_cached_snapshot(
             captured["model_ref"] = model_ref
             captured["kwargs"] = kwargs
 
-    monkeypatch.setattr("src.asr_utils.resolve_cached_faster_whisper_model_path", lambda *_args, **_kwargs: cached_path)
-    monkeypatch.setattr("src.asr_utils.import_whisper_model_class", lambda: FakeWhisperModel)
-    monkeypatch.setattr("src.asr_utils.build_cuda_runtime_fix_hint", lambda: (_ for _ in ()).throw(AssertionError("should not be called for cpu")))
+    monkeypatch.setattr("src.asr.file.resolve_cached_faster_whisper_model_path", lambda *_args, **_kwargs: cached_path)
+    monkeypatch.setattr("src.asr.file.import_whisper_model_class", lambda: FakeWhisperModel)
+    monkeypatch.setattr("src.asr.file.build_cuda_runtime_fix_hint", lambda: (_ for _ in ()).throw(AssertionError("should not be called for cpu")))
 
     load_faster_whisper_model(loaded_settings)
 

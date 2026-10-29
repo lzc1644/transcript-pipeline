@@ -24,18 +24,9 @@ from src.reference_utils import (
 from src.runtime_utils import normalize_stage_name, setup_logging
 from src.settings_overrides import ModelOverrides, SettingsOverrideError, apply_model_overrides
 
-STAGE_EXIT_SUCCESS = 0
-STAGE_EXIT_FAILED = 1
-STAGE_EXIT_PARTIAL = 2
-
-
-def log_stage_completion(logger, stage_name: str, summary: str, started_at: float) -> None:
-    logger.info(
-        "流水线完成 | stage=%s | %s | elapsed=%.3fs",
-        stage_name,
-        summary,
-        time.perf_counter() - started_at,
-    )
+from src.pipeline.stages import (STAGE_EXIT_SUCCESS, STAGE_EXIT_FAILED, STAGE_EXIT_PARTIAL,
+                                 StageOperations, log_stage_completion)
+from src.pipeline.stages import run_stage as _run_stage
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,96 +50,31 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_stage(
-    stage_name: str,
-    loaded_settings,
-    logger,
-    backend_override: str | None = None,
-    prepare_reference_progress_callback=None,
-) -> int:
-    started_at = time.perf_counter()
-
-    if stage_name == "extract-audio":
-        try:
-            results = extract_audio_batch(loaded_settings, logger=logger)
-        except AudioExtractionError as exc:
-            logger.error("%s", exc)
-            return 1
-
-        log_stage_completion(logger, stage_name, summarize_extraction_results(results), started_at)
-        return 0
-
-    if stage_name == "transcribe":
-        try:
-            outputs = transcribe_batch(loaded_settings, logger=logger)
-        except AsrTranscriptionError as exc:
-            logger.error("%s", exc)
-            return 1
-
-        log_stage_completion(logger, stage_name, summarize_transcription_results(outputs), started_at)
-        return 0
-
-    if stage_name == "prepare-reference":
-        try:
-            summary = prepare_reference_batch(
-                loaded_settings,
-                logger=logger,
-                progress_callback=prepare_reference_progress_callback,
-            )
-        except ReferencePreparationError as exc:
-            logger.error("%s", exc)
-            return STAGE_EXIT_FAILED
-
-        log_stage_completion(logger, stage_name, summarize_reference_results(summary), started_at)
-        if summary.partial:
-            return STAGE_EXIT_PARTIAL
-        if summary.failed:
-            return STAGE_EXIT_FAILED
-        return STAGE_EXIT_SUCCESS
-
-    if stage_name == "align":
-        try:
-            summary = align_batch(loaded_settings, logger=logger)
-        except AlignmentError as exc:
-            logger.error("%s", exc)
-            return 1
-
-        log_stage_completion(logger, stage_name, summarize_alignment_results(summary), started_at)
-        return 0
-
-    if stage_name == "classify":
-        try:
-            summary = classify_batch(loaded_settings, logger=logger)
-        except ClassificationError as exc:
-            logger.error("%s", exc)
-            return 1
-
-        log_stage_completion(logger, stage_name, summarize_classification_results(summary), started_at)
-        return 0
-
-    if stage_name == "refine":
-        try:
-            requested_backends = resolve_requested_backends(backend_override, loaded_settings.settings.llm.backends)
-            summary = refine_batch(loaded_settings, requested_backends=requested_backends, logger=logger)
-        except RefinementError as exc:
-            logger.error("%s", exc)
-            return 1
-
-        log_stage_completion(logger, stage_name, summarize_refinement_results(summary), started_at)
-        return 0
-
-    if stage_name == "export-markdown":
-        try:
-            summary = export_markdown_batch(loaded_settings, logger=logger)
-        except ExportError as exc:
-            logger.error("%s", exc)
-            return 1
-
-        log_stage_completion(logger, stage_name, summarize_export_results(summary), started_at)
-        return 0
-
-    logger.error("未实现的阶段: %s", stage_name)
-    return 1
+def run_stage(stage_name, loaded_settings, logger, backend_override=None,
+              prepare_reference_progress_callback=None, *, gateway_connection=None):
+    """兼容旧导入和显式替换操作的接缝；执行由 src.pipeline 所有。"""
+    return _run_stage(
+        stage_name, loaded_settings, logger, backend_override,
+        prepare_reference_progress_callback,
+        gateway_connection=gateway_connection,
+        operations=StageOperations(
+            extract_audio_batch=extract_audio_batch,
+            summarize_extraction_results=summarize_extraction_results,
+            transcribe_batch=transcribe_batch,
+            summarize_transcription_results=summarize_transcription_results,
+            prepare_reference_batch=prepare_reference_batch,
+            summarize_reference_results=summarize_reference_results,
+            align_batch=align_batch,
+            summarize_alignment_results=summarize_alignment_results,
+            classify_batch=classify_batch,
+            summarize_classification_results=summarize_classification_results,
+            resolve_requested_backends=resolve_requested_backends,
+            refine_batch=refine_batch,
+            summarize_refinement_results=summarize_refinement_results,
+            export_markdown_batch=export_markdown_batch,
+            summarize_export_results=summarize_export_results,
+        ),
+    )
 
 
 def main() -> int:

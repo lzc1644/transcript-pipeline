@@ -105,7 +105,7 @@ text
 ### 目标
 
 * 扫描参考原文文件
-* 支持 txt / md / 可提取文本 PDF
+* 支持 txt / md；PDF 默认通过 Codex API 逐页 OCR，保留文字层／Tesseract／CLI 历史入口
 * 统一提取为纯文本
 
 ### 输入
@@ -119,7 +119,8 @@ text
 
 ### 当前边界
 
-* 不支持 OCR
+* 已批准 PDF 逐页 OCR：成功页检查点可恢复，整本完整后发布带物理页标记的 TXT
+* 独立单 PDF 能力与书籍工具共享核心，见 [BACKEND_MODULES.md](BACKEND_MODULES.md)
 * 不做章节分析
 * 不做语义处理
 
@@ -279,19 +280,23 @@ Markdown 与 TXT 同时落盘，不再重组正文结构；TXT 由 Markdown 去�
 
 这些内容只能在用户明确批准后再做：
 
-1. OCR 支持
+1. 已有 PDF OCR 以外的新 OCR 后端／处理能力（现有逐页 OCR 已批准并实现）
 2. WhisperX 或已接入候选以外的 ASR 后端（不包含本轮已批准的 Qwen3/Paraformer/Nano 接入）
 3. 更复杂对齐策略
 4. docx / html 导出
 5. 规则 + LLM 联合拆分混合块
 6. 多 agent / 自动化流水线封装
-7. 非交互批处理脚本
+7. 已有单任务／批量 job 以外的自动化编排增强（现有 CLI 已批准并实现）
 
 ### 状态
 
 * [ ] 未批准
 
 ---
+
+## 可独立复用的后端能力
+
+媒体转换、文件／流式／短句 ASR、PDF 逐页识别、通用网关与具体文字任务已按能力拆分；现有产品入口仍管理配置、会话和产物。依赖与使用示例见 [BACKEND_MODULES.md](BACKEND_MODULES.md)。本轮不推进新识别算法或新的整理阶段。
 
 ## 当前推荐推进顺序
 

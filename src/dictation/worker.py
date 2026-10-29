@@ -19,8 +19,8 @@ def emit(event):
 
 def cpu_worker(config):
     import numpy as np
-    from src.dictation.audio import Segmenter, SegmentConfig, SileroVAD
-    from src.dictation.streaming_asr import PREVIEW_THREADS, StreamingASR
+    from src.asr.streaming_audio import Segmenter, SegmentConfig, SileroVAD
+    from src.asr.streaming import PREVIEW_THREADS, StreamingASR
     segmenter = Segmenter(SileroVAD(Path(config["vad_model"])), SegmentConfig(**config["segmentation"]))
     asr = StreamingASR(Path(config["streaming_model"])) if config.get("preview", True) else None
     utterance = 0
@@ -34,7 +34,7 @@ def cpu_worker(config):
         command = json.loads(line)
         operation = command["op"]
         if operation == "decode":
-            from src.dictation.audio import decode_file
+            from src.media.audio import decode_audio_file as decode_file
             count = decode_file(Path(command["source"]), Path(command["destination"]), command["max_seconds"])
             emit({"type": "decoded", "samples": count})
             continue
@@ -74,9 +74,9 @@ def cpu_worker(config):
 def final_worker(config):
     import torch
     torch.set_num_threads(4)
-    from src.dictation.final_asr import FinalASR
+    from src.asr.utterance import UtteranceASR
     torch.cuda.reset_peak_memory_stats()
-    asr = FinalASR(Path(config["qwen_cache"]))
+    asr = UtteranceASR(Path(config["qwen_cache"]))
     emit({"type": "ready", "metadata": {"aligner_loaded": asr.backend.model.forced_aligner is not None,
           "torch_cuda": torch.version.cuda, "torch": torch.__version__}})
     for line in sys.stdin:

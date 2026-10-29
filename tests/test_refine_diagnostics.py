@@ -71,7 +71,7 @@ def test_codex_api_trace_persists_request_transport_sse_and_parsed_output(
         def geturl(self) -> str:
             return "http://127.0.0.1:2455/v1/responses"
 
-    monkeypatch.setattr("src.codex_lb_client.urlopen", lambda _request, timeout=None: FakeResponse())
+    monkeypatch.setattr("src.llm.gateway.urlopen", lambda _request, timeout=None: FakeResponse())
     trace = RequestTrace(tmp_path / "trace")
 
     result = run_codex_api_payload("阶段 6 测试 Prompt", loaded_settings, request_trace=trace)
@@ -129,8 +129,8 @@ def test_codex_api_trace_keeps_partial_curl_response_and_transport_error(
             + "\n000\t127.0.0.1\t10808\t172.18.0.1\t43122\t2\t0.001\t0.002\t0.003\t0.100\t5.000\t128"
         )
 
-    monkeypatch.setattr("src.codex_lb_client.shutil.which", lambda name: "/usr/bin/curl" if name == "curl" else None)
-    monkeypatch.setattr("src.codex_lb_client.subprocess.run", lambda *args, **kwargs: Completed())
+    monkeypatch.setattr("src.llm.gateway.shutil.which", lambda name: "/usr/bin/curl" if name == "curl" else None)
+    monkeypatch.setattr("src.llm.gateway.subprocess.run", lambda *args, **kwargs: Completed())
     trace = RequestTrace(tmp_path / "trace")
 
     with pytest.raises(CLIBackendError, match="curl 请求失败"):
@@ -179,7 +179,7 @@ def test_codex_api_trace_keeps_completed_sse_when_model_output_is_not_json(
         def geturl(self) -> str:
             return "http://127.0.0.1:2455/v1/responses"
 
-    monkeypatch.setattr("src.codex_lb_client.urlopen", lambda _request, timeout=None: FakeResponse())
+    monkeypatch.setattr("src.llm.gateway.urlopen", lambda _request, timeout=None: FakeResponse())
     trace = RequestTrace(tmp_path / "trace")
 
     with pytest.raises(CLIBackendError, match="JSON"):
@@ -272,7 +272,7 @@ def test_codex_api_trace_write_failure_does_not_change_successful_result(
         def geturl(self) -> str:
             return "http://127.0.0.1:2455/v1/responses"
 
-    monkeypatch.setattr("src.codex_lb_client.urlopen", lambda _request, timeout=None: FakeResponse())
+    monkeypatch.setattr("src.llm.gateway.urlopen", lambda _request, timeout=None: FakeResponse())
     blocked_trace_path = tmp_path / "trace-is-a-file"
     blocked_trace_path.write_text("阻止创建同名诊断目录", encoding="utf-8")
     trace = RequestTrace(blocked_trace_path)

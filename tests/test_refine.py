@@ -434,7 +434,7 @@ def test_refine_batch_uses_single_codex_call_with_reference_context(
             "model_name": "gpt-5.4",
         }
 
-    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_codex_api_payload", fake_run_codex_payload)
 
     refine_batch(loaded_settings)
 
@@ -472,7 +472,7 @@ def test_refine_batch_without_reference_writes_null_source_reference(
             "model_name": "gpt-test",
         }
 
-    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_codex_api_payload", fake_run_codex_payload)
 
     summary = refine_batch(loaded_settings)
 
@@ -652,7 +652,7 @@ def test_run_agy_uses_configured_model(tmp_path: Path, monkeypatch: pytest.Monke
             ensure_ascii=False,
         )
 
-    monkeypatch.setattr("src.refine_utils.run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_subprocess", fake_run_subprocess)
 
     result = run_agy("prompt", loaded_settings)
 
@@ -704,7 +704,7 @@ def test_run_codex_cli_uses_configured_model_and_reasoning_effort(
         )
         return ""
 
-    monkeypatch.setattr("src.refine_utils.run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_subprocess", fake_run_subprocess)
 
     result = run_codex_cli("prompt", loaded_settings)
     command = seen["command"]
@@ -787,7 +787,7 @@ def test_run_codex_api_uses_responses_api_payload(
         seen["timeout"] = timeout
         return FakeResponse()
 
-    monkeypatch.setattr("src.codex_lb_client.urlopen", fake_urlopen)
+    monkeypatch.setattr("src.llm.gateway.urlopen", fake_urlopen)
 
     result = run_codex_api("prompt", loaded_settings)
 
@@ -847,14 +847,14 @@ def test_run_codex_api_retries_with_curl_on_cloudflare_block(
             "\n200"
         )
 
-    def fake_run(command, *, input, text, capture_output, check):
+    def fake_run(command, *, input, text, capture_output, check, env):
         seen["command"] = command
         seen["input"] = input
         return Completed()
 
-    monkeypatch.setattr("src.codex_lb_client.urlopen", fake_urlopen)
-    monkeypatch.setattr("src.codex_lb_client.shutil.which", lambda name: "/usr/bin/curl" if name == "curl" else None)
-    monkeypatch.setattr("src.codex_lb_client.subprocess.run", fake_run)
+    monkeypatch.setattr("src.llm.gateway.urlopen", fake_urlopen)
+    monkeypatch.setattr("src.llm.gateway.shutil.which", lambda name: "/usr/bin/curl" if name == "curl" else None)
+    monkeypatch.setattr("src.llm.gateway.subprocess.run", fake_run)
 
     result = run_codex_api("prompt", loaded_settings)
 
@@ -899,7 +899,7 @@ def test_run_agy_retries_with_fallback_model_on_capacity_error(
             ensure_ascii=False,
         )
 
-    monkeypatch.setattr("src.refine_utils.run_subprocess", fake_run_subprocess)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_subprocess", fake_run_subprocess)
 
     result = run_agy("prompt", loaded_settings)
 
@@ -971,7 +971,7 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
             "model_name": "gpt-5.4",
         }
 
-    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_codex_api_payload", fake_run_codex_payload)
 
     summary = refine_batch(loaded_settings)
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
@@ -1070,7 +1070,7 @@ def test_refine_batch_writes_dual_backend_outputs_without_selected_result(
         )
 
     monkeypatch.setattr(
-        "src.refine_utils.run_single_pass_backend_refinement",
+        "src.llm.tasks.refinement.run_single_pass_backend_refinement",
         fake_run_single_pass_backend_refinement,
     )
 
@@ -1115,7 +1115,7 @@ def test_refine_batch_supports_single_agy_backend_via_override(
             section_map=[{"backend": backend}],
         )
 
-    monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
 
     summary = refine_batch(loaded_settings, requested_backends=[BACKEND_AGY])
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
@@ -1195,7 +1195,7 @@ def test_refine_batch_accepts_backend_result_without_h1_without_retry(
         )
 
     monkeypatch.setattr(
-        "src.refine_utils.run_single_pass_backend_refinement",
+        "src.llm.tasks.refinement.run_single_pass_backend_refinement",
         fake_run_single_pass_backend_refinement,
     )
 
@@ -1249,7 +1249,7 @@ def test_refine_batch_retries_programmatic_fallback_and_persists_validation_meta
             edited_plain_text="这是重新润色后的正文。",
         )
 
-    monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
 
     refine_batch(loaded_settings)
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
@@ -1288,7 +1288,7 @@ def test_refine_batch_rejects_result_that_stays_invalid_after_configured_retry(
             refinement_notes=[],
         )
 
-    monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_single_pass_backend_refinement", fake_run_single_pass_backend_refinement)
 
     with pytest.raises(RefinementOutputValidationError, match="contains_unicode_replacement_character"):
         refine_batch(loaded_settings)
@@ -1329,8 +1329,8 @@ def test_refine_batch_falls_back_to_codex_when_single_agy_backend_fails(
             "refinement_reason": "single_pass_codex",
         }
 
-    monkeypatch.setattr("src.refine_utils.run_agy_payload", fake_run_agy_payload)
-    monkeypatch.setattr("src.refine_utils.run_codex_cli_payload", fake_run_codex_payload)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_agy_payload", fake_run_agy_payload)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_codex_cli_payload", fake_run_codex_payload)
 
     refine_batch(loaded_settings, requested_backends=[BACKEND_AGY])
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
@@ -1373,7 +1373,7 @@ def test_refine_batch_uses_single_codex_api_call_for_long_line_based_asr(
             "model_name": "gpt-5.4",
         }
 
-    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_codex_api_payload", fake_run_codex_payload)
 
     refine_batch(loaded_settings)
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")
@@ -1426,8 +1426,8 @@ def test_refine_batch_does_not_use_block_concurrency_in_single_pass_mode(
             "refinement_reason": "single_pass_codex",
         }
 
-    monkeypatch.setattr("src.refine_utils.ThreadPoolExecutor", FakeExecutor)
-    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
+    monkeypatch.setattr("src.llm.tasks.refinement.ThreadPoolExecutor", FakeExecutor)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_codex_api_payload", fake_run_codex_payload)
 
     refine_batch(loaded_settings)
 
@@ -1458,7 +1458,7 @@ def test_refine_batch_logs_single_pass_progress(
             "refinement_reason": "single_pass_codex",
         }
 
-    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_run_codex_payload)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_codex_api_payload", fake_run_codex_payload)
 
     with caplog.at_level("INFO"):
         refine_batch(loaded_settings, logger=logging.getLogger("test-refine-progress"))
@@ -1482,7 +1482,7 @@ def test_refine_batch_uses_fallback_when_all_backends_fail(
     def fail_backend(**_kwargs) -> BackendDocumentRefinementResult:
         raise CLIBackendError("backend failed")
 
-    monkeypatch.setattr("src.refine_utils.run_single_pass_backend_refinement", fail_backend)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_single_pass_backend_refinement", fail_backend)
 
     summary = refine_batch(loaded_settings)
     output_path = build_refinement_output_path(asr_path, tmp_path / "data/intermediate/refined")

@@ -395,7 +395,7 @@ def test_upload_waits_without_gpu_or_capacity_and_can_resume_without_reupload(ro
 
 def test_final_worker_protocol_uses_task_terms_and_echoes_identity(monkeypatch):
     import src.dictation.worker as worker
-    import src.dictation.final_asr as final_asr
+    import src.asr.utterance as final_asr
     calls = []
     def transcribe(path, terms):
         calls.append((str(path), terms))
@@ -405,7 +405,7 @@ def test_final_worker_protocol_uses_task_terms_and_echoes_identity(monkeypatch):
     torch = SimpleNamespace(set_num_threads=lambda _: None, __version__="test", version=SimpleNamespace(cuda="test"),
         cuda=SimpleNamespace(reset_peak_memory_stats=lambda: None, max_memory_allocated=lambda: 1, memory_allocated=lambda: 1))
     monkeypatch.setitem(sys.modules, "torch", torch)
-    monkeypatch.setattr(final_asr, "FinalASR", lambda _: SimpleNamespace(transcribe=transcribe,
+    monkeypatch.setattr(final_asr, "UtteranceASR", lambda _: SimpleNamespace(transcribe=transcribe,
         backend=SimpleNamespace(model=SimpleNamespace(forced_aligner=None))))
     commands = [{"op": "transcribe", "session_id": sid, "utterance_id": "1", "request_id": sid + "-request",
                  "path": sid + ".wav", "terms": terms} for sid, terms in [("a", ["Alice"]), ("b", ["Bob"]), ("c", ["bad"])]]

@@ -10,7 +10,8 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from src.dictation.cleanup import Cleanup, SessionGatewayClient
+from src.dictation.cleanup import Cleanup
+from src.llm.gateway import GatewayClient
 from src.dictation.schemas import CleanupRequest, DictationSettings, SessionRequest
 from src.dictation.service import DictationService
 from tests.test_dictation import completed, dripping_gateway, root
@@ -46,7 +47,7 @@ def test_manual_retry_uses_current_deadlines_without_rewriting_legacy_snapshot(r
     def response(client, payload, **kwargs):
         seen.append((payload['reasoning']['effort'], client.timeout_seconds))
         return '{"text":"整理稿","needs_review":false}'
-    monkeypatch.setattr(SessionGatewayClient, 'codex_responses_text', response)
+    monkeypatch.setattr(GatewayClient, 'codex_responses_text', response)
     async def run():
         service = DictationService(root)
         state = await completed(service)
@@ -70,7 +71,7 @@ def test_manual_retry_uses_current_deadlines_without_rewriting_legacy_snapshot(r
 
 def test_default_luna_deadlines_reach_real_curl_for_local_http(dripping_gateway, monkeypatch):
     from src.schemas import CodexLBSettings
-    import src.codex_lb_client as transport
+    import src.llm.gateway as transport
     port, *_ = dripping_gateway
     monkeypatch.setenv('DICTATION_LIMIT_TEST_KEY', 'local-test-only')
     gateway = CodexLBSettings(base_url=f'http://127.0.0.1:{port}', base_url_env='',

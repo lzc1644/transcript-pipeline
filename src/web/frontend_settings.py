@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from src.asr.registry import WEB_CANDIDATE_IDS
 from src.config_loader import ConfigLoadError, load_settings
+from src.llm.gateway import GatewayConnection, connection_from_settings
 from src.schemas import AsrCandidateName
 
 SETTINGS_RELATIVE_PATH = Path("data/jobs/frontend-settings.json")
@@ -211,8 +212,24 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
     }
 
 
+
+def gateway_connection_for_frontend(codex_settings, settings: FrontendSettings) -> GatewayConnection:
+    """Resolve one execution's Web overrides without changing process state."""
+    return connection_from_settings(
+        codex_settings,
+        base_url=settings.codex_lb_base_url or None,
+        api_key=settings.codex_lb_api_key or None,
+        bypass_proxy=settings.codex_lb_bypass_proxy,
+    )
+
+
 @contextmanager
 def codex_lb_environment(settings: FrontendSettings) -> Iterator[None]:
+    """Legacy synchronous environment scope; new callers pass a connection.
+
+    This helper retains its historical process-global behavior for old callers.
+    It is not suitable for concurrent product work.
+    """
     keys = ("CODEX_LB_BASE_URL", "CODEX_LB_API_KEY", "NO_PROXY", "no_proxy")
     previous = {key: os.environ.get(key) for key in keys}
     try:

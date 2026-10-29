@@ -326,5 +326,5 @@ def test_new_history_cookie_survives_ambiguous_first_upload_and_owner_checks(roo
         assert client.post(f"/api/dictation/sessions/{sid}/pause", headers=headers).status_code == 409
         assert client.post(f"/api/dictation/sessions/{sid}/resume", headers=headers).status_code == 409
         assert client.post(f"/api/dictation/sessions/{sid}/pause").status_code == 403
-        client.cookies.set("dictation_owner", "not-owner")
-        assert client.post(f"/api/dictation/sessions/{sid}/pause", headers=headers).status_code == 404
+        assert client.post(f"/api/dictation/sessions/{sid}/pause", headers={
+            **headers, "Cookie": "dictation_owner=not-owner"}).status_code == 404

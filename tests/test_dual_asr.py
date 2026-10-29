@@ -36,8 +36,8 @@ def setup_dual(tmp_path, *, reference=False):
     return config, loaded, audio
 
 
-def fake_candidate_batch(audio_files, output_dir, loaded, logger, lock_fds):
-    candidate = loaded.settings.asr.candidate or "whisper-existing"
+def fake_candidate_batch(audio_files, output_dir, options, resources, logger, lock_fds):
+    candidate = options.candidate or "whisper-existing"
     outputs = []
     for audio in audio_files:
         text = "托奇拉领导的战争。" if candidate == "whisper-existing" else "孙中山领导的战争。"
@@ -53,7 +53,7 @@ def fake_candidate_batch(audio_files, output_dir, loaded, logger, lock_fds):
 
 def produce_pair(tmp_path, monkeypatch, *, reference=False):
     config, loaded, audio = setup_dual(tmp_path, reference=reference)
-    monkeypatch.setattr("src.asr_utils.transcribe_candidate_batch", fake_candidate_batch)
+    monkeypatch.setattr("src.asr.file.transcribe_candidate_batch", fake_candidate_batch)
     outputs = transcribe_batch(loaded)
     return config, loaded, audio, outputs
 
@@ -62,11 +62,11 @@ def test_dual_batch_is_serial_isolated_and_backward_compatible(tmp_path, monkeyp
     _, loaded, audio = setup_dual(tmp_path)
     calls = []
 
-    def record(audio_files, directory, settings, logger, lock_fds):
-        calls.append((settings.settings.asr.candidate or "whisper-existing", directory, bool(lock_fds)))
-        return fake_candidate_batch(audio_files, directory, settings, logger, lock_fds)
+    def record(audio_files, directory, options, resources, logger, lock_fds):
+        calls.append((options.candidate or "whisper-existing", directory, bool(lock_fds)))
+        return fake_candidate_batch(audio_files, directory, options, resources, logger, lock_fds)
 
-    monkeypatch.setattr("src.asr_utils.transcribe_candidate_batch", record)
+    monkeypatch.setattr("src.asr.file.transcribe_candidate_batch", record)
     outputs = transcribe_batch(loaded)
     root = loaded.path_for("asr_dir")
     assert calls == [("whisper-existing", root, True), (SECONDARY, root / "secondary" / SECONDARY, True)]
@@ -87,14 +87,14 @@ def test_same_audio_old_secondary_cannot_survive_failed_new_run(tmp_path, monkey
     old_run = json.loads(pair_manifest_path(root, "source").read_text())["run_id"]
     calls = []
 
-    def fail_aux(audio_files, directory, settings, logger, lock_fds):
-        calls.append(settings.settings.asr.candidate or "whisper-existing")
-        if settings.settings.asr.candidate == SECONDARY:
+    def fail_aux(audio_files, directory, options, resources, logger, lock_fds):
+        calls.append(options.candidate or "whisper-existing")
+        if options.candidate == SECONDARY:
             raise AsrTranscriptionError("auxiliary failed")
         assert json.loads(pair_manifest_path(root, "source").read_text())["status"] == "pending"
-        return fake_candidate_batch(audio_files, directory, settings, logger, lock_fds)
+        return fake_candidate_batch(audio_files, directory, options, resources, logger, lock_fds)
 
-    monkeypatch.setattr("src.asr_utils.transcribe_candidate_batch", fail_aux)
+    monkeypatch.setattr("src.asr.file.transcribe_candidate_batch", fail_aux)
     with pytest.raises(AsrTranscriptionError, match="auxiliary failed"):
         transcribe_batch(loaded)
     manifest = json.loads(pair_manifest_path(root, "source").read_text())
@@ -127,7 +127,7 @@ def test_invalid_pair_is_rejected_before_any_ai_request(tmp_path, monkeypatch, d
         payload.pop("run_id")
     if path.exists():
         path.write_text(json.dumps(payload))
-    monkeypatch.setattr("src.refine_utils.run_backend_payload", lambda *a, **kw: pytest.fail("must not call AI"))
+    monkeypatch.setattr("src.llm.tasks.refinement.run_backend_payload", lambda *a, **kw: pytest.fail("must not call AI"))
     with pytest.raises(RefinementError, match="双 ASR"):
         refine_batch(loaded)
 
@@ -141,8 +141,8 @@ def test_dual_refine_is_one_request_and_records_both_inputs(tmp_path, monkeypatc
         return {"final_markdown": "# 章节\n\n托梯拉领导的战争。", "section_map": [],
                 "refinement_notes": [], "needs_review_sections": [], "deletion_candidates": []}
 
-    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", backend)
-    monkeypatch.setattr("src.refine_utils.build_pre_replaced_document", lambda **kw: pytest.fail("dual must preserve raw evidence"))
+    monkeypatch.setattr("src.llm.tasks.refinement.run_codex_api_payload", backend)
+    monkeypatch.setattr("src.llm.tasks.refinement.build_pre_replaced_document", lambda **kw: pytest.fail("dual must preserve raw evidence"))
     summary = refine_batch(loaded)
     assert summary.total == summary.success == 1 and len(prompts) == 1
     assert "[ASR A]" in prompts[0] and "[ASR B]" in prompts[0]
@@ -295,12 +295,12 @@ def test_default_markdown_allows_light_cleanup_in_no_reference_single_asr(tmp_pa
 def test_interrupted_pair_stays_pending_and_cannot_be_consumed(tmp_path, monkeypatch):
     _, loaded, _, _ = produce_pair(tmp_path, monkeypatch)
 
-    def interrupt(audio_files, directory, settings, logger, lock_fds):
-        if settings.settings.asr.candidate == SECONDARY:
+    def interrupt(audio_files, directory, options, resources, logger, lock_fds):
+        if options.candidate == SECONDARY:
             raise KeyboardInterrupt()
-        return fake_candidate_batch(audio_files, directory, settings, logger, lock_fds)
+        return fake_candidate_batch(audio_files, directory, options, resources, logger, lock_fds)
 
-    monkeypatch.setattr("src.asr_utils.transcribe_candidate_batch", interrupt)
+    monkeypatch.setattr("src.asr.file.transcribe_candidate_batch", interrupt)
     with pytest.raises(KeyboardInterrupt):
         transcribe_batch(loaded)
     root = loaded.path_for("asr_dir")
@@ -312,7 +312,7 @@ def test_interrupted_pair_stays_pending_and_cannot_be_consumed(tmp_path, monkeyp
 def test_reverse_pair_selection_is_supported(tmp_path, monkeypatch):
     _, loaded, _ = setup_dual(tmp_path)
     apply_model_overrides(loaded, ModelOverrides(asr_candidate=SECONDARY, secondary_asr_candidate="whisper-existing"))
-    monkeypatch.setattr("src.asr_utils.transcribe_candidate_batch", fake_candidate_batch)
+    monkeypatch.setattr("src.asr.file.transcribe_candidate_batch", fake_candidate_batch)
     transcribe_batch(loaded)
     evidence = load_dual_asr_input(loaded, loaded.path_for("asr_dir") / "source.txt")
     assert evidence.primary_candidate == SECONDARY and evidence.secondary_candidate == "whisper-existing"

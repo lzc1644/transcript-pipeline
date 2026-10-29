@@ -75,8 +75,8 @@ def test_segmenter_pause_keeps_tail_resets_acoustic_context_not_position(length)
 def test_cpu_protocol_pause_does_not_exit_or_reset_sentence_ids(monkeypatch):
     import importlib.metadata
     import src.dictation.worker as worker
-    import src.dictation.audio as audio
-    import src.dictation.streaming_asr as streaming
+    import src.asr.streaming_audio as audio
+    import src.asr.streaming as streaming
     monkeypatch.setattr(audio, "SileroVAD", lambda path: lambda frame: 1)
     monkeypatch.setattr(streaming, "StreamingASR", lambda path: None)
     monkeypatch.setattr(importlib.metadata, "version", lambda name: "test-isolated-worker")
