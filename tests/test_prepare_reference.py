@@ -474,7 +474,7 @@ def test_run_codex_api_pdf_ocr_renders_pages_and_sends_input_images(
 
     monkeypatch.setattr("src.reference_utils.get_pdf_page_count", lambda _path: 2)
     monkeypatch.setattr("src.reference_utils.render_pdf_page_as_png_data_url", fake_render_page)
-    monkeypatch.setattr("src.codex_lb_client.urlopen", fake_urlopen)
+    monkeypatch.setattr("src.llm.gateway.urlopen", fake_urlopen)
 
     text, warnings = run_codex_api_pdf_ocr(source, loaded_settings)
 
@@ -771,7 +771,7 @@ def test_run_codex_api_pdf_ocr_uses_curl_first_for_remote_responses(
             'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n\n200'
         )
 
-    def fake_run(command, *, input, text, capture_output, check):
+    def fake_run(command, *, input, text, capture_output, check, env=None):
         _ = input, text, capture_output, check
         seen["curl_command"] = command
         return Completed()
@@ -782,9 +782,9 @@ def test_run_codex_api_pdf_ocr_uses_curl_first_for_remote_responses(
         "src.reference_utils.render_pdf_page_as_png_data_url",
         lambda _path, _page_number, _page_count: "data:image/png;base64,Zmlyc3Q=",
     )
-    monkeypatch.setattr("src.codex_lb_client.urlopen", fake_urlopen)
-    monkeypatch.setattr("src.codex_lb_client.shutil.which", lambda name: "/usr/bin/curl" if name == "curl" else None)
-    monkeypatch.setattr("src.codex_lb_client.subprocess.run", fake_run)
+    monkeypatch.setattr("src.llm.gateway.urlopen", fake_urlopen)
+    monkeypatch.setattr("src.llm.gateway.shutil.which", lambda name: "/usr/bin/curl" if name == "curl" else None)
+    monkeypatch.setattr("src.llm.gateway.subprocess.run", fake_run)
 
     text, _warnings = run_codex_api_pdf_ocr(source, loaded_settings)
 

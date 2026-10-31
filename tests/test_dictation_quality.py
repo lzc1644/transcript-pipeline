@@ -92,10 +92,7 @@ def test_sentence_audio_requires_owner_existing_uid_and_non_symlink_file(root):
         assert partial.status_code == 206 and partial.content == pcm[:4]
         assert client.get(f"/api/dictation/sessions/{sid}/utterances/999/audio").status_code == 404
         assert client.get(endpoint, params={"path": "/etc/passwd"}).content == response.content
-        credential = client.cookies.get("dictation_owner")
-        client.cookies.set("dictation_owner", "not-owner")
-        assert client.get(endpoint).status_code == 404
-        client.cookies.set("dictation_owner", credential)
+        assert client.get(endpoint, headers={"Cookie": "dictation_owner=not-owner"}).status_code == 404
         path = app.state.dictation.storage.path(sid) / "audio/1.wav"
         path.unlink(); path.symlink_to(root / "config/settings.yaml")
         assert client.get(endpoint).status_code == 404

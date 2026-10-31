@@ -65,7 +65,9 @@ def test_execute_pdf_book_ocr_writes_isolated_task_state_and_results(
         *,
         checkpoint_root: Path,
         progress_callback,
+        gateway_connection,
     ) -> PDFBookOCRSummary:
+        assert gateway_connection is not None
         assert source == input_path.resolve()
         assert checkpoint_root == task_paths.checkpoint_dir
         assert loaded_settings.settings.reference.codex_ocr_max_concurrency == 12
@@ -149,7 +151,9 @@ def test_execute_pdf_book_ocr_marks_missing_pages_as_partial(tmp_path: Path, mon
         *,
         checkpoint_root: Path,
         progress_callback,
+        gateway_connection,
     ) -> PDFBookOCRSummary:
+        assert gateway_connection is not None
         _ = source, checkpoint_root, progress_callback
         output_path = output_dir / "第一册.txt"
         output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -29,8 +29,8 @@ def test_streaming_preview_requests_two_cpu_threads(tmp_path, monkeypatch):
 @pytest.mark.parametrize("preview", [True, False])
 def test_cpu_ready_records_preview_thread_budget(monkeypatch, preview):
     import src.dictation.worker as worker
-    import src.dictation.audio as audio
-    import src.dictation.streaming_asr as streaming
+    import src.asr.streaming_audio as audio
+    import src.asr.streaming as streaming
     monkeypatch.setattr(audio, "SileroVAD", lambda _: lambda _: 0)
     monkeypatch.setattr(streaming, "StreamingASR", lambda _: object())
     monkeypatch.setattr(importlib.metadata, "version", lambda _: "test")

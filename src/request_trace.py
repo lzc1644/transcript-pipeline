@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urlparse
 
 LOGGER = logging.getLogger("transcript_pipeline")
@@ -47,8 +47,9 @@ def endpoint_metadata(raw_url: str) -> dict[str, Any]:
     }
 
 
-def sanitized_proxy_environment() -> dict[str, str]:
+def sanitized_proxy_environment(environ: Mapping[str, str] | None = None) -> dict[str, str]:
     result: dict[str, str] = {}
+    source = os.environ if environ is None else environ
     for name in (
         "http_proxy",
         "https_proxy",
@@ -59,7 +60,7 @@ def sanitized_proxy_environment() -> dict[str, str]:
         "ALL_PROXY",
         "NO_PROXY",
     ):
-        raw_value = os.environ.get(name, "").strip()
+        raw_value = source.get(name, "").strip()
         if not raw_value:
             continue
         if name.lower() == "no_proxy":

@@ -9,7 +9,7 @@ from typing import Any
 
 from fastapi import FastAPI
 
-from scripts.run_pipeline import STAGE_EXIT_PARTIAL, run_stage
+from src.pipeline import STAGE_EXIT_PARTIAL, run_stage
 from src.config_loader import ConfigLoadError, load_settings
 from src.pdf_book_ocr import PDFBookOCRError, PDFBookOCRProgress, ocr_pdf_book_batch, pdf_book_ocr_source_label
 from src.reference_utils import ReferenceFileProgress
@@ -37,7 +37,7 @@ from src.job_runner import (
 from src.runtime_utils import normalize_stage_name, setup_logging
 from src.settings_overrides import ModelOverrides, apply_model_overrides
 from src.web.frontend_settings import (
-    codex_lb_environment,
+    gateway_connection_for_frontend,
     load_frontend_settings,
 )
 from src.web.models import (
@@ -126,8 +126,8 @@ def stage_output_path(loaded_settings, stage_name: str) -> str:
 def serialize_reference_file_progress(progress: ReferenceFileProgress) -> dict[str, object]:
     return {
         "source_file": progress.source_path.name,
-        "output_file": progress.output_text_path.name if not progress.resumable else "",
-        "success": not progress.resumable,
+        "output_file": progress.output_text_path.name if progress.status == "success" else "",
+        "success": progress.status == "success",
         "page_count": progress.page_count,
         "completed_pages": progress.completed_pages,
         "failed_pages": len(progress.failed_page_numbers),
@@ -371,34 +371,35 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
             error_message="",
             output_path="",
         )
-        with codex_lb_environment(frontend_settings):
-            for stage_name in stages:
+        gateway_connection = gateway_connection_for_frontend(loaded_settings.settings.codex_lb, frontend_settings)
+        for stage_name in stages:
+            app.state.update_state(
+                state_path,
+                status="running",
+                current_stage=stage_name,
+            )
+            current_backend = effective_backend if stage_name == "refine" else None
+            exit_code = run_stage(
+                stage_name,
+                loaded_settings,
+                logger,
+                backend_override=current_backend,
+                prepare_reference_progress_callback=(
+                    reference_progress if stage_name == "prepare-reference" else None
+                ),
+                gateway_connection=gateway_connection,
+            )
+            if exit_code == STAGE_EXIT_PARTIAL:
                 app.state.update_state(
                     state_path,
-                    status="running",
+                    status="partial",
                     current_stage=stage_name,
+                    error_message="准备参考 OCR 尚有缺页，请重试缺失页。",
+                    resumable=True,
                 )
-                current_backend = effective_backend if stage_name == "refine" else None
-                exit_code = run_stage(
-                    stage_name,
-                    loaded_settings,
-                    logger,
-                    backend_override=current_backend,
-                    prepare_reference_progress_callback=(
-                        reference_progress if stage_name == "prepare-reference" else None
-                    ),
-                )
-                if exit_code == STAGE_EXIT_PARTIAL:
-                    app.state.update_state(
-                        state_path,
-                        status="partial",
-                        current_stage=stage_name,
-                        error_message="准备参考 OCR 尚有缺页，请重试缺失页。",
-                        resumable=True,
-                    )
-                    return read_json_file(state_path)
-                if exit_code != 0:
-                    raise JobRunnerError(f"job 重跑失败: stage={stage_name} exit_code={exit_code}")
+                return read_json_file(state_path)
+            if exit_code != 0:
+                raise JobRunnerError(f"job 重跑失败: stage={stage_name} exit_code={exit_code}")
 
         output_path = stage_output_path(loaded_settings, stages[-1])
         if "export-markdown" in stages:
@@ -529,34 +530,35 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
                 progress=progress,
             )
 
-        with codex_lb_environment(frontend_settings):
-            for stage_name in stages:
+        gateway_connection = gateway_connection_for_frontend(job_loaded_settings.settings.codex_lb, frontend_settings)
+        for stage_name in stages:
+            app.state.update_state(
+                state_path,
+                status="running",
+                current_stage=stage_name,
+            )
+            current_backend = effective_backend if stage_name == "refine" else None
+            exit_code = run_stage(
+                stage_name,
+                job_loaded_settings,
+                logger,
+                backend_override=current_backend,
+                prepare_reference_progress_callback=(
+                    reference_progress if stage_name == "prepare-reference" else None
+                ),
+                gateway_connection=gateway_connection,
+            )
+            if exit_code == STAGE_EXIT_PARTIAL:
                 app.state.update_state(
                     state_path,
-                    status="running",
+                    status="partial",
                     current_stage=stage_name,
+                    error_message="准备参考 OCR 尚有缺页，请重试缺失页。",
+                    resumable=True,
                 )
-                current_backend = effective_backend if stage_name == "refine" else None
-                exit_code = run_stage(
-                    stage_name,
-                    job_loaded_settings,
-                    logger,
-                    backend_override=current_backend,
-                    prepare_reference_progress_callback=(
-                        reference_progress if stage_name == "prepare-reference" else None
-                    ),
-                )
-                if exit_code == STAGE_EXIT_PARTIAL:
-                    app.state.update_state(
-                        state_path,
-                        status="partial",
-                        current_stage=stage_name,
-                        error_message="准备参考 OCR 尚有缺页，请重试缺失页。",
-                        resumable=True,
-                    )
-                    return
-                if exit_code != 0:
-                    raise JobRunnerError(f"job 主链失败: stage={stage_name} exit_code={exit_code}")
+                return
+            if exit_code != 0:
+                raise JobRunnerError(f"job 主链失败: stage={stage_name} exit_code={exit_code}")
 
         _, copied_output_path = copy_final_output(
             job_paths,
@@ -814,43 +816,45 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
 
         # 本地阶段保持顺序执行；每个子任务完成转写后立即进入远程后续链路，
         # 因而不会再等待整批视频都完成 ASR 才开始参考提取与校对。
-        with codex_lb_environment(frontend_settings):
-            with ThreadPoolExecutor(max_workers=effective_remote_concurrency) as executor:
-                remote_futures = []
-                for runtime in runtimes:
-                    if runtime.status in {"failed", "partial"}:
+        gateway_connection = gateway_connection_for_frontend(base_loaded_settings.settings.codex_lb, frontend_settings)
+        with ThreadPoolExecutor(max_workers=effective_remote_concurrency) as executor:
+            remote_futures = []
+            for runtime in runtimes:
+                if runtime.status in {"failed", "partial"}:
+                    continue
+                runtime_stages = runtime_stage_names(runtime, root)
+                for stage_name in ("extract-audio", "transcribe"):
+                    if stage_name not in runtime_stages:
                         continue
-                    runtime_stages = runtime_stage_names(runtime, root)
-                    for stage_name in ("extract-audio", "transcribe"):
-                        if stage_name not in runtime_stages:
-                            continue
-                        execute_batch_stage_for_runtime(
-                            stage_name=stage_name,
-                            runtime=runtime,
-                            project_root=root,
-                            logger=logger,
-                            backend_override=effective_backend,
-                            stage_callback=lambda _runtime: sync_batch_progress(),
-                        )
-                        if runtime.status in {"failed", "partial"}:
-                            break
-
-                    if runtime.status in {"failed", "partial"}:
-                        continue
-                    remote_futures.append(
-                        executor.submit(
-                            execute_remote_pipeline_for_runtime,
-                            runtime=runtime,
-                            project_root=root,
-                            logger=logger,
-                            backend_override=effective_backend,
-                            progress_callback=batch_reference_progress,
-                            stage_callback=lambda _runtime: sync_batch_progress(),
-                        )
+                    execute_batch_stage_for_runtime(
+                        stage_name=stage_name,
+                        runtime=runtime,
+                        project_root=root,
+                        logger=logger,
+                        backend_override=effective_backend,
+                        stage_callback=lambda _runtime: sync_batch_progress(),
+                        gateway_connection=gateway_connection,
                     )
+                    if runtime.status in {"failed", "partial"}:
+                        break
 
-                for future in as_completed(remote_futures):
-                    future.result()
+                if runtime.status in {"failed", "partial"}:
+                    continue
+                remote_futures.append(
+                    executor.submit(
+                        execute_remote_pipeline_for_runtime,
+                        runtime=runtime,
+                        project_root=root,
+                        logger=logger,
+                        backend_override=effective_backend,
+                        progress_callback=batch_reference_progress,
+                        stage_callback=lambda _runtime: sync_batch_progress(),
+                        gateway_connection=gateway_connection,
+                    )
+                )
+
+            for future in as_completed(remote_futures):
+                future.result()
 
         success_count = sum(1 for item in runtimes if item.status == "success")
         failed_count = sum(1 for item in runtimes if item.status == "failed")
@@ -944,16 +948,17 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
                 freeze_asr=normalized_stage_name == "transcribe"),
             **({"asr_candidate": loaded_settings.settings.asr.candidate or "whisper-existing"} if normalized_stage_name == "transcribe" else {}),
         )
-        with codex_lb_environment(frontend_settings):
-            exit_code = run_stage(
-                normalized_stage_name,
-                loaded_settings,
-                logger,
-                backend_override=effective_backend,
-                prepare_reference_progress_callback=(
-                    reference_progress if normalized_stage_name == "prepare-reference" else None
-                ),
-            )
+        gateway_connection = gateway_connection_for_frontend(loaded_settings.settings.codex_lb, frontend_settings)
+        exit_code = run_stage(
+            normalized_stage_name,
+            loaded_settings,
+            logger,
+            backend_override=effective_backend,
+            prepare_reference_progress_callback=(
+                reference_progress if normalized_stage_name == "prepare-reference" else None
+            ),
+            gateway_connection=gateway_connection,
+        )
         if exit_code == STAGE_EXIT_PARTIAL:
             app.state.update_state(
                 state_path,
@@ -1056,16 +1061,17 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
             ),
             **({"asr_candidate": workspace_loaded_settings.settings.asr.candidate or "whisper-existing"} if normalized_stage_name == "transcribe" else {}),
         )
-        with codex_lb_environment(frontend_settings):
-            exit_code = run_stage(
-                normalized_stage_name,
-                workspace_loaded_settings,
-                logger,
-                backend_override=effective_backend,
-                prepare_reference_progress_callback=(
-                    reference_progress if normalized_stage_name == "prepare-reference" else None
-                ),
-            )
+        gateway_connection = gateway_connection_for_frontend(workspace_loaded_settings.settings.codex_lb, frontend_settings)
+        exit_code = run_stage(
+            normalized_stage_name,
+            workspace_loaded_settings,
+            logger,
+            backend_override=effective_backend,
+            prepare_reference_progress_callback=(
+                reference_progress if normalized_stage_name == "prepare-reference" else None
+            ),
+            gateway_connection=gateway_connection,
+        )
         if exit_code == STAGE_EXIT_PARTIAL:
             app.state.update_state(
                 state_path,
@@ -1201,15 +1207,16 @@ def execute_pdf_book_ocr(*, app: FastAPI, task_id: str, payload: dict) -> None:
                 pages_failed=sum(int(entry["failed_pages"]) for entry in items),
             )
 
-        with codex_lb_environment(frontend_settings):
-            summary = ocr_pdf_book_batch(
-                input_path,
-                task_paths.output_dir,
-                loaded_settings,
-                checkpoint_root=task_paths.checkpoint_dir,
-                progress_callback=book_progress,
-                **({"retry_plans": retry_plans} if retry_plans else {}),
-            )
+        gateway_connection = gateway_connection_for_frontend(loaded_settings.settings.codex_lb, frontend_settings)
+        summary = ocr_pdf_book_batch(
+            input_path,
+            task_paths.output_dir,
+            loaded_settings,
+            checkpoint_root=task_paths.checkpoint_dir,
+            progress_callback=book_progress,
+            **({"retry_plans": retry_plans} if retry_plans else {}),
+            gateway_connection=gateway_connection,
+        )
 
         items = serialize_pdf_book_ocr_items(task_paths, input_path, summary)
         pages_total = sum(item.page_count for item in summary.items)

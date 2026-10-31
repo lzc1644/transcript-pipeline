@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 
 import yaml
 
-from scripts.run_pipeline import STAGE_EXIT_PARTIAL, run_stage
+from src.pipeline import STAGE_EXIT_PARTIAL, run_stage
 from src.config_loader import ConfigLoadError, load_settings
 from src.ffmpeg_utils import supported_media_extensions
 from src.glossary_utils import build_initial_prompt, load_glossary_terms, merge_glossary_terms
@@ -1038,6 +1038,7 @@ def execute_batch_stage_for_runtime(
     backend_override: str | None = None,
     progress_callback: Callable[[BatchJobRuntime, ReferenceFileProgress], None] | None = None,
     stage_callback: Callable[[BatchJobRuntime], None] | None = None,
+    gateway_connection=None,
 ) -> None:
     if runtime.status in {"failed", "partial"}:
         return
@@ -1064,6 +1065,7 @@ def execute_batch_stage_for_runtime(
             logger,
             backend_override=current_backend_override,
             prepare_reference_progress_callback=reference_progress_callback,
+            **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
         )
         if exit_code == STAGE_EXIT_PARTIAL:
             runtime.status = "partial"
@@ -1113,6 +1115,7 @@ def run_jobs_with_limited_concurrency(
     remote_concurrency: int,
     backend_override: str | None = None,
     progress_callback: Callable[[BatchJobRuntime, ReferenceFileProgress], None] | None = None,
+    gateway_connection=None,
 ) -> None:
     if not runtimes:
         return
@@ -1128,6 +1131,7 @@ def run_jobs_with_limited_concurrency(
                 logger=logger,
                 backend_override=backend_override,
                 progress_callback=progress_callback,
+                **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
             )
             for runtime in runtimes
         ]
@@ -1143,6 +1147,7 @@ def execute_remote_pipeline_for_runtime(
     backend_override: str | None = None,
     progress_callback: Callable[[BatchJobRuntime, ReferenceFileProgress], None] | None = None,
     stage_callback: Callable[[BatchJobRuntime], None] | None = None,
+    gateway_connection=None,
 ) -> None:
     for stage_name in remote_pipeline_stages_for_runtime(runtime, project_root):
         execute_batch_stage_for_runtime(
@@ -1153,6 +1158,7 @@ def execute_remote_pipeline_for_runtime(
             backend_override=backend_override,
             progress_callback=progress_callback,
             stage_callback=stage_callback,
+            **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
         )
         if runtime.status in {"failed", "partial"}:
             return
@@ -1167,6 +1173,7 @@ def run_batch_stage(
     remote_concurrency: int,
     backend_override: str | None = None,
     progress_callback: Callable[[BatchJobRuntime, ReferenceFileProgress], None] | None = None,
+    gateway_connection=None,
 ) -> None:
     active_runtimes = [
         runtime
@@ -1185,6 +1192,7 @@ def run_batch_stage(
             remote_concurrency=remote_concurrency,
             backend_override=backend_override,
             progress_callback=progress_callback,
+            **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
         )
         return
 
@@ -1196,6 +1204,7 @@ def run_batch_stage(
             logger=logger,
             backend_override=backend_override,
             progress_callback=progress_callback,
+            **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
         )
 
 
@@ -1293,6 +1302,7 @@ def run_batch_jobs(
     batch_id: str | None = None,
     backend_override: str | None = None,
     model_overrides: ModelOverrides | None = None,
+    gateway_connection=None,
 ) -> BatchRunSummary:
     current_batch_id = batch_id or create_batch_id()
     logger = setup_logging(base_loaded_settings.settings.runtime.log_level)
@@ -1318,6 +1328,7 @@ def run_batch_jobs(
                     project_root=project_root,
                     logger=logger,
                     backend_override=backend_override,
+                    **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
                 )
                 if runtime.status in {"failed", "partial"}:
                     break
@@ -1332,6 +1343,7 @@ def run_batch_jobs(
                     project_root=project_root,
                     logger=logger,
                     backend_override=backend_override,
+                    **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
                 )
             )
 
@@ -1365,6 +1377,7 @@ def run_job_pipeline(
     loaded_settings: LoadedSettings,
     logger: logging.Logger,
     backend_override: str | None = None,
+    gateway_connection=None,
 ) -> None:
     raw_stages = loaded_settings.settings.pipeline.stages if loaded_settings.settings.pipeline else []
     if not raw_stages:
@@ -1375,7 +1388,7 @@ def run_job_pipeline(
     for stage_name in stages:
         logger.info("job 主链执行 | stage=%s", stage_name)
         current_backend_override = backend_override if stage_name == "refine" else None
-        exit_code = run_stage(stage_name, loaded_settings, logger, backend_override=current_backend_override)
+        exit_code = run_stage(stage_name, loaded_settings, logger, backend_override=current_backend_override, **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}))
         if exit_code != 0:
             raise JobRunnerError(f"job 主链失败: stage={stage_name} exit_code={exit_code}")
 
@@ -1402,6 +1415,7 @@ def run_single_job(
     chapter: str | None = None,
     glossary_file: str | None = None,
     refine_prompt: str | None = None,
+    gateway_connection=None,
 ) -> JobResult:
     normalized_content_type = normalize_content_type(content_type)
     video_source = Path(video).expanduser().resolve()
@@ -1467,7 +1481,7 @@ def run_single_job(
         normalized_content_type,
         prepared_inputs.reference_type,
     )
-    run_job_pipeline(job_loaded_settings, logger, backend_override=backend)
+    run_job_pipeline(job_loaded_settings, logger, backend_override=backend, **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}))
 
     final_source_path, copied_output_path = copy_final_output(
         job_paths,

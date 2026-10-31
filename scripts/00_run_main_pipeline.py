@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.run_pipeline import run_stage
+from src.pipeline import run_stage
 from src.config_loader import ConfigLoadError, load_settings
 from src.runtime_utils import normalize_stage_name, setup_logging
 from src.settings_overrides import ModelOverrides, SettingsOverrideError, apply_model_overrides

@@ -155,7 +155,7 @@ def test_retry_only_switches_selected_missing_pages_and_preserves_legacy_checkpo
         seen.append((page, payload))
         return event_stream(f"第{page}页正文。\n（30）English footnote.")
 
-    monkeypatch.setattr("src.codex_lb_client.read_http_response", read)
+    monkeypatch.setattr("src.llm.gateway.read_http_response", read)
     summary = ocr_pdf_book_batch(source, tmp / "output", loaded, checkpoint_root=root,
                                 retry_plans={source.name: plan})
     assert summary.success_count == 1
@@ -200,7 +200,7 @@ def test_failed_fallback_never_commits_success_page_or_book(setup_ocr, monkeypat
             return 'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"content_filter"}}}\n\n'
         return event_stream("候选正文。", completed=failure != "missing_completed")
 
-    monkeypatch.setattr("src.codex_lb_client.read_http_response", read)
+    monkeypatch.setattr("src.llm.gateway.read_http_response", read)
     if failure == "source_write_failed":
         def fail_source(*args):
             raise CodexOCRError("无法写入模型来源")
@@ -230,7 +230,7 @@ def test_plans_are_isolated_by_source_and_reject_changed_identity(setup_ocr, mon
         seen.append((label, payload["model"]))
         return event_stream("完整正文。")
 
-    monkeypatch.setattr("src.codex_lb_client.read_http_response", read)
+    monkeypatch.setattr("src.llm.gateway.read_http_response", read)
     ocr_pdf_book_batch(inputs, tmp / "output", loaded, checkpoint_root=tmp / "pages",
                       retry_plans={"a/book.pdf": plan, "b/book.pdf": plan})
     assert seen == [("a", PDF_OCR_RETRY_FALLBACK_MODEL), ("b", "gpt-6-luna")]
@@ -248,7 +248,7 @@ def test_web_first_run_never_adds_fallback_and_click_retry_only_fills_missing_pa
             return 'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"content_filter"}}}\n\n'
         return event_stream(f"第{page}页正文及注释。")
 
-    monkeypatch.setattr("src.codex_lb_client.read_http_response", read)
+    monkeypatch.setattr("src.llm.gateway.read_http_response", read)
     response = request_json(app, "POST", "/api/pdf-book-ocr", json_body={"input_path": str(source)})
     task_id = response.json()["task_id"]
     paths = build_pdf_book_ocr_task_paths(tmp, task_id)
@@ -292,7 +292,7 @@ def test_legacy_failure_plan_survives_failed_gemini_retry_and_service_restart(se
             raise CodexLBClientError("TLS connect error")
         return event_stream(f"第{page}页正文及注释。")
 
-    monkeypatch.setattr("src.codex_lb_client.read_http_response", read)
+    monkeypatch.setattr("src.llm.gateway.read_http_response", read)
     assert request_json(app, "POST", f"/api/pdf-book-ocr/{task_id}/retry").status_code == 202
     partial = read_json_file(paths.state_path)
     assert partial["status"] == "partial"

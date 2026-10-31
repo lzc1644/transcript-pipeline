@@ -528,7 +528,7 @@ def test_optional_missing_dependencies_fails_without_whisper_fallback(tmp_path, 
     write_minimal_settings(tmp_path)
     loaded = load_settings(project_root=tmp_path)
     loaded.settings.asr.candidate = "qwen3-asr-0.6b"
-    monkeypatch.setattr("src.asr_utils.subprocess.run", lambda *a, **kw: subprocess.CompletedProcess(a[0], 1))
+    monkeypatch.setattr("src.asr.file.subprocess.run", lambda *a, **kw: subprocess.CompletedProcess(a[0], 1))
     with pytest.raises(AsrDependencyError, match="requirements-asr-qwen"):
         transcribe_optional_backend([], tmp_path, loaded, None)
 
@@ -557,7 +557,7 @@ def test_pair_publication_rolls_back_on_second_rename_failure(tmp_path, monkeypa
         if Path(target) == paths.txt_path:
             raise OSError("simulated publication error")
         return replace(source, target)
-    monkeypatch.setattr("src.asr_utils.os.replace", fail_second)
+    monkeypatch.setattr("src.asr.results.os.replace", fail_second)
     with pytest.raises(AsrTranscriptionError):
         write_asr_result(result(full_text="字"), paths)
     assert before == (paths.json_path.read_bytes(), paths.txt_path.read_bytes())

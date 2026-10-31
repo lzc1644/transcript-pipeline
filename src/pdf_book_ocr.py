@@ -49,6 +49,7 @@ class PDFBookOCRProgress:
     page_errors: dict[int, str]
     fallback_page_models: dict[int, str] = field(default_factory=dict)
     ocr_identity: str = ""
+    status: str = "running"
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,7 @@ def ocr_pdf_book(
     checkpoint_dir: Path | None = None,
     progress_callback: Callable[[PDFBookOCRProgress], None] | None = None,
     retry_plan: PDFOCRRetryPlan | None = None,
+    gateway_connection=None,
 ) -> PDFBookOCRItem:
     """识别单本 PDF；只有整本各页都成功时才写出该书 TXT。"""
     resolved_source_pdf = source_pdf.expanduser().resolve()
@@ -151,6 +153,7 @@ def ocr_pdf_book(
                     failed_page_numbers=tuple(progress.page_errors),
                     page_errors=progress.page_errors,
                     fallback_page_models=progress.fallback_page_models,
+                    status=progress.status,
                 )
             )
 
@@ -162,6 +165,7 @@ def ocr_pdf_book(
             checkpoint_dir=checkpoint_dir,
             progress_callback=page_progress,
             prompt_builder=build_pdf_book_ocr_image_prompt,
+            **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
             **({"retry_plan": retry_plan} if retry_plan is not None else {}),
         )
     except CodexOCRPagesIncompleteError as exc:
@@ -212,6 +216,7 @@ def ocr_pdf_book_batch(
     checkpoint_root: Path | None = None,
     progress_callback: Callable[[PDFBookOCRProgress], None] | None = None,
     retry_plans: dict[str, PDFOCRRetryPlan] | None = None,
+    gateway_connection=None,
 ) -> PDFBookOCRSummary:
     """批量识别 PDF 书籍；一本失败不会阻止其余书籍继续处理。"""
     source_pdfs = iter_pdf_book_files(input_path)
@@ -241,6 +246,7 @@ def ocr_pdf_book_batch(
             loaded_settings,
             checkpoint_dir=checkpoint_dir,
             progress_callback=report_book_progress if progress_callback else None,
+            **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
             **({"retry_plan": plan} if plan is not None else {}),
         )
         items.append(replace(item, ocr_identity=identity.fingerprint) if identity else item)

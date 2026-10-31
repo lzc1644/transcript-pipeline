@@ -79,7 +79,7 @@ def test_refine_heading_acceptance_and_real_locked_quote_failure(
         markdown = valid if mode == "heading" or (mode == "retry" and len(prompts) == 2) else f"> {BODY}"
         return {"final_markdown": markdown, "section_map": [], "refinement_notes": [], "needs_review_sections": []}
 
-    monkeypatch.setattr("src.refine_utils.run_codex_api_payload", fake_payload)
+    monkeypatch.setattr("src.llm.tasks.refinement.run_codex_api_payload", fake_payload)
     if mode == "reject":
         with pytest.raises(RefinementOutputValidationError, match="locked_quote_changed"):
             refine_batch(settings)

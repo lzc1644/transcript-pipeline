@@ -50,7 +50,7 @@ def test_explicit_legacy_codex_endpoint_is_still_honored(monkeypatch: pytest.Mon
         assert json.loads(request.data)["stream"] is True
         return 'data: {"type":"response.output_text.delta","delta":"ok"}\n\n'
 
-    monkeypatch.setattr("src.codex_lb_client.read_http_response", fake_read_http_response)
+    monkeypatch.setattr("src.llm.gateway.read_http_response", fake_read_http_response)
     payload = {"model": "legacy-model", "input": "prompt", "stream": True, "store": False}
     assert client.codex_responses_text(payload) == "ok"
     assert client.responses_stream_text(payload) == "ok"

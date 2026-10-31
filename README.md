@@ -23,7 +23,29 @@
 
 双 ASR 为显式可选功能：在任务参数选择不同的主模型和第二模型，两份原稿独立保存、串行推理后联合校对。默认仍是单 ASR，历史任务组合不变。配置、CLI、配对失败处理及单 TXT 文件模式边界见 [ASR 使用说明](docs/ASR_BACKENDS.md#双-asr-联合校对可选)。提示词已精简为语义保真与主动纠错；真实双模型与 GPT 质量验收待手动运行，不把本地测试当作语义质量证明。
 
-另有独立的[网页语音输入](docs/DICTATION.md)：实时双遍听写、录音上传、编辑、复制和 TXT 下载。CPU Streaming Paraformer 预览、GPU Qwen 0.6B 最终识别、Luna 轻度整理；与读书会流水线的任务、配置及产物分开。内网 IP 使用麦克风需可信 HTTPS，见[内网 HTTPS 与证书信任](docs/HTTPS.md)。
+另有独立的[网页语音输入](docs/DICTATION.md)：实时双遍听写、录音上传、编辑、复制和 TXT 下载。CPU Streaming Paraformer 预览、GPU Qwen 0.6B 最终识别、Gemini 3.5 Flash Lite 逐句整理、Gemini 3.8 Flash High 全文整理；与读书会流水线的任务、配置及产物分开。内网 IP 使用麦克风需可信 HTTPS，见[内网 HTTPS 与证书信任](docs/HTTPS.md)。
+
+## 后端模块化：四类能力，按场景组合
+
+处理能力可以独立调用，也可以组合成现有读书会、文件转写、PDF 工具和听写流程。只做一项操作时，传入文件、模型选项、资源目录或网关连接即可，不必先创建 job、启动 Web 或加载完整项目 YAML。
+
+- **媒体处理 `src/media/`**：音视频格式转换、限长 PCM 解码。
+- **本地 ASR `src/asr/`**：文件／长音频转写、流式预览、最终短句识别，以及结果校验与发布。三种识别保留各自算法和模型生命周期。
+- **PDF 处理 `src/pdf/`**：逐页识别、检查点恢复、来源与完整性检查，输出带物理页标记的 TXT；参考提取和独立书籍工具共用核心。
+- **LLM 处理 `src/llm/`**分两层：`gateway.py` 与 `connection.py` 负责通用 HTTP/SSE、连接和代理隔离；`tasks/` 负责读书会／对谈校对、听写逐句／全文整理的提示词、输入装配和结果校验。PDF 专用提示词仍归 PDF。
+
+```text
+读书会：媒体 → ASR → 参考准备 → LLM 校对 → 导出
+文件转写：媒体 → 文件 ASR
+PDF 工具：PDF → LLM 网关 → TXT
+听写：流式预览／短句 ASR → 听写文字任务 → 原会话正文
+```
+
+`src/pipeline/` 负责阶段分派；CLI、Web、job 与听写服务继续管理配置快照、工作区、任务顺序、排队和产物交付。听写的会话权限、正文版本、人工编辑和暂停／结束仍由原服务管理，不并入通用能力。新产品将同一连接快照显式传过后台线程，不靠临时修改全局环境切换网关。
+
+原 CLI、API、配置／目录适配器与旧类型／异常导入继续兼容：`ffmpeg_utils`、`asr_utils`、`reference_utils`、`pdf_book_ocr`、`refine_utils` 等入口已调用新核心，`scripts/run_pipeline.py` 的参数和退出码不变。
+
+扩展时按职责落位：转换放媒体层，识别后端／结果合同放 ASR，页面与检查点规则放 PDF；通用传输放网关，业务提示词与校验放文字任务。新的产品流程或状态留在编排／产品层，不让能力反向依赖 Web 或完整配置。具体可执行示例见[后端能力使用指南](docs/BACKEND_MODULES.md)，维护边界见[CS note](codestable/notes/001-backend-capability-boundaries.md)。
 
 ## 当前阶段已实现
 
@@ -36,13 +58,13 @@
 - 使用 `faster-whisper` 生成转录中间结果
 - 输出 `data/intermediate/asr/` 下的 JSON 和 TXT
 - 扫描 `data/input/reference/` 下的参考原文文件
-- 支持 `.txt` / `.md` / 可提取文本的 `.pdf`
+- 支持 `.txt` / `.md`；PDF 默认通过 Codex API 逐页 OCR，保留文字层／Tesseract／CLI 历史入口
 - 输出 `data/intermediate/extracted_text/` 下的 JSON 和 TXT
 - 读取 ASR 与参考文本中间结果并生成 `data/intermediate/aligned/` 对齐结果
 - 对齐阶段支持更细粒度分段、文本 normalization 和 top-k 匹配候选
 - 基于 aligned 结果输出保守的候选分类到 `data/intermediate/classified/`（可选辅助）
 - 基于 `asr.txt + extracted_text.txt + 提示词` 直接输出整篇 Markdown 草稿到 `data/intermediate/refined/`
-- 阶段 6 默认使用 `codex_api`，也支持本地 `codex` 与 `gemini` CLI 双后端整篇比较后生成单一 `final_markdown`
+- 阶段 6 默认使用 `codex_api`，也支持旧 `codex_cli` 与 `agy` 双后端比较；多后端成功时保留候选供人工选择，不自动生成单一 `final_markdown`
 - 阶段 7 将阶段 6 的 `final_markdown` 写入 `data/output/final/`
 - 十个最小 CLI 入口
 - 最基本单元测试
@@ -57,16 +79,24 @@
 
 ## 目录结构
 
+以下列出处理链路相关的主要目录与入口，省略其他文件。
+
 ```text
 transcript-pipeline/
 ├── README.md
 ├── .gitignore
 ├── .env.example
 ├── requirements.txt
+├── requirements-dev.txt
+├── docs/
+│   ├── BACKEND_MODULES.md
+│   ├── BACKEND_MODULARIZATION_PLAN.md
+│   └── PIPELINE_PLAN.md
 ├── config/
 │   ├── settings.yaml
 │   └── prompts/
 │       ├── classify_and_correct.md
+│       ├── conversation_cleanup.md
 │       └── final_cleanup.md
 ├── data/
 │   ├── input/
@@ -97,17 +127,32 @@ transcript-pipeline/
 │   ├── 07_export_markdown.py
 │   ├── 08_run_job.py
 │   ├── 09_run_batch_jobs.py
-│   └── run_pipeline.py
+│   ├── 10_ocr_pdf_books.py
+│   ├── 11_integrate_ocr_txt.py
+│   ├── run_pipeline.py             # 兼容 CLI
+│   └── validate_backend_modules.py # 本地合成材料验收
 ├── src/
-│   ├── __init__.py
-│   ├── align_utils.py
-│   ├── asr_utils.py
-│   ├── classify_utils.py
+│   ├── media/                 # 转换与限长解码
+│   ├── asr/                   # 文件／流式／短句、纯结果和配对
+│   ├── pdf/                   # 逐页处理、检查点和完整 TXT 发布
+│   ├── llm/
+│   │   ├── connection.py      # 不可变连接与代理快照
+│   │   ├── gateway.py         # 通用传输
+│   │   └── tasks/             # 校对与听写文字任务
+│   ├── pipeline/              # 阶段分派核心
+│   ├── dictation/             # 听写会话、正文与资源调度
+│   ├── web/                   # API 产品接线、任务和产物
+│   ├── job_runner.py          # 单任务／批量编排
 │   ├── config_loader.py
-│   ├── ffmpeg_utils.py
-│   ├── job_runner.py
-│   ├── refine_utils.py
+│   ├── ffmpeg_utils.py        # 旧媒体配置适配入口
+│   ├── asr_utils.py
 │   ├── reference_utils.py
+│   ├── pdf_book_ocr.py
+│   ├── refine_utils.py
+│   ├── codex_lb_client.py
+│   ├── align_utils.py
+│   ├── classify_utils.py
+│   ├── export_utils.py
 │   ├── runtime_utils.py
 │   └── schemas.py
 └── tests/
@@ -120,14 +165,18 @@ transcript-pipeline/
     ├── test_refine.py
     ├── test_job_runner.py
     ├── test_prepare_reference.py
-    └── test_transcribe.py
+    ├── test_transcribe.py
+    ├── test_media_asr_capabilities.py
+    ├── test_pdf_capability.py
+    ├── test_llm_capabilities.py
+    └── test_pipeline_capability.py
 ```
 
 说明：
 
-- `config/settings.yaml` 是当前唯一运行配置入口
+- 现有产品入口默认读取 `config/settings.yaml`；独立能力调用无需完整项目配置
 - `data/` 目录下的叶子目录使用 `.gitkeep` 保留骨架
-- 第六阶段会读取 `config/prompts/classify_and_correct.md`
+- 阶段 6 默认读取 `prompts.final_cleanup`（`config/prompts/final_cleanup.md`）；对谈 job 映射到 `prompts.conversation_cleanup`。`classify_and_correct.md` 继续保留给旧两步校对入口
 - 第七阶段会直接写出 `data/intermediate/refined/*.json` 中的 `final_markdown`
 
 ## 运行要求
@@ -616,7 +665,7 @@ http://127.0.0.1:5173
 
 - `单任务`：对应 `scripts/08_run_job.py`
 - `批量任务`：对应 `scripts/09_run_batch_jobs.py`
-- `单阶段`：对应 `scripts/run_pipeline.py --stage`
+- `单阶段`：支持当前配置目录模式，以及上传文件后在隔离工作区运行的文件模式；目录模式对应 `scripts/run_pipeline.py --stage`
 - `PDF OCR`：独立上传单本 PDF 或 PDF 目录，识别完成后逐本下载 TXT，或一键下载当前项目中完整书籍的 TXT ZIP（保留子目录，附未完成书籍清单）；失败页可重试并沿用成功页检查点。支持二次确认删除项目，运行中禁止删除；仅清理任务记录、结果与检查点，保留上传 PDF。已移除 EPUB 导出
 - `任务列表`：查看 `data/jobs/` 下已有任务状态，下载单任务结果、批量结果 ZIP 和批量子任务结果
 - `设置`：配置 Codex API 的 base URL、API key、阶段 6 模型和 PDF OCR 模型；“API 直连
@@ -633,7 +682,7 @@ http://127.0.0.1:5173
 - 上传文件会保存到 `data/uploads/`，该目录默认被 `.gitignore` 忽略
 - PDF OCR 的上传文件会位于 `data/uploads/pdf-ocr/`；结果、任务状态和逐页检查点会隔离保存在 `data/jobs/pdf-ocr/`，不会写入录屏整理流水线的数据目录
 - 局域网访问前，请确保主机防火墙允许前端端口 `5173` 和后端端口 `8000`
-- 单阶段页面运行的是**当前配置文件绑定的数据目录**，不是临时单文件运行器
+- 单阶段页面的目录模式处理当前配置绑定的数据目录；文件模式使用独立工作区，可下载阶段结果，不改写原配置目录
 - 长任务使用 `state.json` 持久化状态，页面会通过轮询显示 `pending / running / success / failed`
 
 ## 运行方式
@@ -759,7 +808,7 @@ http://127.0.0.1:5173
   - `basename.codex_api.json`
   - `basename.codex_cli.json`
   - `basename.agy.json`
-- 双模型模式下主索引文件不会自动选主结果，`final_markdown` 留空，需人工决定使用哪一份
+- 多后端均成功时主索引文件为 `manual_selection_required`，`final_markdown` 留空；需人工决定使用哪一份，阶段 7 不会把未选择的候选当作已完成最终稿
 - `final_markdown` 已直接包含：
   - 原文朗读引用块 `>`
   - 讲解普通段落
@@ -1079,17 +1128,17 @@ JSON 中间结果至少包含：
 
 PDF 支持边界：
 
-- 当前 PDF 默认优先尝试 `codex_api` OCR
+- 当前 PDF 默认使用 `reference.ai_ocr_backend = codex_api`，也可显式选择历史 `agy`／`codex_cli` 后端
 - `codex_api` OCR 先读取 PDF 总页数，再由受限工作线程按需用 `pdftoppm` 渲染当前页，并通过 CPA / OpenAI 兼容网关的 `/v1/responses` 发送一个 `input_image`；页面完成后立即释放图片数据，不会一次性把整本书的 PNG/base64 保存在内存中
 - 独立 PDF OCR 任务会把每个成功页原子写入任务目录；单页失败后继续处理其余页面并记录完整失败页码，点击“重试缺失页”只重新请求没有成功检查点的页面
 - 最终 TXT 仍只在所有页检查点齐全后按页序生成，在真实页边界插入 `----- OCR_PAGE_BREAK: 1 -> 2 -----`（页码随原 PDF 变化）；单页检查点不包含新增标记，服务或任务进程重启不会删除已成功页面
-- `codex_api` OCR 默认模型是 `gpt-6-luna`，reasoning effort 是 `high`
+- 当前配置的 `codex_api` OCR 默认模型是 `gemini-3.5-flash-lite`，reasoning effort 是 `medium`
 - 直接运行阶段 3 时，可用 `--ocr-model` 和 `--ocr-reasoning-effort` 临时覆盖 OCR 模型与 reasoning
-- 如果 Codex API OCR 失败，但 PDF 自带文字层可提取，则回退到文字层提取
-- 如果 Codex API OCR 失败，且文字层为空或接近空，并且 `reference.run_ocr_when_needed = true`，会继续尝试其他 AI OCR 后端，最后回退到 `ocrmypdf + tesseract`
+- 所选 OCR 后端失败时保留失败／缺页状态，不静默改用文字层、其他 AI 后端或 Tesseract；`prefer_existing_text`／`run_ocr_when_needed` 不会触发这条自动回退链
+- 文字层提取与 `ocrmypdf + tesseract` 函数继续保留为历史显式入口，不在当前默认 PDF 路径中自动调用
 - OCR sidecar 默认写入 `data/intermediate/ocr/*.codex_api_ocr.txt`
-- 当前 OCR 路线面向中文扫描版 PDF
-- 如果 OCR 结果仍为空或接近空，会提示当前 PDF 质量可能较差
+- 参考提取保留原纯文本 OCR 提示词，独立书籍工具使用保留中外文及注释的专用提示词
+- 空白页是合法成功页；整本完成仍需人工复核识别内容
 
 ## OCR 文本整合
 

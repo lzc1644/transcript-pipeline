@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import logging
@@ -13,6 +12,20 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from src.codex_lb_client import CodexLBClient
+from src.llm.gateway import connection_from_settings
+from src.pdf.errors import (
+    ReferencePreparationError, ReferenceInputEmptyError, PdfDependencyError,
+    AgyOCRError, CodexOCRError, CodexOCRPagesIncompleteError,
+)
+from src.pdf.ocr import (
+    PDFOCROptions, PDFOCRRuntime, ocr_pdf, META_LINE_MARKERS,
+    strip_fenced_text, is_page_marker_line, is_page_number_line, is_meta_line,
+    sanitize_gemini_ocr_text, build_codex_api_image_ocr_prompt,
+    build_pdf_book_ocr_image_prompt, get_pdf_page_count,
+    render_pdf_page_as_png_data_url, codex_ocr_page_checkpoint_path,
+    load_codex_ocr_page_checkpoints, write_codex_ocr_page_checkpoint,
+    load_codex_ocr_page_sources, write_codex_ocr_page_source,
+)
 from src.ocr_page_markers import format_ocr_page_break
 from src.ocr_scheduler import OCRPageTask, run_staggered_page_ocr_tasks
 from src.pdf_ocr_workflow import (
@@ -31,68 +44,8 @@ AI_OCR_BACKEND_CODEX_API = "codex_api"
 AI_OCR_BACKEND_CODEX_CLI = "codex_cli"
 AI_OCR_BACKEND_AGY = "agy"
 VALID_AI_OCR_BACKENDS = (AI_OCR_BACKEND_CODEX_API, AI_OCR_BACKEND_AGY, AI_OCR_BACKEND_CODEX_CLI)
-META_LINE_MARKERS = (
-    "CRITICAL INSTRUCTION",
-    "EPHEMERAL_MESSAGE",
-    "Now I have the text content",
-    "Let's read the text content",
-    "OK, I will output",
-    "I will read through carefully",
-    "I just need to return it",
-    "Page 1 ends with",
-    "The following is an ephemeral message",
-    "你现在要对一份中文 PDF 做 OCR 提取",
-    "任务要求",
-    "只输出提取后的纯文本",
-    "不要解释",
-    "请处理这个 PDF 文件",
-    "我将读取 PDF 文件",
-)
 OCR_SECTION_LABEL_SUFFIXES = ("段", "章", "节", "篇", "部分", "附录")
 LOGGER = logging.getLogger(__name__)
-
-
-class ReferencePreparationError(RuntimeError):
-    """Raised when reference preparation fails."""
-
-
-class ReferenceInputEmptyError(ReferencePreparationError):
-    """Raised when there are no supported reference files to process."""
-
-
-class PdfDependencyError(ReferencePreparationError):
-    """Raised when PDF extraction dependencies are missing."""
-
-
-class AgyOCRError(ReferencePreparationError):
-    """agy OCR 调用失败。"""
-
-
-class CodexOCRError(ReferencePreparationError):
-    """Codex OCR 调用失败。"""
-
-
-class CodexOCRPagesIncompleteError(CodexOCRError):
-    """单页任务全部执行后，仍有页面没有成功结果。"""
-
-    def __init__(
-        self,
-        reference_path: Path,
-        page_count: int,
-        completed_page_numbers: list[int],
-        page_errors: dict[int, str],
-        *,
-        fallback_page_models: dict[int, str] | None = None,
-    ) -> None:
-        self.fallback_page_models = dict(fallback_page_models or {})
-        self.reference_path = reference_path
-        self.page_count = page_count
-        self.completed_page_numbers = tuple(sorted(completed_page_numbers))
-        self.page_errors = dict(sorted(page_errors.items()))
-        failed_pages = "、".join(str(page_number) for page_number in self.page_errors)
-        super().__init__(
-            f"Codex API OCR 仍有 {len(self.page_errors)} 页未完成: {reference_path.name} | 页码 {failed_pages}"
-        )
 
 
 CodexOCRPageProgress = PDFOCRPageState
@@ -131,6 +84,7 @@ class ReferenceFileProgress:
     failed_page_numbers: tuple[int, ...]
     page_errors: dict[int, str]
     resumable: bool
+    status: str = "running"
 
 
 @dataclass(frozen=True)
@@ -264,35 +218,8 @@ def is_gemini_capacity_error(text: str) -> bool:
     return "429" in normalized or "MODEL_CAPACITY_EXHAUSTED" in normalized or "RESOURCE_EXHAUSTED" in normalized
 
 
-def strip_fenced_text(text: str) -> str:
-    candidate = text.strip()
-    if candidate.startswith("```"):
-        candidate = re.sub(r"^```[a-zA-Z0-9_-]*\n?", "", candidate)
-        candidate = re.sub(r"\n?```$", "", candidate)
-    return candidate.strip()
-
-
 def is_cjk_content_line(text: str) -> bool:
     return bool(re.search(r"[\u3400-\u9fff]", text))
-
-
-def is_page_marker_line(text: str) -> bool:
-    stripped = text.strip()
-    return bool(re.fullmatch(r"\[Page\s+\d+\]", stripped, flags=re.IGNORECASE)) or bool(
-        re.fullmatch(r"Page\s+\d+:?", stripped, flags=re.IGNORECASE)
-    )
-
-
-def is_page_number_line(text: str) -> bool:
-    return bool(re.fullmatch(r"\d{1,4}", text.strip()))
-
-
-def is_meta_line(text: str) -> bool:
-    stripped = text.strip()
-    if not stripped:
-        return False
-    normalized = stripped.lower()
-    return any(marker.lower() in normalized for marker in META_LINE_MARKERS)
 
 
 def normalize_ocrmypdf_edge_line(text: str) -> str:
@@ -460,44 +387,6 @@ def sanitize_ocrmypdf_text(text: str) -> str:
     return "\n\n".join(cleaned_pages).strip()
 
 
-def sanitize_gemini_ocr_text(text: str) -> str:
-    candidate = strip_fenced_text(text)
-    output_lines: list[str] = []
-    started = False
-
-    for raw_line in candidate.splitlines():
-        line = raw_line.strip()
-        if not line:
-            if started and output_lines and output_lines[-1] != "":
-                output_lines.append("")
-            continue
-
-        if is_meta_line(line):
-            if started:
-                break
-            continue
-
-        if is_page_marker_line(line):
-            started = True
-            continue
-
-        if is_page_number_line(line):
-            if started:
-                continue
-            continue
-
-        if not started and re.fullmatch(r"[A-Za-z]{1,2}>\.{2,}", line):
-            continue
-
-        started = True
-        output_lines.append(re.sub(r"^t(?=[\u3400-\u9fff])", "", line))
-
-    while output_lines and output_lines[-1] == "":
-        output_lines.pop()
-
-    return "\n".join(output_lines).strip()
-
-
 def build_gemini_ocr_prompt(reference_path: str | Path) -> str:
     return "\n".join(
         [
@@ -530,170 +419,6 @@ def build_codex_ocr_prompt(reference_path: str | Path) -> str:
             f"请处理这个 PDF 文件：@{{{reference_path}}}",
         ]
     )
-
-
-def build_codex_api_image_ocr_prompt(reference_path: str | Path, page_number: int, page_count: int) -> str:
-    return "\n".join(
-        [
-            "你现在要对一份中文 PDF 的单页图片做 OCR 提取。",
-            "任务要求：",
-            "1. 只输出提取后的纯文本。",
-            "2. 不要解释，不要总结，不要添加说明。",
-            "3. 保留原文顺序，尽量保留自然段。",
-            "4. 不要输出 Markdown，不要输出 JSON。",
-            "5. 不要输出页码、分页标记、页眉、页尾、Page 1 之类的分页提示。",
-            "6. 本次只提供当前这一页图片，请直接识别其中的正文。",
-            "",
-            f"PDF 文件名：{Path(reference_path).name}",
-            f"当前页：{page_number}",
-            f"PDF 总页数：{page_count}",
-        ]
-    )
-
-
-def build_pdf_book_ocr_image_prompt(reference_path: str | Path, page_number: int, page_count: int) -> str:
-    """转写中外文混排页面；保留调度接口参数，但不附加文件名和页数语境。"""
-    return "\n".join(
-        [
-            "这是一个 OCR（图像文字识别）任务。请识别我提供的这张图片中实际可见的文字，并输出纯文本。",
-            "页面可能有中文、英文及其他语言混排：各语言保持原文，不翻译、不音译，不因切换语言而省略文字。",
-            "按自然阅读顺序保留标题、段落和换行；同一行或段落内的中外文按原位置衔接，不按语言重新分组。",
-            "外文保留原有大小写、重音符号、标点和引号，不凭记忆补全熟悉的引文。",
-            "保留正文、脚注、尾注、边注、编者注、译者注及其编号或符号；小字和页面底部的外文注释也要识别，并与正文分行。",
-            "仅省略明确的页码、统一页眉和页尾；无法判断是否为注释时保留。",
-            "只依据图片，不补写图片外的内容，不猜测或改写看不清的文字，不总结、不解释，不输出 Markdown 或 JSON。",
-        ]
-    )
-
-
-def get_pdf_page_count(reference_path: Path) -> int:
-    PdfReader = import_pdf_reader()
-    try:
-        page_count = len(PdfReader(str(reference_path)).pages)
-    except Exception as exc:
-        raise CodexOCRError(f"Codex API OCR 无法读取 PDF 页数: {reference_path.name} | {exc}") from exc
-    if page_count < 1:
-        raise CodexOCRError(f"Codex API OCR PDF 没有可处理的页面: {reference_path.name}")
-    return page_count
-
-
-def render_pdf_page_as_png_data_url(reference_path: Path, page_number: int, page_count: int) -> str:
-    if shutil.which("pdftoppm") is None:
-        raise CodexOCRError("未找到 pdftoppm，无法将 PDF 页面渲染为图片供 Codex API OCR。")
-    if page_number < 1 or page_number > page_count:
-        raise CodexOCRError(
-            f"Codex API OCR 页面超出范围: {reference_path.name} | 页码 {page_number}，总页数 {page_count}"
-        )
-
-    with tempfile.TemporaryDirectory(prefix=f"{reference_path.stem}.codex_api_page_{page_number}_") as temp_dir:
-        output_prefix = Path(temp_dir) / "page"
-        command = [
-            "pdftoppm",
-            "-f",
-            str(page_number),
-            "-l",
-            str(page_number),
-            "-singlefile",
-            "-png",
-            str(reference_path),
-            str(output_prefix),
-        ]
-        completed = subprocess.run(
-            command,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if completed.returncode != 0:
-            stderr = completed.stderr.strip() or completed.stdout.strip()
-            raise CodexOCRError(
-                f"Codex API OCR 第 {page_number} 页渲染失败: {reference_path.name} | "
-                f"{stderr or f'pdftoppm exited with code {completed.returncode}'}"
-            )
-
-        page_path = output_prefix.with_suffix(".png")
-        if not page_path.is_file():
-            raise CodexOCRError(f"Codex API OCR 页面渲染未生成第 {page_number} 页图片: {reference_path.name}")
-        try:
-            encoded = base64.b64encode(page_path.read_bytes()).decode("ascii")
-        except OSError as exc:
-            raise CodexOCRError(f"Codex API OCR 无法读取第 {page_number} 页渲染图片: {exc}") from exc
-        return f"data:image/png;base64,{encoded}"
-
-
-def codex_ocr_page_checkpoint_path(checkpoint_dir: Path, page_number: int) -> Path:
-    return checkpoint_dir / f"page-{page_number:06d}.txt"
-
-
-def load_codex_ocr_page_checkpoints(checkpoint_dir: Path, page_count: int) -> dict[int, str]:
-    page_texts: dict[int, str] = {}
-    for page_number in range(1, page_count + 1):
-        page_path = codex_ocr_page_checkpoint_path(checkpoint_dir, page_number)
-        if not page_path.is_file():
-            continue
-        try:
-            page_texts[page_number] = page_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            raise CodexOCRError(f"无法读取 OCR 第 {page_number} 页检查点: {page_path} | {exc}") from exc
-    return page_texts
-
-
-def write_codex_ocr_page_checkpoint(checkpoint_dir: Path, page_number: int, page_text: str) -> None:
-    ensure_directory(checkpoint_dir)
-    page_path = codex_ocr_page_checkpoint_path(checkpoint_dir, page_number)
-    pending_path = page_path.with_suffix(".txt.pending")
-    try:
-        pending_path.write_text(page_text, encoding="utf-8")
-        pending_path.replace(page_path)
-    except OSError as exc:
-        raise CodexOCRError(f"无法写入 OCR 第 {page_number} 页检查点: {page_path} | {exc}") from exc
-
-
-def load_codex_ocr_page_sources(
-    checkpoint_dir: Path, page_texts: dict[int, str], primary_model: str,
-) -> dict[int, str]:
-    """旧 TXT 没有来源 sidecar 仍可复用；已有来源必须与文本及父模型一致。"""
-    fallback_models: dict[int, str] = {}
-    for page, text in page_texts.items():
-        source_path = checkpoint_dir / f"page-{page:06d}.source.json"
-        if not source_path.exists():
-            continue
-        try:
-            source = json.loads(source_path.read_text(encoding="utf-8"))
-            if (not isinstance(source, dict)
-                    or not isinstance(source.get("model"), str)
-                    or not source["model"].strip()
-                    or source.get("primary_model") != primary_model
-                    or source.get("text_sha256") != hashlib.sha256(text.encode("utf-8")).hexdigest()):
-                raise ValueError("来源与页文本或父模型不一致")
-        except (OSError, ValueError) as exc:
-            raise CodexOCRError(f"无法校验 OCR 第 {page} 页模型来源: {source_path} | {exc}") from exc
-        if source.get("fallback") is True:
-            fallback_models[page] = source["model"]
-    return fallback_models
-
-
-def write_codex_ocr_page_source(
-    checkpoint_dir: Path, page: int, text: str,
-    primary: PDFOCRPageModel, effective: PDFOCRPageModel,
-) -> None:
-    source_path = checkpoint_dir / f"page-{page:06d}.source.json"
-    pending_path = source_path.with_suffix(".json.pending")
-    source = {
-        "schema_version": 1,
-        "page_number": page,
-        "primary_model": primary.model,
-        "model": effective.model,
-        "reasoning_effort": effective.reasoning_effort,
-        "fallback": effective.model != primary.model,
-        "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-    }
-    try:
-        ensure_directory(checkpoint_dir)
-        pending_path.write_text(json.dumps(source, ensure_ascii=False, indent=2), encoding="utf-8")
-        pending_path.replace(source_path)
-    except OSError as exc:
-        raise CodexOCRError(f"无法写入 OCR 第 {page} 页模型来源: {source_path} | {exc}") from exc
 
 
 def describe_ai_ocr_backend(backend: str) -> str:
@@ -749,155 +474,38 @@ def run_codex_api_pdf_ocr(
     progress_callback: Callable[[CodexOCRPageProgress], None] | None = None,
     prompt_builder: Callable[[str | Path, int, int], str] = build_codex_api_image_ocr_prompt,
     retry_plan: PDFOCRRetryPlan | None = None,
+    gateway_connection=None,
 ) -> tuple[str, list[str]]:
-    reference_settings = loaded_settings.settings.reference
-    configured_model = reference_settings.codex_ocr_model.strip()
-    if not configured_model:
+    settings = loaded_settings.settings.reference
+    if not settings.codex_ocr_model.strip():
         raise CodexOCRError("codex_api OCR 需要配置 reference.codex_ocr_model。")
-
-    primary = PDFOCRPageModel(
-        configured_model,
-        reference_settings.codex_ocr_reasoning_effort.strip(),
-        reference_settings.codex_ocr_fast_mode,
-    )
-    if retry_plan is not None and retry_plan.identity_fingerprint != build_pdf_ocr_run_identity(
-        reference_path, loaded_settings,
-    ).fingerprint:
-        retry_plan = None
-
     client = CodexLBClient(
         loaded_settings.settings.codex_lb,
-        timeout_seconds=reference_settings.ocr_timeout_seconds,
+        timeout_seconds=settings.ocr_timeout_seconds,
         require_stream_completed=True,
+        connection=(gateway_connection if gateway_connection is not None else
+                    connection_from_settings(loaded_settings.settings.codex_lb)),
     )
-    page_count = get_pdf_page_count(reference_path)
-    completed_page_texts = (
-        load_codex_ocr_page_checkpoints(checkpoint_dir, page_count)
-        if checkpoint_dir is not None
-        else {}
+    output_path = Path(sidecar_path) if sidecar_path is not None else (
+        loaded_settings.path_for("ocr_dir") / f"{reference_path.stem}.codex_api_ocr.txt"
     )
-    fallback_page_models = (
-        load_codex_ocr_page_sources(checkpoint_dir, completed_page_texts, configured_model)
-        if checkpoint_dir is not None else {}
+    result = ocr_pdf(
+        reference_path, output_path,
+        PDFOCROptions(settings.codex_ocr_model, settings.codex_ocr_reasoning_effort,
+                      settings.codex_ocr_fast_mode, settings.codex_ocr_max_concurrency,
+                      settings.codex_ocr_submit_interval_seconds),
+        gateway=client, checkpoint_dir=checkpoint_dir, progress_callback=progress_callback,
+        prompt_builder=prompt_builder, retry_plan=retry_plan,
+        _runtime=PDFOCRRuntime(
+            page_count=get_pdf_page_count, render_page=render_pdf_page_as_png_data_url,
+            load_checkpoints=load_codex_ocr_page_checkpoints, load_sources=load_codex_ocr_page_sources,
+            write_source=write_codex_ocr_page_source, write_checkpoint=write_codex_ocr_page_checkpoint,
+        ),
     )
-    page_errors: dict[int, str] = {}
-    page_tasks = [
-        OCRPageTask(page_number=page_number)
-        for page_number in range(1, page_count + 1)
-        if page_number not in completed_page_texts
-    ]
-
-    def report_progress() -> None:
-        if progress_callback:
-            progress_callback(
-                CodexOCRPageProgress(
-                    page_count=page_count,
-                    completed_page_numbers=tuple(sorted(completed_page_texts)),
-                    page_errors=dict(sorted(page_errors.items())),
-                    fallback_page_models=dict(sorted(fallback_page_models.items())),
-                )
-            )
-
-    report_progress()
-
-    def recognize_page(task: OCRPageTask) -> str:
-        effective = select_pdf_ocr_page_model(primary, task.page_number, retry_plan)
-        image_url = render_pdf_page_as_png_data_url(reference_path, task.page_number, page_count)
-        content: list[dict[str, str]] = [
-            {
-                "type": "input_text",
-                "text": prompt_builder(reference_path.name, task.page_number, page_count),
-            },
-            {"type": "input_image", "image_url": image_url},
-        ]
-        payload: dict[str, object] = {
-            "model": effective.model,
-            "input": [
-                {
-                    "role": "user",
-                    "content": content,
-                }
-            ],
-            "stream": True,
-            "store": False,
-        }
-        if effective.reasoning_effort:
-            payload["reasoning"] = {"effort": effective.reasoning_effort}
-        if effective.fast_mode:
-            payload["service_tier"] = "priority"
-
-        return sanitize_gemini_ocr_text(strip_fenced_text(client.responses_stream_text(payload)))
-
-    def page_succeeded(task: OCRPageTask, page_text: str) -> None:
-        effective = select_pdf_ocr_page_model(primary, task.page_number, retry_plan)
-        if checkpoint_dir is not None:
-            # 先提交来源，再提交成功 TXT；不能产生无来源的 Gemini 成功页。
-            write_codex_ocr_page_source(checkpoint_dir, task.page_number, page_text, primary, effective)
-            write_codex_ocr_page_checkpoint(checkpoint_dir, task.page_number, page_text)
-        if effective.model != primary.model:
-            fallback_page_models[task.page_number] = effective.model
-        completed_page_texts[task.page_number] = page_text
-        page_errors.pop(task.page_number, None)
-        report_progress()
-
-    def page_failed(task: OCRPageTask, error: Exception) -> None:
-        page_errors[task.page_number] = str(error)
-        report_progress()
-
-    page_run = run_staggered_page_ocr_tasks(
-        page_tasks,
-        recognize_page,
-        max_concurrency=reference_settings.codex_ocr_max_concurrency,
-        submit_interval_seconds=reference_settings.codex_ocr_submit_interval_seconds,
-        logger=LOGGER,
-        on_succeeded=page_succeeded,
-        on_failed=page_failed,
-    )
-    if checkpoint_dir is None:
-        completed_page_texts.update(page_run.texts_by_page)
-    for page_number, error in page_run.errors_by_page.items():
-        page_errors.setdefault(page_number, str(error))
-
-    missing_page_numbers = [
-        page_number
-        for page_number in range(1, page_count + 1)
-        if page_number not in completed_page_texts
-    ]
-    if missing_page_numbers:
-        for page_number in missing_page_numbers:
-            page_errors.setdefault(page_number, "本轮未生成成功页结果。")
-        raise CodexOCRPagesIncompleteError(
-            reference_path,
-            page_count,
-            list(completed_page_texts),
-            page_errors,
-            fallback_page_models=fallback_page_models,
-        )
-
-    page_texts = [completed_page_texts[page_number] for page_number in range(1, page_count + 1)]
-    # 页内换行照原样保留；仅在真实 PDF 页边界加入可识别标记。
-    # 空白页也保留页边界，页码始终对应原 PDF，不猜测跨页自然段。
-    parts: list[str] = []
-    for page_number, page_text in enumerate(page_texts, start=1):
-        if page_number > 1:
-            parts.append(format_ocr_page_break(page_number - 1))
-        normalized_text = page_text.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-        if normalized_text.strip():
-            parts.append(normalized_text)
-    text = "\n\n".join(parts)
-
-    if sidecar_path is None:
-        ocr_dir = ensure_directory(loaded_settings.path_for("ocr_dir"))
-        sidecar_path = ocr_dir / f"{reference_path.stem}.codex_api_ocr.txt"
-    else:
-        sidecar_path = Path(sidecar_path)
-        ensure_directory(sidecar_path.parent)
-    sidecar_path.write_text(text, encoding="utf-8")
-    warnings = [f"已使用 Codex API OCR。model={configured_model}；已完成 {len(page_texts)}/{page_count} 页。"]
-    if fallback_page_models:
-        pages = "、".join(str(page) for page in sorted(fallback_page_models))
-        warnings.append(f"上游输出失败页已使用 Gemini 补页；页码={pages}；来源见逐页 sidecar。")
-    return text, warnings
+    if result.status != "success":
+        assert result.error is not None
+        raise result.error
+    return result.text, list(result.warnings)
 
 
 def run_agy_pdf_ocr(reference_path: Path, loaded_settings: LoadedSettings) -> tuple[str, list[str]]:
@@ -1093,6 +701,7 @@ def read_pdf_reference(
     sidecar_path: Path | None = None,
     checkpoint_dir: Path | None = None,
     progress_callback: Callable[[CodexOCRPageProgress], None] | None = None,
+    gateway_connection=None,
 ) -> tuple[str, str, list[str]]:
     primary_backend = loaded_settings.settings.reference.ai_ocr_backend.strip() or AI_OCR_BACKEND_CODEX_API
     if primary_backend not in VALID_AI_OCR_BACKENDS:
@@ -1104,6 +713,7 @@ def read_pdf_reference(
             sidecar_path=sidecar_path,
             checkpoint_dir=checkpoint_dir,
             progress_callback=progress_callback,
+            **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
         )
         return text, ai_ocr_method_name(primary_backend), warnings
     return run_pdf_ai_ocr_backend(reference_path, loaded_settings, primary_backend)
@@ -1116,6 +726,7 @@ def prepare_reference_file(
     *,
     checkpoint_root: Path | None = None,
     progress_callback: Callable[[ReferenceFileProgress], None] | None = None,
+    gateway_connection=None,
 ) -> ReferenceFileResult:
     source_type = reference_path.suffix.lower().lstrip(".")
     output_paths = build_reference_output_paths(
@@ -1145,6 +756,7 @@ def prepare_reference_file(
                         failed_page_numbers=progress.failed_page_numbers,
                         page_errors=progress.page_errors,
                         resumable=progress.resumable,
+                        status=progress.status,
                     )
                 )
 
@@ -1165,6 +777,7 @@ def prepare_reference_file(
                 sidecar_path=output_paths.txt_path,
                 checkpoint_dir=checkpoint_dir,
                 progress_callback=pdf_progress,
+                **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
             )
         except CodexOCRPagesIncompleteError as exc:
             result = ReferenceFileResult(
@@ -1273,6 +886,7 @@ def prepare_reference_batch(
     *,
     checkpoint_root: Path | None = None,
     progress_callback: Callable[[ReferenceFileProgress], None] | None = None,
+    gateway_connection=None,
 ) -> ReferenceBatchSummary:
     reference_dir = loaded_settings.path_for("reference_dir")
     output_dir = ensure_directory(loaded_settings.path_for("extracted_text_dir"))
@@ -1298,6 +912,7 @@ def prepare_reference_batch(
             logger=logger,
             checkpoint_root=checkpoint_root,
             progress_callback=progress_callback,
+            **({"gateway_connection": gateway_connection} if gateway_connection is not None else {}),
         )
         write_reference_result(result, output_paths)
 
