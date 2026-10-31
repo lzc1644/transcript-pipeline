@@ -23,9 +23,29 @@
 
 双 ASR 为显式可选功能：在任务参数选择不同的主模型和第二模型，两份原稿独立保存、串行推理后联合校对。默认仍是单 ASR，历史任务组合不变。配置、CLI、配对失败处理及单 TXT 文件模式边界见 [ASR 使用说明](docs/ASR_BACKENDS.md#双-asr-联合校对可选)。提示词已精简为语义保真与主动纠错；真实双模型与 GPT 质量验收待手动运行，不把本地测试当作语义质量证明。
 
-独立调用媒体、ASR、PDF、文字处理，以及组合读书会／文件转写／听写／PDF 的可执行例子见 [后端能力使用指南](docs/BACKEND_MODULES.md)。
-
 另有独立的[网页语音输入](docs/DICTATION.md)：实时双遍听写、录音上传、编辑、复制和 TXT 下载。CPU Streaming Paraformer 预览、GPU Qwen 0.6B 最终识别、Gemini 3.5 Flash Lite 逐句整理、Gemini 3.8 Flash High 全文整理；与读书会流水线的任务、配置及产物分开。内网 IP 使用麦克风需可信 HTTPS，见[内网 HTTPS 与证书信任](docs/HTTPS.md)。
+
+## 后端模块化：四类能力，按场景组合
+
+处理能力可以独立调用，也可以组合成现有读书会、文件转写、PDF 工具和听写流程。只做一项操作时，传入文件、模型选项、资源目录或网关连接即可，不必先创建 job、启动 Web 或加载完整项目 YAML。
+
+- **媒体处理 `src/media/`**：音视频格式转换、限长 PCM 解码。
+- **本地 ASR `src/asr/`**：文件／长音频转写、流式预览、最终短句识别，以及结果校验与发布。三种识别保留各自算法和模型生命周期。
+- **PDF 处理 `src/pdf/`**：逐页识别、检查点恢复、来源与完整性检查，输出带物理页标记的 TXT；参考提取和独立书籍工具共用核心。
+- **LLM 处理 `src/llm/`**分两层：`gateway.py` 与 `connection.py` 负责通用 HTTP/SSE、连接和代理隔离；`tasks/` 负责读书会／对谈校对、听写逐句／全文整理的提示词、输入装配和结果校验。PDF 专用提示词仍归 PDF。
+
+```text
+读书会：媒体 → ASR → 参考准备 → LLM 校对 → 导出
+文件转写：媒体 → 文件 ASR
+PDF 工具：PDF → LLM 网关 → TXT
+听写：流式预览／短句 ASR → 听写文字任务 → 原会话正文
+```
+
+`src/pipeline/` 负责阶段分派；CLI、Web、job 与听写服务继续管理配置快照、工作区、任务顺序、排队和产物交付。听写的会话权限、正文版本、人工编辑和暂停／结束仍由原服务管理，不并入通用能力。新产品将同一连接快照显式传过后台线程，不靠临时修改全局环境切换网关。
+
+原 CLI、API、配置／目录适配器与旧类型／异常导入继续兼容：`ffmpeg_utils`、`asr_utils`、`reference_utils`、`pdf_book_ocr`、`refine_utils` 等入口已调用新核心，`scripts/run_pipeline.py` 的参数和退出码不变。
+
+扩展时按职责落位：转换放媒体层，识别后端／结果合同放 ASR，页面与检查点规则放 PDF；通用传输放网关，业务提示词与校验放文字任务。新的产品流程或状态留在编排／产品层，不让能力反向依赖 Web 或完整配置。具体可执行示例见[后端能力使用指南](docs/BACKEND_MODULES.md)，维护边界见[CS note](codestable/notes/001-backend-capability-boundaries.md)。
 
 ## 当前阶段已实现
 
@@ -59,16 +79,24 @@
 
 ## 目录结构
 
+以下列出处理链路相关的主要目录与入口，省略其他文件。
+
 ```text
 transcript-pipeline/
 ├── README.md
 ├── .gitignore
 ├── .env.example
 ├── requirements.txt
+├── requirements-dev.txt
+├── docs/
+│   ├── BACKEND_MODULES.md
+│   ├── BACKEND_MODULARIZATION_PLAN.md
+│   └── PIPELINE_PLAN.md
 ├── config/
 │   ├── settings.yaml
 │   └── prompts/
 │       ├── classify_and_correct.md
+│       ├── conversation_cleanup.md
 │       └── final_cleanup.md
 ├── data/
 │   ├── input/
@@ -99,17 +127,32 @@ transcript-pipeline/
 │   ├── 07_export_markdown.py
 │   ├── 08_run_job.py
 │   ├── 09_run_batch_jobs.py
-│   └── run_pipeline.py
+│   ├── 10_ocr_pdf_books.py
+│   ├── 11_integrate_ocr_txt.py
+│   ├── run_pipeline.py             # 兼容 CLI
+│   └── validate_backend_modules.py # 本地合成材料验收
 ├── src/
-│   ├── __init__.py
-│   ├── align_utils.py
-│   ├── asr_utils.py
-│   ├── classify_utils.py
+│   ├── media/                 # 转换与限长解码
+│   ├── asr/                   # 文件／流式／短句、纯结果和配对
+│   ├── pdf/                   # 逐页处理、检查点和完整 TXT 发布
+│   ├── llm/
+│   │   ├── connection.py      # 不可变连接与代理快照
+│   │   ├── gateway.py         # 通用传输
+│   │   └── tasks/             # 校对与听写文字任务
+│   ├── pipeline/              # 阶段分派核心
+│   ├── dictation/             # 听写会话、正文与资源调度
+│   ├── web/                   # API 产品接线、任务和产物
+│   ├── job_runner.py          # 单任务／批量编排
 │   ├── config_loader.py
-│   ├── ffmpeg_utils.py
-│   ├── job_runner.py
-│   ├── refine_utils.py
+│   ├── ffmpeg_utils.py        # 旧媒体配置适配入口
+│   ├── asr_utils.py
 │   ├── reference_utils.py
+│   ├── pdf_book_ocr.py
+│   ├── refine_utils.py
+│   ├── codex_lb_client.py
+│   ├── align_utils.py
+│   ├── classify_utils.py
+│   ├── export_utils.py
 │   ├── runtime_utils.py
 │   └── schemas.py
 └── tests/
@@ -122,12 +165,16 @@ transcript-pipeline/
     ├── test_refine.py
     ├── test_job_runner.py
     ├── test_prepare_reference.py
-    └── test_transcribe.py
+    ├── test_transcribe.py
+    ├── test_media_asr_capabilities.py
+    ├── test_pdf_capability.py
+    ├── test_llm_capabilities.py
+    └── test_pipeline_capability.py
 ```
 
 说明：
 
-- `config/settings.yaml` 是当前唯一运行配置入口
+- 现有产品入口默认读取 `config/settings.yaml`；独立能力调用无需完整项目配置
 - `data/` 目录下的叶子目录使用 `.gitkeep` 保留骨架
 - 阶段 6 默认读取 `prompts.final_cleanup`（`config/prompts/final_cleanup.md`）；对谈 job 映射到 `prompts.conversation_cleanup`。`classify_and_correct.md` 继续保留给旧两步校对入口
 - 第七阶段会直接写出 `data/intermediate/refined/*.json` 中的 `final_markdown`
