@@ -86,6 +86,8 @@ def secondary_asr_override(request, frontend_settings) -> str | None:
 def request_payload_with_effective_ocr_settings(request, loaded_settings, *, freeze_asr: bool = False) -> dict[str, object]:
     payload = request.model_dump()
     reference_settings = loaded_settings.settings.reference
+    if hasattr(request, "refinement_mode"):
+        payload["refinement_mode"] = loaded_settings.settings.llm.refinement_mode
     if hasattr(request, "fast_mode"):
         payload["fast_mode"] = loaded_settings.settings.llm.fast_mode
     if hasattr(request, "asr_candidate"):
@@ -331,6 +333,7 @@ def run_job_rerun(*, app: FastAPI, job_id: str, payload: dict, state_path: Path)
         apply_model_overrides(
             loaded_settings,
             ModelOverrides(
+                llm_refinement_mode=request.refinement_mode if request.refinement_mode is not None else frontend_settings.refinement_mode,
                 llm_model=request.model or frontend_settings.model or None,
                 llm_reasoning_effort=request.reasoning_effort or frontend_settings.reasoning_effort or None,
                 llm_fast_mode=request.fast_mode,
@@ -456,6 +459,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
         effective_glossary_file = first_text(request.glossary_file, frontend_settings.glossary_file)
         effective_refine_prompt = first_text(request.refine_prompt)
         model_overrides = ModelOverrides(
+            llm_refinement_mode=request.refinement_mode if request.refinement_mode is not None else frontend_settings.refinement_mode,
             asr_candidate=request.asr_candidate or frontend_settings.asr_candidate or None,
             secondary_asr_candidate=secondary_asr_override(request, frontend_settings),
             llm_model=request.model or frontend_settings.model or None,
@@ -737,6 +741,7 @@ def execute_batch_job(*, app: FastAPI, batch_id: str, payload: dict) -> None:
         effective_refine_prompt = first_text(request.refine_prompt)
         effective_remote_concurrency = request.remote_concurrency or frontend_settings.remote_concurrency
         model_overrides = ModelOverrides(
+            llm_refinement_mode=request.refinement_mode if request.refinement_mode is not None else frontend_settings.refinement_mode,
             asr_candidate=request.asr_candidate or frontend_settings.asr_candidate or None,
             secondary_asr_candidate=secondary_asr_override(request, frontend_settings),
             llm_model=request.model or frontend_settings.model or None,
@@ -909,6 +914,7 @@ def execute_stage_run(*, app: FastAPI, run_id: str, stage_name: str, payload: di
         apply_model_overrides(
             loaded_settings,
             ModelOverrides(
+                llm_refinement_mode=request.refinement_mode if request.refinement_mode is not None else frontend_settings.refinement_mode,
                 asr_candidate=request.asr_candidate or frontend_settings.asr_candidate or None,
                 secondary_asr_candidate=secondary_asr_override(request, frontend_settings),
                 llm_model=request.model or frontend_settings.model or None,
@@ -1021,6 +1027,7 @@ def execute_stage_file_run(*, app: FastAPI, run_id: str, stage_name: str, payloa
             job_paths=workspace.job_paths,
             profile_name=base_loaded_settings.active_profile_name,
             model_overrides=ModelOverrides(
+                llm_refinement_mode=request.refinement_mode if request.refinement_mode is not None else frontend_settings.refinement_mode,
                 asr_candidate=request.asr_candidate or frontend_settings.asr_candidate or None,
                 # 文件槽仅接收单份 TXT；明确关闭配置/全局继承，不在联合读取层绕过配对校验。
                 secondary_asr_candidate="" if normalized_stage_name == "refine" else secondary_asr_override(request, frontend_settings),

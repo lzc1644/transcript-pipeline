@@ -21,7 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backend", choices=["codex_api", "agy", "codex_cli", "both"], help="覆盖阶段 6 使用的后端")
     parser.add_argument("--asr-candidate", help="主 ASR 身份，应与已有产物一致")
     parser.add_argument("--secondary-asr-candidate", help="第二 ASR 身份，要求有效完成配对；空字符串关闭")
-    parser.add_argument("--model", help="覆盖阶段 6 使用的模型，例如 gpt-6.1-sol")
+    parser.add_argument("--refinement-mode", choices=["terra_terra", "single_pass"], help="校对模式：默认双 Terra；CLI/多后端请选择 single_pass")
+    parser.add_argument("--model", help="仅单步校对使用的模型，例如 gpt-6.1-sol")
     parser.add_argument("--reasoning-effort", help="覆盖阶段 6 reasoning effort，例如 low / medium / high / xhigh / max")
     return parser
 
@@ -41,7 +42,8 @@ def main() -> int:
     try:
         apply_model_overrides(
             loaded_settings,
-            ModelOverrides(llm_model=args.model, llm_reasoning_effort=args.reasoning_effort,
+            ModelOverrides(llm_refinement_mode=args.refinement_mode,
+                           llm_model=args.model, llm_reasoning_effort=args.reasoning_effort,
                            asr_candidate=args.asr_candidate, secondary_asr_candidate=args.secondary_asr_candidate),
         )
     except SettingsOverrideError as exc:

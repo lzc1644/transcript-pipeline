@@ -25,6 +25,7 @@ class ModelOverrides:
     asr_candidate: str | None = None
     # None 继承快照，空字符串显式关闭双 ASR。
     secondary_asr_candidate: str | None = None
+    llm_refinement_mode: str | None = None
 
 
 def normalize_override_value(value: str | None, *, label: str) -> str | None:
@@ -34,6 +35,13 @@ def normalize_override_value(value: str | None, *, label: str) -> str | None:
     if not normalized:
         raise SettingsOverrideError(f"{label} 不能为空。")
     return normalized
+
+
+def normalize_refinement_mode(value: str | None) -> str | None:
+    value = normalize_override_value(value, label="阶段 6 校对模式")
+    if value is not None and value not in {"single_pass", "terra_terra"}:
+        raise SettingsOverrideError("阶段 6 校对模式必须为 single_pass 或 terra_terra。")
+    return value
 
 
 def normalize_ocr_backend(value: str | None) -> str | None:
@@ -90,6 +98,9 @@ def apply_model_overrides(loaded_settings: LoadedSettings, overrides: ModelOverr
         loaded_settings.settings.asr.secondary_candidate = secondary
     if llm_model is not None:
         loaded_settings.settings.llm.model = llm_model
+    mode = normalize_refinement_mode(overrides.llm_refinement_mode)
+    if mode is not None:
+        loaded_settings.settings.llm.refinement_mode = mode
     if llm_reasoning_effort is not None:
         loaded_settings.settings.llm.reasoning_effort = llm_reasoning_effort
     if overrides.llm_fast_mode is not None:
@@ -130,7 +141,8 @@ def apply_model_overrides_to_raw_settings(payload: dict, overrides: ModelOverrid
             asr_payload["candidate"] = candidate
         if overrides.secondary_asr_candidate is not None:
             asr_payload["secondary_candidate"] = secondary
-    if llm_model is not None or llm_reasoning_effort is not None or overrides.llm_fast_mode is not None:
+    mode = normalize_refinement_mode(overrides.llm_refinement_mode)
+    if llm_model is not None or llm_reasoning_effort is not None or overrides.llm_fast_mode is not None or mode is not None:
         llm_payload = payload.setdefault("llm", {})
         if not isinstance(llm_payload, dict):
             raise SettingsOverrideError("配置字段 llm 必须是对象，无法覆盖阶段 6 模型。")
@@ -140,6 +152,8 @@ def apply_model_overrides_to_raw_settings(payload: dict, overrides: ModelOverrid
             llm_payload["reasoning_effort"] = llm_reasoning_effort
         if overrides.llm_fast_mode is not None:
             llm_payload["fast_mode"] = overrides.llm_fast_mode
+        if mode is not None:
+            llm_payload["refinement_mode"] = mode
 
     if (
         ocr_backend is not None

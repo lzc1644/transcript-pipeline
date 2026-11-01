@@ -17,6 +17,7 @@ config/prompts/*
 !config/prompts/classify_and_correct.md
 !config/prompts/conversation_cleanup.md
 !config/prompts/final_cleanup.md
+!config/prompts/refinement_rewrite.md
 !config/glossaries/
 config/glossaries/*
 !config/glossaries/marxism_common.txt

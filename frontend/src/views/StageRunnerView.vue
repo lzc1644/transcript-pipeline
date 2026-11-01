@@ -28,6 +28,7 @@ import {
   submitStageFileRun,
   submitStageRun,
   type JobState,
+  type RefinementMode,
   type StageFileContract,
   type StageRunPayload,
 } from "../api/client";
@@ -43,6 +44,7 @@ const {
   asrCandidates,
   defaultAsrCandidate,
   defaultSecondaryAsrCandidate,
+  defaultRefinementMode,
   defaultFastMode,
   defaultOcrFastMode,
   error: configError,
@@ -73,6 +75,7 @@ const form = reactive({
   fast_mode: null as boolean | null,
   ocr_fast_mode: null as boolean | null,
   model: "",
+  refinement_mode: "" as "" | RefinementMode,
   reasoning_effort: "",
   ocr_model: "",
   ocr_reasoning_effort: "",
@@ -153,6 +156,17 @@ const currentStageGuide = computed(() => stageGuides.find((guide) => guide.value
 const isFileMode = computed(() => runMode.value === "file");
 const usesOcrOverrides = computed(() => form.stage === "prepare-reference");
 const usesRefineOverrides = computed(() => form.stage === "refine");
+const effectiveRefinementMode = computed(() => form.refinement_mode || defaultRefinementMode.value);
+const terraRewrite = computed(() => effectiveRefinementMode.value === "terra_terra");
+const displayedFastMode = computed({
+  get: () => terraRewrite.value ? true : form.fast_mode,
+  set: (value: boolean) => { form.fast_mode = value; },
+});
+const refinementModeOptions = [
+  { label: "使用全局默认", value: "" },
+  { label: "双步校对：Terra high → xhigh（Fast，默认）", value: "terra_terra" },
+  { label: "单步校对（兼容模式）", value: "single_pass" },
+];
 const reasoningOptions = [
   { label: "低", value: "low" },
   { label: "中", value: "medium" },
@@ -161,6 +175,7 @@ const reasoningOptions = [
   { label: "最高", value: "max" },
 ];
 const modelOptions = [
+  { label: "GPT-6.1 Terra", value: "gpt-6.1-terra" },
   { label: "Gemini 3.8 Flash High", value: "gemini-3.8-flash-high" },
   { label: "Gemini 3.5 Flash Lite", value: "gemini-3.5-flash-lite" },
   { label: "GPT-6.1 Sol", value: "gpt-6.1-sol" },
@@ -258,6 +273,7 @@ function buildStageRunPayload(): StageRunPayload {
     payload.backend = "codex_api";
     payload.fast_mode = form.fast_mode;
     payload.model = optionalValue(form.model);
+    payload.refinement_mode = form.refinement_mode || null;
     payload.reasoning_effort = optionalValue(form.reasoning_effort);
   }
   return payload;
@@ -564,16 +580,21 @@ onBeforeUnmount(stopPolling);
                   <n-alert type="info" :show-icon="false">单 TXT 文件校对仅使用单 ASR，不继承全局第二模型。联合校对请使用完整任务或已完成配对的 CLI 工作区。</n-alert>
                 </n-grid-item>
                 <n-grid-item span="2">
-                  <FastModeSwitch v-model="form.fast_mode" label="AI 精修快速模式" :disabled="configLoading" />
+                  <FastModeSwitch v-model="displayedFastMode" label="AI 精修快速模式" :disabled="terraRewrite || configLoading" />
                   <p class="prompt-hint">通过 CPA 请求快速服务；可能增加额度消耗或费用，不改变推理强度。</p>
                 </n-grid-item>
                 <n-grid-item span="2 m:1">
-                  <n-form-item label="阶段 6 模型">
+                  <n-form-item label="阶段 6 校对模式">
+                    <n-select v-model:value="form.refinement_mode" :options="refinementModeOptions" />
+                  </n-form-item>
+                  <p v-if="terraRewrite" class="prompt-hint" role="status">正式双步校对：Terra high 底稿 → Terra xhigh 书面润色，两步始终请求 Fast（priority）。每步一次，两稿分别保留；下方参数不改变双步流程，快速服务可能增加费用。</p>
+                  <n-form-item label="阶段 6 单步模型">
                     <n-select
                       v-model:value="form.model"
                       :options="modelOptions"
                       clearable
                       placeholder="使用默认阶段 6 模型"
+                      :disabled="effectiveRefinementMode !== 'single_pass'"
                     />
                   </n-form-item>
                 </n-grid-item>
@@ -584,6 +605,7 @@ onBeforeUnmount(stopPolling);
                       :options="reasoningOptions"
                       clearable
                       placeholder="使用默认阶段 6 推理强度"
+                      :disabled="terraRewrite"
                     />
                   </n-form-item>
                 </n-grid-item>

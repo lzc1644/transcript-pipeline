@@ -171,15 +171,38 @@ def _secondary_asr_artifacts(job_root: Path) -> list[ArtifactEntry]:
     return entries
 
 
+def _refinement_pass_artifacts(job_root: Path) -> list[ArtifactEntry]:
+    entries = []
+    for mode in ("terra-flash", "terra-terra"):
+        root = job_root / "output/logs/refine/source" / mode
+        runs = sorted(path for path in root.glob("*") if path.is_dir() and (path / "experiment.json").is_file())
+        if not runs:
+            continue
+        latest = runs[-1]
+        if mode == "terra-flash":
+            entries.extend([
+                ArtifactEntry("refine-terra-draft", "refine", "Terra 保真底稿（历史 Flash 实验）", latest / "draft.md", "file", "markdown"),
+                ArtifactEntry("refine-flash-polish", "refine", "Flash 润色候选（历史实验）", latest / "polish.md", "file", "markdown"),
+                ArtifactEntry("refine-experiment-record", "refine", "Terra → Flash 历史实验记录", latest / "experiment.json", "file", "json"),
+            ])
+        else:
+            entries.extend([
+                ArtifactEntry("refine-terra-terra-draft", "refine", "Terra high 校对底稿", latest / "draft.md", "file", "markdown"),
+                ArtifactEntry("refine-terra-rewrite", "refine", "Terra xhigh 书面润色稿", latest / "polish.md", "file", "markdown"),
+                ArtifactEntry("refine-terra-terra-record", "refine", "Terra 双步校对记录", latest / "experiment.json", "file", "json"),
+            ])
+    return entries
+
+
 def collect_job_artifacts(project_root: Path, job_id: str) -> list[dict[str, object]]:
     job_root = project_root / "data/jobs" / job_id
-    entries = _main_artifacts(job_root) + _ocr_artifacts(job_root) + _secondary_asr_artifacts(job_root)
+    entries = _main_artifacts(job_root) + _ocr_artifacts(job_root) + _secondary_asr_artifacts(job_root) + _refinement_pass_artifacts(job_root)
     return [_artifact_payload(entry) for entry in entries]
 
 
 def _find_artifact(project_root: Path, job_id: str, artifact_id: str) -> ArtifactEntry | None:
     job_root = project_root / "data/jobs" / job_id
-    for entry in _main_artifacts(job_root) + _debug_artifacts(job_root) + _ocr_artifacts(job_root) + _secondary_asr_artifacts(job_root):
+    for entry in _main_artifacts(job_root) + _debug_artifacts(job_root) + _ocr_artifacts(job_root) + _secondary_asr_artifacts(job_root) + _refinement_pass_artifacts(job_root):
         if entry.id == artifact_id:
             return entry
     return None

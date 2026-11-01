@@ -31,7 +31,10 @@ export interface ConfigResponse {
   content_types: string[];
 }
 
+export type RefinementMode = "single_pass" | "terra_terra";
+
 export interface FrontendSettings {
+  refinement_mode: RefinementMode;
   fast_mode: boolean;
   ocr_fast_mode: boolean;
   codex_lb_base_url: string;
@@ -58,6 +61,7 @@ export interface FrontendSettings {
 }
 
 export interface FrontendSettingsPayload extends AsrSelectionPayload {
+  refinement_mode?: RefinementMode | null;
   fast_mode?: boolean | null;
   ocr_fast_mode?: boolean | null;
   codex_lb_base_url?: string | null;
@@ -204,6 +208,7 @@ export interface JobArtifactContent extends JobArtifact {
 export type ResultDownloadFormat = "markdown" | "txt";
 
 export interface SingleJobPayload extends AsrSelectionPayload {
+  refinement_mode?: RefinementMode | null;
   fast_mode?: boolean | null;
   ocr_fast_mode?: boolean | null;
   video: string;
@@ -227,6 +232,7 @@ export interface SingleJobPayload extends AsrSelectionPayload {
 }
 
 export interface BatchJobPayload extends AsrSelectionPayload {
+  refinement_mode?: RefinementMode | null;
   fast_mode?: boolean | null;
   ocr_fast_mode?: boolean | null;
   manifest?: string | null;
@@ -257,6 +263,7 @@ export interface RefinePromptResponse {
 }
 
 export interface StageRunPayload extends AsrSelectionPayload {
+  refinement_mode?: RefinementMode | null;
   fast_mode?: boolean | null;
   ocr_fast_mode?: boolean | null;
   profile?: string | null;
@@ -297,6 +304,7 @@ export interface StageInputUploadResponse {
 }
 
 export interface JobRerunPayload extends AsrSelectionPayload {
+  refinement_mode?: RefinementMode | null;
   fast_mode?: boolean | null;
   ocr_fast_mode?: boolean | null;
   start_stage: string;

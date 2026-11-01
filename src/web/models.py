@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, Field
-from src.schemas import AsrCandidateName
+from src.schemas import AsrCandidateName, RefinementMode
 
 
 class AsrSelection(BaseModel):
@@ -12,6 +12,7 @@ class AsrSelection(BaseModel):
 
 
 class SingleJobRequest(AsrSelection):
+    refinement_mode: RefinementMode | None = None
     fast_mode: bool | None = None
     ocr_fast_mode: bool | None = None
     video: str
@@ -35,6 +36,7 @@ class SingleJobRequest(AsrSelection):
 
 
 class BatchJobRequest(AsrSelection):
+    refinement_mode: RefinementMode | None = None
     fast_mode: bool | None = None
     ocr_fast_mode: bool | None = None
     manifest: str | None = None
@@ -61,6 +63,7 @@ class BatchJobRequest(AsrSelection):
 
 
 class StageRunRequest(AsrSelection):
+    refinement_mode: RefinementMode | None = None
     fast_mode: bool | None = None
     ocr_fast_mode: bool | None = None
     config: str | None = None
@@ -91,6 +94,7 @@ class StageFileRunRequest(StageRunRequest):
 
 
 class JobRerunRequest(AsrSelection):
+    refinement_mode: RefinementMode | None = None
     fast_mode: bool | None = None
     ocr_fast_mode: bool | None = None
     start_stage: str

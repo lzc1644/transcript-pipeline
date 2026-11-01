@@ -14,7 +14,7 @@
 - 第三阶段：参考原文统一提取
 - 第四阶段：块级对齐与分段增强版（保留为辅助调试链路）
 - 第五阶段：块级内容候选分类（保留为辅助调试链路）
-- 第六阶段：AI 后端整篇整理，读取 ASR 与参考文本产出 Markdown 草稿；可选两个 ASR 的原始结果联合校对（默认 `codex_api`，`agy` / `codex_cli` 可显式指定）
+- 第六阶段：默认 Terra high 整理内容 → Terra xhigh 书面润色，两步始终请求 Fast，产出供人工听音校对的 Markdown；可选双 ASR 原始结果联合校对。正式双步使用 `codex_api`；`agy` / `codex_cli` 可在显式单步模式使用
 - 第七阶段：将阶段 6 的 Markdown 结果写入最终输出目录，并同步生成 TXT
 - 第八阶段：单任务 job 入口，支持显式指定视频、参考源和输出目录
 - 第九阶段：批量 job 入口，支持按 manifest、basename 配对和共享参考三种模式批量运行
@@ -176,7 +176,7 @@ transcript-pipeline/
 
 - 现有产品入口默认读取 `config/settings.yaml`；独立能力调用无需完整项目配置
 - `data/` 目录下的叶子目录使用 `.gitkeep` 保留骨架
-- 阶段 6 默认读取 `prompts.final_cleanup`（`config/prompts/final_cleanup.md`）；对谈 job 映射到 `prompts.conversation_cleanup`。`classify_and_correct.md` 继续保留给旧两步校对入口
+- 阶段 6 正式默认 `llm.refinement_mode: terra_terra`：第一步读取 `prompts.final_cleanup`（对谈 job 映射到 `prompts.conversation_cleanup`），第二步读取 `prompts.refinement_rewrite`。两步的 Terra/high→xhigh/Fast 参数由 runner 固定，不覆盖保存的单步参数；Fast 是否实际获配以网关响应为准。显式单步可用 `--refinement-mode single_pass`，包括原 CLI/多后端入口；独立 `refine_document()` 库调用仍默认单步。详见[双步校对说明](docs/BACKEND_MODULES.md#正式默认terra-双步校对与书面润色)。`classify_and_correct.md` 继续保留给旧入口
 - 第七阶段会直接写出 `data/intermediate/refined/*.json` 中的 `final_markdown`
 
 ## 运行要求
@@ -322,7 +322,7 @@ Base URL 可填服务根地址或带 `/v1` 的地址（支持尾部 `/` 和反�
   --backend "codex_api"
 ```
 
-批量入口：
+批量入口（默认双 Terra，无需指定校对模型和推理强度）：
 
 ```bash
 .venv/bin/python scripts/09_run_batch_jobs.py \
@@ -330,8 +330,6 @@ Base URL 可填服务根地址或带 `/v1` 的地址（支持尾部 `/` 和反�
   --manifest "/path/to/jobs.yaml" \
   --remote-concurrency 2 \
   --backend "codex_api" \
-  --model "gpt-6.1-sol" \
-  --reasoning-effort "high" \
   --ocr-model "gpt-6-luna" \
   --ocr-reasoning-effort "high"
 ```
@@ -339,20 +337,21 @@ Base URL 可填服务根地址或带 `/v1` 的地址（支持尾部 `/` 和反�
 相关默认配置：
 
 - 阶段 6：`llm.backends = ["codex_api"]`
-- 阶段 6 默认模型：`llm.model = gemini-3.8-flash-high`；阶段 6 整理已有 ASR 文本，不直接识别音频。读取旧 Web 保存的 `gpt-6-sol` 时仍映射到 `gpt-6.1-sol`，不改写历史任务配置
-- 阶段 6 reasoning 支持 `low`、`medium`、`high`、`xhigh`、`max`；默认值为 `llm.reasoning_effort = high`
+- 阶段 6 正式默认：`llm.refinement_mode = terra_terra`，固定 `gpt-6.1-terra` high → xhigh，两步始终请求 Fast。阶段 6 整理已有 ASR 文本，不直接识别音频
+- 显式单步模式仍读取 `llm.model` 与 `llm.reasoning_effort`，支持 `low`、`medium`、`high`、`xhigh`、`max`；这些保存值不改变正式双步参数。旧 Web 的 `gpt-6-sol` 仍映射为 `gpt-6.1-sol`，不改历史任务
 - PDF OCR：`reference.ai_ocr_backend = codex_api`
 - PDF OCR 默认模型：`reference.codex_ocr_model = gemini-3.5-flash-lite`
 - PDF OCR 默认 reasoning：`reference.codex_ocr_reasoning_effort = medium`
 - PDF OCR 最大并发：`reference.codex_ocr_max_concurrency = 40`；只限制同时在途请求，必须为正整数，可在独立 PDF OCR 页面按任务调整
 - PDF OCR 投递间隔：`reference.codex_ocr_submit_interval_seconds = 5.0` 秒；每次只新增一张图片，不等待前一页完成，可在独立 PDF OCR 页面按任务调整，最终仍按原始页码拼接
 - PDF OCR 等待时间：`reference.ocr_timeout_seconds = 480`
-- `--backend both` 保持旧语义，只同时运行 `codex_cli` 和 `agy`
+- 显式 `--refinement-mode single_pass --backend both` 保持旧语义，只同时运行 `codex_cli` 和 `agy`
 
-临时指定阶段 6 模型和 reasoning：
+在兼容单步模式中临时指定阶段 6 模型和 reasoning：
 
 ```bash
 .venv/bin/python scripts/06_refine.py \
+  --refinement-mode single_pass \
   --backend codex_api \
   --model "gpt-6.1-sol" \
   --reasoning-effort "high"
@@ -366,10 +365,11 @@ Base URL 可填服务根地址或带 `/v1` 的地址（支持尾部 `/` 和反�
   --ocr-reasoning-effort "high"
 ```
 
-完整主链里也可以同时覆盖：
+完整主链里也可以显式选择单步并同时覆盖：
 
 ```bash
 .venv/bin/python scripts/08_run_job.py \
+  --refinement-mode single_pass \
   --video "/path/to/video.mp4" \
   --reference "/path/to/reference.pdf" \
   --output-dir "/path/to/output" \
@@ -762,7 +762,7 @@ http://127.0.0.1:5173
 只运行 agy：
 
 ```bash
-.venv/bin/python scripts/06_refine.py --backend agy
+.venv/bin/python scripts/06_refine.py --refinement-mode single_pass --backend agy
 ```
 
 显式运行 Codex API：
@@ -771,10 +771,11 @@ http://127.0.0.1:5173
 .venv/bin/python scripts/06_refine.py --backend codex_api
 ```
 
-指定 Codex API 模型和 reasoning：
+在兼容单步模式指定 Codex API 模型和 reasoning：
 
 ```bash
 .venv/bin/python scripts/06_refine.py \
+  --refinement-mode single_pass \
   --backend codex_api \
   --model "gpt-6.1-sol" \
   --reasoning-effort "high"
@@ -783,7 +784,7 @@ http://127.0.0.1:5173
 同时运行旧 Codex CLI 和 agy：
 
 ```bash
-.venv/bin/python scripts/06_refine.py --backend both
+.venv/bin/python scripts/06_refine.py --refinement-mode single_pass --backend both
 ```
 
 通过统一入口运行阶段 6：
@@ -797,13 +798,12 @@ http://127.0.0.1:5173
 - 默认按 `config/settings.yaml` 中的 `llm.backends` 运行后端，当前默认是 `codex_api`
 - 可用 `--backend codex_api|codex_cli|agy|both` 临时覆盖
 - `codex_api` 通过 CPA / OpenAI 兼容网关调用；脚本可使用保留名称的 `CODEX_LB_BASE_URL` 和 `CODEX_LB_API_KEY`，Web 任务也可使用已保存的连接设置
-- 阶段 6 模型可用 `--model` 临时覆盖，reasoning 可用 `--reasoning-effort` 临时覆盖
+- 正式双步固定 high→xhigh/Fast；显式 `--refinement-mode single_pass` 后，模型与 reasoning 可用 `--model` / `--reasoning-effort` 临时覆盖
 - `both` 保持旧语义，只展开为 `codex_cli + agy`
 - Gemini 主模型默认是 `Gemini 3.1 Pro (High)`
 - 主输入是 `data/intermediate/asr/*.txt` 和同 basename 的 `data/intermediate/extracted_text/*.txt`
 - 不再依赖 `classified.json` 作为阶段 6 的主输入
-- 提示词贴近网页端单轮整理模式，直接要求输出最终 Markdown
-- 单模型模式会继续写单一 `final_markdown`
+- 正式双步第一遍整理内容，第二遍书面润色，分别保留两稿；最终仍写单一 `final_markdown`，再交人工听音校对
 - 非 fallback AI 后端会写主索引文件 `basename.json`，并按后端额外写侧车文件，例如：
   - `basename.codex_api.json`
   - `basename.codex_cli.json`
@@ -892,6 +892,7 @@ http://127.0.0.1:5173
   --reference "/path/to/reference.pdf" \
   --output-dir "/path/to/output" \
   --profile "wsl2_gpu_max_accuracy" \
+  --refinement-mode single_pass \
   --backend "agy"
 ```
 
@@ -905,10 +906,11 @@ http://127.0.0.1:5173
   --backend "codex_api"
 ```
 
-指定阶段 6 与 PDF OCR 的 Codex API 模型：
+在兼容单步模式指定阶段 6 与 PDF OCR 的 Codex API 模型：
 
 ```bash
 .venv/bin/python scripts/08_run_job.py \
+  --refinement-mode single_pass \
   --video "/path/to/video.mp4" \
   --reference "/path/to/reference.pdf" \
   --output-dir "/path/to/output" \
@@ -923,6 +925,7 @@ http://127.0.0.1:5173
 
 ```bash
 .venv/bin/python scripts/08_run_job.py \
+  --refinement-mode single_pass \
   --video "/path/to/video.mp4" \
   --reference "/path/to/reference.pdf" \
   --output-dir "/path/to/output" \
@@ -960,7 +963,7 @@ http://127.0.0.1:5173
 - `config/glossaries/marxism_common.txt` 会默认参与构造本次任务的 `asr.initial_prompt`
 - `--book-name`、`--chapter`、`--glossary-file` 会追加到本次任务的 `initial_prompt`
 - `--backend` 只覆盖本次任务的阶段 6 后端选择，可用值为 `codex_api`、`codex_cli`、`agy`、`both`
-- 单任务入口同样支持 `--model`、`--reasoning-effort`、`--ocr-model`、`--ocr-reasoning-effort`
+- 单任务入口支持 `--refinement-mode`；`--model`、`--reasoning-effort` 用于显式单步，`--ocr-model`、`--ocr-reasoning-effort` 独立控制 OCR
 - 附加词表文件格式为一行一个词条
 - `local_cpu` 与 `wsl2_gpu` 使用 `beam_size = 5`
 - `local_cpu_high_accuracy` 与 `wsl2_gpu_high_accuracy` 使用 `beam_size = 8`
@@ -968,7 +971,7 @@ http://127.0.0.1:5173
 
 推荐的 GPU 批量运行方式：
 
-manifest 模式：
+manifest 模式（默认双 Terra）：
 
 ```bash
 .venv/bin/python scripts/09_run_batch_jobs.py \
@@ -976,8 +979,6 @@ manifest 模式：
   --manifest "/path/to/jobs.yaml" \
   --remote-concurrency 2 \
   --backend "codex_api" \
-  --model "gpt-6.1-sol" \
-  --reasoning-effort "high" \
   --ocr-model "gpt-6-luna" \
   --ocr-reasoning-effort "high"
 ```
@@ -1009,6 +1010,7 @@ basename 配对模式：
   --book-name "家庭、私有制和国家的起源" \
   --chapter "第一编" \
   --remote-concurrency 2 \
+  --refinement-mode single_pass \
   --backend "both"
 ```
 
@@ -1045,7 +1047,7 @@ basename 配对模式：
 - `prepare-reference` 与 `refine` 默认按 `--remote-concurrency 2` 并发运行
 - `extract-audio` 与 `transcribe` 仍按单任务顺序执行，避免本地资源阶段过载
 - `--backend` 只覆盖本次批量任务的阶段 6 后端选择，可用值为 `codex_api`、`codex_cli`、`agy`、`both`
-- 批量入口同样支持 `--model`、`--reasoning-effort`、`--ocr-model`、`--ocr-reasoning-effort`
+- 批量入口支持 `--refinement-mode`；`--model`、`--reasoning-effort` 用于显式单步，`--ocr-model`、`--ocr-reasoning-effort` 独立控制 OCR
 - 每次批量运行都会写出 `data/jobs/batches/<batch_id>/manifest.json`
 - 每次批量运行都会写出 `data/jobs/batches/<batch_id>/summary.json` 与 `summary.md`
 - 批量退出码：

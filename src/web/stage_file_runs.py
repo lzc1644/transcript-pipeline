@@ -292,7 +292,10 @@ def _stage_result_directories(workspace: StageFileWorkspace, stage_name: str) ->
         "prepare-reference": (job_paths.intermediate_extracted_text_dir,),
         "align": (workspace.workspace_root / "intermediate/aligned",),
         "classify": (workspace.workspace_root / "intermediate/classified",),
-        "refine": (job_paths.intermediate_refined_dir,),
+        "refine": (
+            job_paths.intermediate_refined_dir,
+            job_paths.job_root / "output/logs/refine/source/terra-terra",
+        ),
         "export-markdown": (job_paths.output_final_dir,),
     }
     return directory_map[normalized_stage]

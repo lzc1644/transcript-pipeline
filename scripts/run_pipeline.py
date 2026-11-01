@@ -41,7 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--asr-candidate", help="ASR 候选 ID，仅转录阶段使用")
     parser.add_argument("--secondary-asr-candidate", help="第二 ASR 候选，转录与校对阶段使用；空字符串关闭")
     parser.add_argument("--backend", choices=["codex_api", "agy", "codex_cli", "both"], help="仅 refine 阶段生效，覆盖后端选择")
-    parser.add_argument("--model", help="覆盖 refine 阶段使用的模型，例如 gpt-6.1-sol")
+    parser.add_argument("--refinement-mode", choices=["terra_terra", "single_pass"], help="校对模式：默认双 Terra；CLI/多后端请选择 single_pass")
+    parser.add_argument("--model", help="仅单步校对使用的模型，例如 gpt-6.1-sol")
     parser.add_argument("--reasoning-effort", help="覆盖 refine 阶段 reasoning effort，例如 low / medium / high")
     parser.add_argument("--ocr-model", help="覆盖 prepare-reference 阶段 Codex API OCR 使用的模型，例如 gpt-6-luna")
     parser.add_argument("--ocr-reasoning-effort", help="覆盖 prepare-reference 阶段 Codex API OCR reasoning effort，例如 low / medium / high")
@@ -99,6 +100,7 @@ def main() -> int:
         apply_model_overrides(
             loaded_settings,
             ModelOverrides(
+                llm_refinement_mode=args.refinement_mode,
                 asr_candidate=args.asr_candidate,
                 secondary_asr_candidate=args.secondary_asr_candidate,
                 llm_model=args.model,

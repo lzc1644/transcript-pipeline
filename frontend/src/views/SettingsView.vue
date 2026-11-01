@@ -16,7 +16,7 @@ import {
 } from "naive-ui";
 import { computed, onMounted, reactive, ref } from "vue";
 
-import { getFrontendSettings, saveFrontendSettings, type FrontendSettings } from "../api/client";
+import { getFrontendSettings, saveFrontendSettings, type FrontendSettings, type RefinementMode } from "../api/client";
 import AsrCandidateSelector from "../components/AsrCandidateSelector.vue";
 import FastModeSwitch from "../components/FastModeSwitch.vue";
 import { useConfigOptions } from "../composables/useConfigOptions";
@@ -34,6 +34,7 @@ const form = reactive({
   clear_codex_lb_api_key: false,
   codex_lb_bypass_proxy: false,
   model: "",
+  refinement_mode: "terra_terra" as RefinementMode,
   asr_candidate: "",
   secondary_asr_candidate: "",
   reasoning_effort: "high",
@@ -51,12 +52,24 @@ const reasoningOptions = [
   { label: "最高", value: "max" },
 ];
 
+const refinementModeOptions = [
+  { label: "双步校对：Terra high → xhigh（Fast，默认）", value: "terra_terra" },
+  { label: "单步校对（兼容模式）", value: "single_pass" },
+];
+
 const modelOptions = [
+  { label: "GPT-6.1 Terra（阶段 6 底稿）", value: "gpt-6.1-terra" },
   { label: "Gemini 3.8 Flash High（阶段 6 精修）", value: "gemini-3.8-flash-high" },
   { label: "Gemini 3.5 Flash Lite（PDF OCR）", value: "gemini-3.5-flash-lite" },
   { label: "GPT-6.1 Sol（阶段 6 精修）", value: "gpt-6.1-sol" },
   { label: "GPT-6 Luna（PDF OCR）", value: "gpt-6-luna" },
 ];
+
+const terraRewrite = computed(() => form.refinement_mode === "terra_terra");
+const displayedFastMode = computed({
+  get: () => terraRewrite.value || form.fast_mode,
+  set: (value: boolean) => { form.fast_mode = value; },
+});
 
 const apiKeyStatus = computed(() => {
   if (form.codex_lb_api_key.trim()) {
@@ -78,6 +91,7 @@ function applySettings(settings: FrontendSettings) {
   form.clear_codex_lb_api_key = false;
   form.codex_lb_bypass_proxy = settings.codex_lb_bypass_proxy ?? false;
   form.model = settings.model;
+  form.refinement_mode = settings.refinement_mode || "terra_terra";
   form.asr_candidate = settings.asr_candidate || "whisper-existing";
   form.secondary_asr_candidate = settings.secondary_asr_candidate || "";
   form.reasoning_effort = settings.reasoning_effort;
@@ -109,6 +123,7 @@ async function saveSettings() {
       clear_codex_lb_api_key: form.clear_codex_lb_api_key,
       codex_lb_bypass_proxy: form.codex_lb_bypass_proxy,
       model: form.model,
+      refinement_mode: form.refinement_mode,
       asr_candidate: form.asr_candidate,
       secondary_asr_candidate: form.secondary_asr_candidate,
       reasoning_effort: form.reasoning_effort,
@@ -192,13 +207,19 @@ onMounted(loadSettings);
             <n-form-item label="默认语音转文字模型">
               <AsrCandidateSelector v-model="form.asr_candidate" v-model:secondary-candidate="form.secondary_asr_candidate" :options="asrCandidates" :loading="configLoading" />
             </n-form-item>
-            <n-form-item label="阶段 6 模型">
-              <n-select v-model:value="form.model" :options="modelOptions" />
+            <n-form-item label="阶段 6 校对模式">
+              <n-select v-model:value="form.refinement_mode" :options="refinementModeOptions" />
+            </n-form-item>
+            <p v-if="terraRewrite" class="prompt-hint" role="status">
+              正式流程：Terra high 生成完整底稿，Terra xhigh 整理书面表达，再交人工听音校对。两步始终请求 Fast（priority）；每步一次，两稿分别保留。下方单步参数不改变双步流程，快速服务可能增加费用。
+            </p>
+            <n-form-item label="阶段 6 单步模型">
+              <n-select v-model:value="form.model" :options="modelOptions" :disabled="form.refinement_mode !== 'single_pass'" />
             </n-form-item>
             <n-form-item label="阶段 6 推理强度">
-              <n-select v-model:value="form.reasoning_effort" :options="reasoningOptions" />
+              <n-select v-model:value="form.reasoning_effort" :options="reasoningOptions" :disabled="terraRewrite" />
             </n-form-item>
-            <FastModeSwitch v-model="form.fast_mode" label="AI 精修快速模式（默认）" :disabled="loading || saving || !!loadError" />
+            <FastModeSwitch v-model="displayedFastMode" label="AI 精修快速模式（默认）" :disabled="terraRewrite || loading || saving || !!loadError" />
             <n-form-item label="PDF OCR 模型">
               <n-select v-model:value="form.ocr_model" :options="modelOptions" />
             </n-form-item>

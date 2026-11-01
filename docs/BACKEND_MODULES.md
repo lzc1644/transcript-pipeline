@@ -150,6 +150,18 @@ else:
 
 对谈可省略 `reference_text`，并传入原对谈提示词。默认单 ASR 将原始全文和参考附件一次提交，不先匹配、预替换、分成 SEGMENT 或锁定引用；双 ASR 继续传入同源候选。旧式分段装配和锁定检查工具仅保留给显式兼容调用。交付格式校验仍保留，语义保真需复核，`fidelity_report` 用 `checked=false`、`passed=null` 表示没有自动验真。多个后端成功时保留候选供人工选择，不能擅自挑出一个当作最终稿。
 
+### 正式默认：Terra 双步校对与书面润色
+
+阶段 6 默认 `terra_terra`：`gpt-6.1-terra` high 整理完整底稿 → 同模型 xhigh 书面润色 → 人工听音校对。第一步读取原始 ASR 与参考；第二步使用 `config/prompts/refinement_rewrite.md`，只读取完整底稿、编辑说明和疑点，不重复输入 ASR/OCR。每步一次请求，不自动重试、切模或发布回退稿，原疑点保留到最终结果。
+
+`src/llm/tasks/refinement_two_pass.py` 独占有效模型、推理强度与 Fast 参数：两步始终发送 `service_tier=priority`，不受保存的单步参数或请求 fast=false 影响，也不回写这些保存值。Fast 可能增加费用，是否实际获配 priority 以网关响应为准。
+
+产品默认在 `LLMSettings`/`config/settings.yaml`；低层 `RefinementOptions()` 与 `refine_document()` **仍默认单步**，保留自带提示词、CLI 和多后端调用。产品 CLI 用 `--refinement-mode single_pass --backend codex_cli` 可显式沿用旧路径。独立库需要双步时，传 `options=RefinementOptions(refinement_mode="terra_terra")`、显式网关和 `polish_prompt=Path("config/prompts/refinement_rewrite.md").read_text(encoding="utf-8")`；双步仅支持 `codex_api`。
+
+两稿、JSON、提示词及日志保存在 `<logs_dir>/refine/<文件名>/terra-terra/<run-id>/`，产物面板可分别预览，文件阶段 ZIP 包含两稿。保留历史 `experiment.json` 文件名和产物 ID；新记录标记 `workflow_status=production`，`refinement_passes` 记录每步有效参数和文件路径。失败时已生成的稿件仍保留。从 refine 重跑仍执行两步，不自动复用旧底稿。
+
+未采用的 Terra→Flash 新调用入口和专用提示词已移除。读取旧配置或全局保存值 `terra_flash` 时升级为 `terra_terra`；新 API/CLI 仅接受双 Terra 或显式单步。旧 Flash 两稿及三个产物 ID 仍可读取，不修改历史文件。
+
 要沿用完整产品产物和导出规则，运行现有组合入口：
 
 ```bash

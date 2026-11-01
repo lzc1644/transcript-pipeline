@@ -51,6 +51,7 @@ class RefinementOptions:
     safe_replace_length_ratio_max: float = 1.2
     safe_replace_max_extra_content_ratio: float = 0.12
     safe_replace_min_run_length: int = 2
+    refinement_mode: str = "single_pass"
 
 
 @dataclass(frozen=True)
@@ -183,6 +184,7 @@ class BackendDocumentRefinementResult:
     backend_statuses: dict[str, str] = field(default_factory=dict)
     validation_retry_count: int = 0
     validation_failure_reasons: list[str] = field(default_factory=list)
+    refinement_passes: list[dict[str, Any]] = field(default_factory=list)
 
 
 def resolve_requested_backends(requested_backend: str | None, configured_backends: list[str]) -> list[str]:
@@ -943,6 +945,7 @@ def parse_backend_document_result(backend: str, payload: dict[str, Any]) -> Back
         refinement_reason=str(payload.get("refinement_reason", f"{backend}_refinement")),
         needs_review_sections=needs_review_sections,
         refinement_notes=refinement_notes,
+        deletion_candidates=normalize_deletion_candidates(payload.get("deletion_candidates", [])),
         section_map=payload.get("section_map", []) if isinstance(payload.get("section_map", []), list) else [],
     )
 
@@ -1591,6 +1594,7 @@ def run_single_pass_backend_refinement(
         ),
         needs_review_sections=document_result.needs_review_sections,
         refinement_notes=refinement_notes,
+        deletion_candidates=document_result.deletion_candidates,
         edited_plain_text=edited_plain_text,
         fidelity_report={"passed": None, "checked": False, "pre_replaced_segments": 0,
                          "semantic_acceptance": "requires_manual_review"},
@@ -1918,6 +1922,7 @@ def serialize_backend_result(result: BackendDocumentRefinementResult) -> dict[st
         "backend_statuses": result.backend_statuses,
         "validation_retry_count": result.validation_retry_count,
         "validation_failure_reasons": result.validation_failure_reasons,
+        **({"refinement_passes": result.refinement_passes} if result.refinement_passes else {}),
     }
 
 
@@ -1942,6 +1947,7 @@ def refine_document(
     input_paths: RefinementInputPaths | None = None,
     dual_asr_input: DualAsrInput | None = None,
     logger: logging.Logger | None = None,
+    polish_prompt: str | None = None,
 ) -> DocumentRefinementResult:
     """Refine one book-club/conversation transcript, without YAML, jobs or Web.
 
@@ -1957,6 +1963,20 @@ def refine_document(
     active_backends = list(options.backends) if backends is None else list(backends)
     if input_paths is None:
         input_paths = RefinementInputPaths(title, Path(f"{title}.txt"), None, dual_asr_input)
+    if options.refinement_mode == "terra_terra":
+        from src.llm.tasks.refinement_two_pass import run_two_pass_refinement
+        if active_backends != [BACKEND_CODEX_API]:
+            raise RefinementError("双步校对仅支持 codex_api，不支持多后端或 CLI 回退；原 CLI/多后端请显式选择 single_pass。")
+        if not polish_prompt or not polish_prompt.strip():
+            raise PromptLoadError("双步校对缺少独立书面编辑提示词。")
+        result = run_two_pass_refinement(
+            runtime=runtime, input_paths=input_paths, draft_prompt=prompt,
+            polish_prompt=polish_prompt, asr_text=asr_text, reference_text=reference_text, logger=logger,
+        )
+        return DocumentRefinementResult(active_backends, result.backend_statuses, [result], result,
+                                        "terra_terra_two_pass")
+    if options.refinement_mode != "single_pass":
+        raise RefinementError(f"未知校对模式: {options.refinement_mode}")
     asr_full_text, reference_full_text, markdown_prompt_text = asr_text, reference_text, prompt
     backend_results: list[BackendDocumentRefinementResult] = []
     backend_status: dict[str, str] = {}

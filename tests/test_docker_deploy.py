@@ -55,6 +55,25 @@ def test_runtime_copies_assign_non_root_ownership_even_for_private_host_files() 
     assert "USER app" in runtime
 
 
+def test_default_runtime_prompts_are_explicitly_included_in_docker_context() -> None:
+    from src.schemas import PromptSettings
+
+    raw = yaml.safe_load((ROOT / "config/settings.yaml").read_text(encoding="utf-8"))
+    prompts = PromptSettings.model_validate(raw["prompts"])
+    rules = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    excluded = rules.index("config/prompts/*")
+    for path in prompts.model_dump().values():
+        if path is None:
+            continue
+        assert (ROOT / path).is_file(), f"Default prompt does not exist: {path}"
+        rule = f"!{path}"
+        assert rule in rules, f"Default prompt excluded from Docker context: {path}"
+        assert rules.index(rule) > excluded
+    # Keep custom prompts and local credentials outside the image.
+    assert "!config/prompts/*" not in rules
+    assert ".env" in rules and "data/" in rules
+
+
 def test_frontend_image_build_includes_the_shared_extension_protocol() -> None:
     source = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     frontend = source.split("FROM ${NODE_IMAGE} AS frontend-builder", 1)[1].split("FROM ${CADDY_IMAGE}", 1)[0]

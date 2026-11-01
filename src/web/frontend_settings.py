@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Iterator, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.asr.registry import WEB_CANDIDATE_IDS
 from src.config_loader import ConfigLoadError, load_settings
 from src.llm.gateway import GatewayConnection, connection_from_settings
-from src.schemas import AsrCandidateName
+from src.schemas import AsrCandidateName, LLMSettings, RefinementMode, migrate_legacy_refinement_mode
 
 SETTINGS_RELATIVE_PATH = Path("data/jobs/frontend-settings.json")
 RETIRED_MODEL_PREFIXES = ("gpt-5.4", "gpt-5.5", "gpt-5.6")
@@ -35,12 +35,15 @@ class FrontendSettings(BaseModel):
     chapter: str = ""
     glossary_file: str = ""
     model: str = ""
+    refinement_mode: RefinementMode | None = None
     reasoning_effort: str = ""
     ocr_backend: str = ""
     ocr_model: str = ""
     ocr_reasoning_effort: str = ""
     fast_mode: bool | None = None
     ocr_fast_mode: bool | None = None
+
+    _migrate_refinement_mode = field_validator("refinement_mode", mode="before")(migrate_legacy_refinement_mode)
 
 
 class FrontendSettingsUpdate(BaseModel):
@@ -57,6 +60,7 @@ class FrontendSettingsUpdate(BaseModel):
     chapter: str | None = None
     glossary_file: str | None = None
     model: str | None = None
+    refinement_mode: RefinementMode | None = None
     reasoning_effort: str | None = None
     ocr_backend: str | None = None
     ocr_model: str | None = None
@@ -111,6 +115,7 @@ def save_frontend_settings(project_root: Path, update: FrontendSettingsUpdate) -
         "chapter",
         "glossary_file",
         "model",
+        "refinement_mode",
         "reasoning_effort",
         "ocr_backend",
         "ocr_model",
@@ -156,6 +161,7 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         configured_backends = loaded_settings.settings.llm.backends
         default_backend = configured_backends[0] if configured_backends else ""
         default_model = loaded_settings.settings.llm.model
+        default_refinement_mode = loaded_settings.settings.llm.refinement_mode
         default_reasoning_effort = loaded_settings.settings.llm.reasoning_effort
         default_fast_mode = loaded_settings.settings.llm.fast_mode
         default_ocr_fast_mode = loaded_settings.settings.reference.codex_ocr_fast_mode
@@ -174,6 +180,7 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         default_secondary_asr_candidate = ""
         default_backend = ""
         default_model = ""
+        default_refinement_mode = LLMSettings().refinement_mode
         default_reasoning_effort = ""
         default_fast_mode = False
         default_ocr_fast_mode = False
@@ -199,6 +206,7 @@ def frontend_settings_response(project_root: Path) -> dict[str, object]:
         "chapter": settings.chapter,
         "glossary_file": settings.glossary_file,
         "model": settings.model or default_model,
+        "refinement_mode": settings.refinement_mode or default_refinement_mode,
         "reasoning_effort": settings.reasoning_effort or default_reasoning_effort,
         "fast_mode": settings.fast_mode if settings.fast_mode is not None else default_fast_mode,
         "ocr_fast_mode": settings.ocr_fast_mode if settings.ocr_fast_mode is not None else default_ocr_fast_mode,

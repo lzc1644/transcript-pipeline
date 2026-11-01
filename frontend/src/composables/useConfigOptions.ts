@@ -1,6 +1,6 @@
 import { onMounted, ref } from "vue";
 
-import { getConfig, getFrontendSettings, type AsrCandidate } from "../api/client";
+import { getConfig, getFrontendSettings, type AsrCandidate, type RefinementMode } from "../api/client";
 
 export function useConfigOptions() {
   const profiles = ref<string[]>([]);
@@ -12,6 +12,7 @@ export function useConfigOptions() {
   const activeProfile = ref("");
   const defaultOcrModel = ref("");
   const defaultOcrReasoningEffort = ref("");
+  const defaultRefinementMode = ref<RefinementMode>("terra_terra");
   const defaultFastMode = ref<boolean | null>(null);
   const defaultOcrFastMode = ref<boolean | null>(null);
   const defaultOcrMaxConcurrency = ref(40);
@@ -39,6 +40,7 @@ export function useConfigOptions() {
       defaultSecondaryAsrCandidate.value = settings.secondary_asr_candidate || "";
       defaultOcrModel.value = settings.ocr_model;
       defaultOcrReasoningEffort.value = settings.ocr_reasoning_effort;
+      defaultRefinementMode.value = settings.refinement_mode ?? "terra_terra";
       defaultFastMode.value = settings.fast_mode ?? false;
       defaultOcrFastMode.value = settings.ocr_fast_mode ?? false;
       defaultOcrMaxConcurrency.value = settings.ocr_max_concurrency;
@@ -62,6 +64,7 @@ export function useConfigOptions() {
     activeProfile,
     defaultOcrModel,
     defaultOcrReasoningEffort,
+    defaultRefinementMode,
     defaultFastMode,
     defaultOcrFastMode,
     defaultOcrMaxConcurrency,

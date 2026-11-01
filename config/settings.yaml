@@ -181,6 +181,9 @@ classification:
 llm:
   enabled: true
   provider: local_cli
+  # 正式校对：Terra high 底稿 → Terra xhigh 书面润色，两步固定请求 Fast。
+  refinement_mode: terra_terra
+  # 以下 model / reasoning_effort / fast_mode 保留给显式单步模式。
   model: gemini-3.8-flash-high
   gemini_model: Gemini 3.1 Pro (High)
   gemini_fallback_model: ""
@@ -194,13 +197,13 @@ llm:
   max_asr_chars_for_prompt: 120
   max_reference_chars_for_prompt: 120
   reasoning_effort: high
-  # 仅 AI 精修请求快速服务，与 PDF OCR 开关独立。
+  # 单步快速模式设置；正式双 Terra 始终请求 Fast，与 PDF OCR 独立。
   fast_mode: false
   temperature: 0.1
   max_output_tokens: 4000
   # 对谈阶段 6 需要整篇输出长对话；先允许远程 SSE 最长等待 60 分钟，避免 30 分钟时误中断。
   timeout_seconds: 3600
-  # 检测到程序回退、Unicode 替换字符或 `# source` 占位标题时，自动重新润色一次；可设为 0 关闭。
+  # 单步交付检查失败时的重试次数；正式双步每步一次，不自动重试或回退。
   refinement_validation_retry_count: 1
   safe_replace_min_score: 88.0
   safe_replace_min_margin: 6.0
@@ -223,6 +226,7 @@ prompts:
   classify_and_correct: config/prompts/classify_and_correct.md
   final_cleanup: config/prompts/final_cleanup.md
   conversation_cleanup: config/prompts/conversation_cleanup.md
+  refinement_rewrite: config/prompts/refinement_rewrite.md
 
 output:
   write_review_json: true

@@ -7,6 +7,14 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+RefinementMode = Literal["single_pass", "terra_terra"]
+
+
+def migrate_legacy_refinement_mode(value):
+    """Read old experiment settings without keeping a Flash execution path."""
+    return "terra_terra" if value == "terra_flash" else value
+
+
 class AppBaseModel(BaseModel):
     model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
 
@@ -73,6 +81,7 @@ class PromptSettings(AppBaseModel):
     classify_and_correct: str
     final_cleanup: str
     conversation_cleanup: str | None = None
+    refinement_rewrite: str = "config/prompts/refinement_rewrite.md"
 
 
 class ReferenceSettings(AppBaseModel):
@@ -167,6 +176,7 @@ class LLMSettings(AppBaseModel):
     enabled: bool = True
     provider: str = "local_cli"
     model: str = "gemini-3.8-flash-high"
+    refinement_mode: RefinementMode = "terra_terra"
     gemini_model: str = "Gemini 3.1 Pro (High)"
     gemini_fallback_model: str = ""
     backends: list[str] = Field(default_factory=lambda: ["codex_api"])
@@ -191,6 +201,8 @@ class LLMSettings(AppBaseModel):
     safe_replace_length_ratio_max: float = 1.2
     safe_replace_max_extra_content_ratio: float = 0.12
     safe_replace_min_run_length: int = 2
+
+    _migrate_refinement_mode = field_validator("refinement_mode", mode="before")(migrate_legacy_refinement_mode)
 
 
 class CodexLBSettings(AppBaseModel):

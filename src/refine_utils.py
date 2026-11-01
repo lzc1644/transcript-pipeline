@@ -249,6 +249,7 @@ def write_refinement_result(
         "deletion_candidates": selected_result.deletion_candidates if selected_result else [],
         "fidelity_report": selected_result.fidelity_report if selected_result else {},
         "section_map": selected_result.section_map if selected_result else [],
+        **({"refinement_passes": selected_result.refinement_passes} if selected_result and selected_result.refinement_passes else {}),
         "model_results": model_results,
     }
     with output_path.json_path.open("w", encoding="utf-8") as file:
@@ -283,6 +284,13 @@ def refine_batch(
 
     markdown_prompt_text = load_markdown_assemble_prompt(loaded_settings)
     runtime = runtime_from_settings(loaded_settings, gateway_connection=gateway_connection)
+    polish_prompt = None
+    if runtime.options.refinement_mode == "terra_terra":
+        prompt_path = loaded_settings.resolve_path(loaded_settings.settings.prompts.refinement_rewrite)
+        try:
+            polish_prompt = prompt_path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise PromptLoadError(f"无法读取书面润色提示词: {prompt_path} | {exc}") from exc
     items: list[RefinementBatchItem] = []
     success_count = 0
 
@@ -299,6 +307,7 @@ def refine_batch(
             logs_dir=runtime.logs_dir, workdir=runtime.workdir, reference_text=reference_full_text,
             options=runtime.options, quote_options=runtime.quote_options, gateway=runtime.gateway,
             backends=active_backends, input_paths=input_paths, logger=logger,
+            **({"polish_prompt": polish_prompt} if polish_prompt is not None else {}),
         )
         backend_results, backend_status = document.backend_results, document.backend_status
         selected_result, comparison_summary = document.selected_result, document.comparison_summary

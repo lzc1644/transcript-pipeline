@@ -128,6 +128,8 @@ def write_minimal_settings(
             "enabled": True,
             "provider": "local_cli",
             "model": "gpt-6.1-sol",
+            # Legacy single-pass fixtures opt in explicitly; production-default tests remove this field.
+            "refinement_mode": "single_pass",
             "gemini_model": "Gemini 3.1 Pro (High)",
             "gemini_fallback_model": "",
             "backends": ["codex_api"],
