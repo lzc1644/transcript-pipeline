@@ -173,6 +173,7 @@ export interface JobState {
   partial?: number;
   items?: BatchItemState[];
   input_summary?: JobInputSummary;
+  library_material?: { revision_id: string; name: string; revision: number; page_count: number };
   run_mode?: string;
   download_name?: string;
   ocr_items?: OCRProgressItem[];
@@ -213,6 +214,7 @@ export interface SingleJobPayload extends AsrSelectionPayload {
   ocr_fast_mode?: boolean | null;
   video: string;
   reference?: string | null;
+  library_material_revision_id?: string | null;
   output_dir: string;
   content_type?: string | null;
   profile?: string | null;

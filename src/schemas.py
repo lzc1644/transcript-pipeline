@@ -86,6 +86,7 @@ class PromptSettings(AppBaseModel):
 
 class ReferenceSettings(AppBaseModel):
     enabled: bool = True
+    library_sources_file: str | None = None
     allow_pdf: bool = True
     allow_txt: bool = True
     allow_md: bool = True

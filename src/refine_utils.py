@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from src.llm.tasks import refinement as _refinement
+from src.library_reference import require_clean_library_output
 from src.llm.gateway import GatewayClient, GatewayConnection, connection_from_settings
 from src.refine_inputs import DualAsrInputError, load_dual_asr_input
 from src.runtime_utils import ensure_directory, relativize_path
@@ -311,6 +312,10 @@ def refine_batch(
         )
         backend_results, backend_status = document.backend_results, document.backend_status
         selected_result, comparison_summary = document.selected_result, document.comparison_summary
+        sources_file = loaded_settings.settings.reference.library_sources_file
+        if sources_file:
+            for result in backend_results:
+                require_clean_library_output(result.final_markdown, loaded_settings.resolve_path(sources_file))
         output_path = build_refinement_output_path(asr_text_path, output_dir)
         write_refinement_result(
             input_paths=input_paths,

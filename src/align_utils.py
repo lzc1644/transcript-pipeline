@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from src.ocr_page_markers import strip_ocr_page_break_markers
+from src.library_reference import library_reference_fragments
 from src.runtime_utils import ensure_directory, relativize_path
 from src.schemas import LoadedSettings
 
@@ -295,7 +296,11 @@ def normalize_text_for_matching(text: str) -> str:
 
 
 def build_reference_blocks(reference_text: str, loaded_settings: LoadedSettings) -> list[ReferenceBlock]:
-    split_parts = split_reference_text(reference_text, loaded_settings)
+    sources_file = loaded_settings.settings.reference.library_sources_file
+    fragments = (library_reference_fragments(reference_text, loaded_settings.resolve_path(sources_file))
+                 if sources_file else [reference_text])
+    split_parts = [part for fragment in fragments
+                   for part in split_reference_text(fragment, loaded_settings)]
     return [
         ReferenceBlock(ref_block_id=index + 1, reference_text=part)
         for index, part in enumerate(split_parts)

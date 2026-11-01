@@ -7,6 +7,7 @@ import JobListView from "../views/JobListView.vue";
 import PDFBookOCRView from "../views/PDFBookOCRView.vue";
 import SettingsView from "../views/SettingsView.vue";
 import SingleJobView from "../views/SingleJobView.vue";
+import LibraryView from "../views/LibraryView.vue";
 import StageRunnerView from "../views/StageRunnerView.vue";
 
 export const router = createRouter({
@@ -36,6 +37,7 @@ export const router = createRouter({
       name: "pdf-book-ocr",
       component: PDFBookOCRView,
     },
+    { path: "/library", name: "library", component: LibraryView },
     {
       path: "/jobs",
       name: "jobs",

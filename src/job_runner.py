@@ -767,6 +767,7 @@ def write_job_settings(
     chapter: str | None = None,
     model_overrides: ModelOverrides | None = None,
     refine_prompt: str | None = None,
+    library_sources_file: Path | None = None,
 ) -> Path:
     normalized_content_type = normalize_content_type(content_type)
     payload = load_raw_settings(loaded_settings)
@@ -789,6 +790,9 @@ def write_job_settings(
     payload["asr"]["terms"] = merge_glossary_terms(
         build_job_asr_terms(project_root=project_root, glossary_file=glossary_file,
                             book_name=book_name, chapter=chapter), payload["asr"].get("terms", []))
+    if library_sources_file is not None:
+        payload.setdefault("reference", {}).update(
+            enabled=True, allow_txt=True, library_sources_file=str(library_sources_file))
     if normalized_content_type == CONTENT_TYPE_CONVERSATION:
         reference_payload = payload.setdefault("reference", {})
         if not isinstance(reference_payload, dict):
@@ -862,6 +866,7 @@ def write_job_manifest(
     book_name: str | None,
     chapter: str | None,
     glossary_file: str | None,
+    library_material: dict | None = None,
 ) -> None:
     normalized_content_type = normalize_content_type(content_type)
     payload = {
@@ -886,6 +891,8 @@ def write_job_manifest(
     snapshot = load_settings(settings_path=job_paths.settings_path, project_root=loaded_settings.project_root)
     payload["asr_candidate"] = snapshot.settings.asr.candidate or "whisper-existing"
     payload["secondary_asr_candidate"] = snapshot.settings.asr.secondary_candidate or ""
+    if library_material is not None:
+        payload["library_material"] = library_material
     job_paths.manifest_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

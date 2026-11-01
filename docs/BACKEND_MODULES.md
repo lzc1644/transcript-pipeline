@@ -126,6 +126,22 @@ else:
 
 默认使用参考提取提示词；独立书籍传 `prompt_builder=build_pdf_book_ocr_image_prompt`，保留中外文与注释要求。首轮不自动切模型。只有调用方显式创建并传入 `build_pdf_ocr_retry_plan(identity, previous.state.page_errors)` 时，匹配身份的 GPT 输出过滤／截断失败页才使用原有 Gemini 补页规则；普通超时、TLS 或鉴权错误不新建切模计划。Web 仍只在“重试缺失页”入口创建计划。
 
+### 只处理原 PDF 的指定页
+
+选页产品可调用共享按页执行，不必裁切原 PDF：
+
+```python
+from src.pdf import ocr_pdf_pages
+
+pages = ocr_pdf_pages(
+    source, [4, 8, 9], options, gateway=gateway,
+    checkpoint_dir=checkpoints,
+)
+print(pages.texts_by_page, pages.errors_by_page)
+```
+
+页号始终属于原 PDF。只读取和处理所选检查点，空字符串也是有效成功页；`page_callback(page, text, source)` 同时接收新成功页和缓存重放。传 `stop_event` 可停止新投递，并等待在途页落盘；再次调用继续复用。结果描述所选页，不生成整本 TXT。需要全书完整发布时继续用 `ocr_pdf()`。
+
 ## 组合三：读书会／对谈文字 → 校对结果 → 现有导出
 
 只整理文字时，接网关示例直接调用任务：

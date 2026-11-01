@@ -72,6 +72,7 @@ from src.web.uploads import (
     upload_group_path,
     upload_root,
 )
+from src.web.library_jobs import prepare_library_job
 
 
 JOB_INPUT_SUMMARY_KEYS = (
@@ -198,9 +199,11 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.dictation.storage.recover()
+        app.state.library.recover()
         try:
             yield
         finally:
+            await run_in_threadpool(app.state.library.close)
             await app.state.dictation.close()
             app.state.executor.shutdown(wait=False, cancel_futures=True)
 
@@ -224,6 +227,10 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     
     # Active jobs in-memory tracker
     app.state.active_jobs = set()
+    from src.web.library import install_library
+    from src.library import LibraryError
+    install_library(app, root)
+    app.state.library.history_task_active = lambda task_id: task_id in app.state.active_jobs
 
     def reconcile_state(state: dict) -> dict:
         """修正服务重启后仍停留在运行态的任务，并补充列表展示需要的输入摘要。"""
@@ -437,36 +444,42 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             raise HTTPException(status_code=404, detail="PDF OCR 任务不存在。") from exc
         if not task_paths.state_path.exists():
             raise HTTPException(status_code=404, detail="PDF OCR 任务不存在。")
-        if task_id in app.state.active_jobs:
-            raise HTTPException(status_code=409, detail="PDF OCR 任务正在运行，不能重复启动。")
-
-        state = read_json_file(task_paths.state_path)
-        if state.get("status") == "success":
-            raise HTTPException(status_code=409, detail="PDF OCR 任务已经全部完成，无需重试。")
+        with app.state.library.history_guard(task_id):
+            if task_id in app.state.library.active_import_task_ids():
+                raise HTTPException(status_code=409, detail="该历史任务正在导入书库，请稍后重试。")
+            if task_id in app.state.active_jobs:
+                raise HTTPException(status_code=409, detail="PDF OCR 任务正在运行，不能重复启动。")
+            app.state.active_jobs.add(task_id)
+        submitted = False
         try:
+            state = read_json_file(task_paths.state_path)
+            if state.get("status") == "success":
+                raise HTTPException(status_code=409, detail="PDF OCR 任务已经全部完成，无需重试。")
             payload = pdf_book_ocr_retry_payload(state)
             request = PDFBookOCRRequest.model_validate(payload)
             resolve_uploaded_pdf_ocr_input(root, request.input_path)
+            app.state.update_state(
+                task_paths.state_path,
+                status="pending",
+                current_stage="resume",
+                error_message="",
+                resumable=True,
+                resume_count=int(state.get("resume_count") or 0) + 1,
+                request_payload=request.model_dump(),
+            )
+            submit_task(
+                app,
+                app.state.execute_pdf_book_ocr,
+                app=app,
+                task_id=task_id,
+                payload=request.model_dump(),
+            )
+            submitted = True
         except (PDFBookOCRTaskError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        app.state.update_state(
-            task_paths.state_path,
-            status="pending",
-            current_stage="resume",
-            error_message="",
-            resumable=True,
-            resume_count=int(state.get("resume_count") or 0) + 1,
-            request_payload=request.model_dump(),
-        )
-        app.state.active_jobs.add(task_id)
-        submit_task(
-            app,
-            app.state.execute_pdf_book_ocr,
-            app=app,
-            task_id=task_id,
-            payload=request.model_dump(),
-        )
+        finally:
+            if not submitted:
+                app.state.active_jobs.discard(task_id)
         return {"task_id": task_id}
 
     @app.delete("/api/pdf-book-ocr/{task_id}")
@@ -477,13 +490,16 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
             raise HTTPException(status_code=404, detail="PDF OCR 任务不存在。") from exc
         if not task_paths.state_path.is_file():
             raise HTTPException(status_code=404, detail="PDF OCR 任务不存在。")
-        if task_id in app.state.active_jobs:
-            raise HTTPException(status_code=409, detail="PDF OCR 任务正在运行，不能删除。")
-        try:
-            # 上传 PDF 可能被多个任务共用，只清理本任务的状态、结果和检查点。
-            shutil.rmtree(task_paths.task_root)
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail=f"无法删除 PDF OCR 任务：{exc}") from exc
+        with app.state.library.history_guard(task_id):
+            if task_id in app.state.library.active_import_task_ids():
+                raise HTTPException(status_code=409, detail="该历史任务正在导入书库，不能删除。")
+            if task_id in app.state.active_jobs:
+                raise HTTPException(status_code=409, detail="PDF OCR 任务正在运行，不能删除。")
+            try:
+                # 上传 PDF 可能被多个任务共用，只清理本任务的状态、结果和检查点。
+                shutil.rmtree(task_paths.task_root)
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=f"无法删除 PDF OCR 任务：{exc}") from exc
         return {"success": True}
 
     @app.get("/api/pdf-book-ocr/{task_id}/download")
@@ -589,18 +605,45 @@ def create_app(*, project_root: Path | None = None, run_tasks_inline: bool = Fal
     @app.post("/api/jobs", status_code=202)
     async def post_job(request: SingleJobRequest) -> dict[str, str]:
         job_id = create_job_id()
-        app.state.active_jobs.add(job_id)
         state = create_initial_state(job_id, "job")
         state["input_summary"] = single_job_input_summary(request)
+        payload = request.model_dump()
+        if request.library_material_revision_id:
+            try:
+                payload, snapshot = await run_in_threadpool(prepare_library_job, app, job_id, request)
+            except LibraryError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+            except (ConfigLoadError, ValueError, OSError) as exc:
+                raise HTTPException(status_code=400, detail=f"准备书库参考失败：{exc}") from exc
+            state["library_material"] = snapshot
+            state["input_summary"]["reference_source"] = (
+                f"书库：{snapshot.get('name', '')} · 第{snapshot.get('revision', '')}版")
         write_json_file(app.state.job_state_path(job_id), state)
+        app.state.active_jobs.add(job_id)
         submit_task(
             app,
             app.state.execute_single_job,
             app=app,
             job_id=job_id,
-            payload=request.model_dump(),
+            payload=payload,
         )
         return {"job_id": job_id}
+
+    @app.get("/api/jobs/{job_id}/library-attachments/{kind}")
+    async def library_job_attachment(job_id: str, kind: str) -> Response:
+        files = {"pdf": ("reference.pdf", "application/pdf"),
+                 "txt": ("reference.txt", "text/plain; charset=utf-8"),
+                 "sources": ("sources.json", "application/json")}
+        if kind not in files or job_id in {"", ".", ".."} or "/" in job_id or "\\" in job_id:
+            raise HTTPException(status_code=404, detail="书库任务附件不存在。")
+        job_root = root / "data/jobs" / job_id
+        filename, media_type = files[kind]
+        path = job_root / "attachments/library" / filename
+        if (job_root.is_symlink() or not path.is_file()
+                or not path.resolve().is_relative_to(job_root.resolve())
+                or not (path.parent / "snapshot.json").is_file()):
+            raise HTTPException(status_code=404, detail="书库任务附件不存在。")
+        return FileResponse(path, media_type=media_type, filename=filename)
 
     @app.delete("/api/jobs/{job_id}")
     async def delete_job(job_id: str) -> dict[str, bool]:

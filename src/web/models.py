@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from src.schemas import AsrCandidateName, RefinementMode
 
 
@@ -17,6 +17,7 @@ class SingleJobRequest(AsrSelection):
     ocr_fast_mode: bool | None = None
     video: str
     reference: str | None = None
+    library_material_revision_id: str | None = None
     output_dir: str
     content_type: Literal["book_club", "conversation"] = "book_club"
     config: str | None = None
@@ -33,6 +34,17 @@ class SingleJobRequest(AsrSelection):
     chapter: str | None = None
     glossary_file: str | None = None
     refine_prompt: str | None = None
+
+    @model_validator(mode="after")
+    def library_reference_contract(self):
+        if self.library_material_revision_id is not None:
+            if not self.library_material_revision_id.strip():
+                raise ValueError("请选择书库材料的固定版本。")
+            if self.content_type != "book_club":
+                raise ValueError("对谈任务不使用书库参考材料。")
+            if self.reference and self.reference.strip():
+                raise ValueError("上传参考与书库材料只能选择一种。")
+        return self
 
 
 class BatchJobRequest(AsrSelection):

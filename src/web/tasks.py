@@ -48,6 +48,7 @@ from src.web.models import (
     StageFileRunRequest,
     StageRunRequest,
 )
+from src.web.library_jobs import library_job_snapshot
 from src.web.pdf_book_ocr import (
     PDFBookOCRTaskPaths,
     build_pdf_book_ocr_task_paths,
@@ -482,9 +483,12 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
         output_dir = Path(request.output_dir).expanduser().resolve()
 
         job_paths = build_job_paths(root, job_id)
+        library_snapshot = (library_job_snapshot(job_paths.job_root)
+                            if request.library_material_revision_id else None)
+        reference_source = library_snapshot["txt_path"] if library_snapshot else request.reference
         prepared_inputs = prepare_job_inputs(
             video_source=video_source,
-            reference_source=request.reference,
+            reference_source=reference_source,
             job_paths=job_paths,
             content_type=request.content_type,
         )
@@ -499,6 +503,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             chapter=effective_chapter,
             model_overrides=model_overrides,
             refine_prompt=effective_refine_prompt,
+            **({"library_sources_file": Path(library_snapshot["sources_path"])} if library_snapshot else {}),
         )
         write_job_manifest(
             loaded_settings=base_loaded_settings,
@@ -512,6 +517,7 @@ def execute_single_job(*, app: FastAPI, job_id: str, payload: dict) -> None:
             book_name=effective_book_name,
             chapter=effective_chapter,
             glossary_file=effective_glossary_file,
+            **({"library_material": library_snapshot} if library_snapshot else {}),
         )
 
         job_loaded_settings = load_settings(

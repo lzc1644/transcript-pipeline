@@ -4,6 +4,7 @@ import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from threading import Event
 from typing import Callable, Sequence
 
 
@@ -16,6 +17,7 @@ class OCRPageTask:
 class OCRPageTaskRunResult:
     texts_by_page: dict[int, str]
     errors_by_page: dict[int, Exception]
+    interrupted: bool = False
 
     def ordered_texts(self) -> list[str]:
         return [self.texts_by_page[page_number] for page_number in sorted(self.texts_by_page)]
@@ -33,6 +35,7 @@ def run_staggered_page_ocr_tasks(
     on_dispatched: Callable[[OCRPageTask, float], None] | None = None,
     on_succeeded: Callable[[OCRPageTask, str], None] | None = None,
     on_failed: Callable[[OCRPageTask, Exception], None] | None = None,
+    stop_event: Event | None = None,
 ) -> OCRPageTaskRunResult:
     """连续错峰执行全部单页 OCR，分别保留成功结果与失败页。"""
 
@@ -87,12 +90,18 @@ def run_staggered_page_ocr_tasks(
                         )
 
             has_capacity = len(active) < max_concurrency
-            if next_task_index < len(ordered_tasks) and has_capacity:
+            stopped = stop_event is not None and stop_event.is_set()
+            if next_task_index < len(ordered_tasks) and has_capacity and not stopped:
                 delay = next_submit_at - monotonic()
                 if delay > 0:
-                    sleep(delay)
+                    if stop_event is None:
+                        sleep(delay)
+                    else:
+                        stop_event.wait(delay)
                     continue
 
+                if stop_event is not None and stop_event.is_set():
+                    continue
                 task = ordered_tasks[next_task_index]
                 submitted_at = monotonic()
                 active[executor.submit(worker, task)] = task
@@ -112,7 +121,10 @@ def run_staggered_page_ocr_tasks(
 
             if active:
                 wait(active, return_when=FIRST_COMPLETED)
+            elif stopped:
+                break
 
-    if len(results) + len(errors) != len(ordered_tasks):
+    if len(results) + len(errors) != next_task_index:
         raise RuntimeError("OCR 页任务结束后仍存在缺失结果")
-    return OCRPageTaskRunResult(texts_by_page=results, errors_by_page=errors)
+    return OCRPageTaskRunResult(texts_by_page=results, errors_by_page=errors,
+                                interrupted=next_task_index < len(ordered_tasks))

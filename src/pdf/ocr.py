@@ -9,9 +9,10 @@ import re
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Literal, Protocol
+from threading import Event
+from typing import Callable, Iterable, Literal, Protocol
 
 from src.llm.gateway import CodexLBClient
 from src.ocr_page_markers import format_ocr_page_break
@@ -209,8 +210,13 @@ def codex_ocr_page_checkpoint_path(checkpoint_dir: Path, page_number: int) -> Pa
 
 
 def load_codex_ocr_page_checkpoints(checkpoint_dir: Path, page_count: int) -> dict[int, str]:
+    return load_selected_codex_ocr_page_checkpoints(checkpoint_dir, range(1, page_count + 1))
+
+
+def load_selected_codex_ocr_page_checkpoints(checkpoint_dir: Path, page_numbers: Iterable[int]) -> dict[int, str]:
+    """只读取调用方指定的物理页；空文件也是一个成功的检查点。"""
     page_texts: dict[int, str] = {}
-    for page_number in range(1, page_count + 1):
+    for page_number in page_numbers:
         page_path = codex_ocr_page_checkpoint_path(checkpoint_dir, page_number)
         if not page_path.is_file():
             continue
@@ -262,7 +268,18 @@ def write_codex_ocr_page_source(
 ) -> None:
     source_path = checkpoint_dir / f"page-{page:06d}.source.json"
     pending_path = source_path.with_suffix(".json.pending")
-    source = {
+    source = codex_ocr_page_source(page, text, primary, effective)
+    try:
+        ensure_directory(checkpoint_dir)
+        pending_path.write_text(json.dumps(source, ensure_ascii=False, indent=2), encoding="utf-8")
+        pending_path.replace(source_path)
+    except OSError as exc:
+        raise CodexOCRError(f"无法写入 OCR 第 {page} 页模型来源: {source_path} | {exc}") from exc
+
+
+def codex_ocr_page_source(page: int, text: str, primary: PDFOCRPageModel,
+                          effective: PDFOCRPageModel) -> dict[str, object]:
+    return {
         "schema_version": 1,
         "page_number": page,
         "primary_model": primary.model,
@@ -271,12 +288,6 @@ def write_codex_ocr_page_source(
         "fallback": effective.model != primary.model,
         "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
     }
-    try:
-        ensure_directory(checkpoint_dir)
-        pending_path.write_text(json.dumps(source, ensure_ascii=False, indent=2), encoding="utf-8")
-        pending_path.replace(source_path)
-    except OSError as exc:
-        raise CodexOCRError(f"无法写入 OCR 第 {page} 页模型来源: {source_path} | {exc}") from exc
 
 
 class OCRGateway(Protocol):
@@ -316,6 +327,24 @@ class PDFOCRRuntime:
     load_sources: Callable = load_codex_ocr_page_sources
     write_source: Callable = write_codex_ocr_page_source
     write_checkpoint: Callable = write_codex_ocr_page_checkpoint
+    load_selected_checkpoints: Callable = load_selected_codex_ocr_page_checkpoints
+
+
+@dataclass
+class PDFOCRPagesResult:
+    """指定物理页的独立结果；没有被投递的页不会冒充失败页。"""
+
+    page_count: int = 0
+    texts_by_page: dict[int, str] = field(default_factory=dict)
+    errors_by_page: dict[int, str] = field(default_factory=dict)
+    fallback_page_models: dict[int, str] = field(default_factory=dict)
+    interrupted: bool = False
+    sources_by_page: dict[int, dict[str, object]] = field(default_factory=dict)
+
+    def state(self, status: str = "running") -> PDFOCRPageState:
+        return PDFOCRPageState(self.page_count, tuple(sorted(self.texts_by_page)),
+                               dict(sorted(self.errors_by_page.items())),
+                               dict(sorted(self.fallback_page_models.items())), status=status)
 
 
 def merge_pdf_pages(page_texts: list[str]) -> str:
@@ -328,6 +357,161 @@ def merge_pdf_pages(page_texts: list[str]) -> str:
         if normalized.strip():
             parts.append(normalized)
     return "\n\n".join(parts)
+
+
+def _run_pdf_pages(
+    source_pdf: Path,
+    page_numbers: Iterable[int] | None,
+    options: PDFOCROptions,
+    *,
+    gateway: OCRGateway,
+    checkpoint_dir: Path | None,
+    progress_callback: Callable[[PDFOCRPageState], None] | None,
+    page_callback: Callable[[int, str, dict[str, object]], None] | None,
+    prompt_builder: Callable[[str | Path, int, int], str],
+    retry_plan: PDFOCRRetryPlan | None,
+    stop_event: Event | None,
+    runtime: PDFOCRRuntime,
+    result: PDFOCRPagesResult,
+    collect_sources: bool,
+) -> None:
+    """共享执行核心；None 仅供整本入口沿用原检查点接缝。"""
+    if isinstance(gateway, CodexLBClient):
+        # OCR 必须由 completed 流提交成功页，即使调用者传了通用客户端的默认设置。
+        gateway = replace(gateway, require_stream_completed=True)
+    source_pdf = Path(source_pdf)
+    primary = PDFOCRPageModel(options.model.strip(), options.reasoning_effort.strip(), options.fast_mode)
+    completed = result.texts_by_page
+    fallback_models = result.fallback_page_models
+    errors = result.errors_by_page
+
+    def report() -> None:
+        if progress_callback:
+            progress_callback(result.state())
+
+    if not primary.model:
+        raise CodexOCRError("PDF OCR 需要明确指定 model。")
+    if options.max_concurrency < 1 or options.submit_interval_seconds < 0:
+        raise CodexOCRError("PDF OCR 并发数必须为正整数，投递间隔不能小于 0。")
+    if retry_plan is not None and retry_plan.identity_fingerprint != build_pdf_ocr_run_identity(
+        source_pdf, primary.model, primary.reasoning_effort,
+    ).fingerprint:
+        retry_plan = None
+    result.page_count = runtime.page_count(source_pdf)
+    if page_numbers is None:
+        selected = list(range(1, result.page_count + 1))
+    else:
+        requested = list(page_numbers)
+        if any(type(page) is not int or page < 1 or page > result.page_count for page in requested):
+            raise CodexOCRError(f"PDF OCR 页码必须是 1 至 {result.page_count} 的整数。")
+        selected = sorted(set(requested))
+
+    if checkpoint_dir is not None:
+        if page_numbers is None:
+            completed.update(runtime.load_checkpoints(checkpoint_dir, result.page_count))
+        else:
+            completed.update(runtime.load_selected_checkpoints(checkpoint_dir, selected))
+        fallback_models.update(runtime.load_sources(checkpoint_dir, completed, primary.model))
+
+    def deliver(page: int, text: str, source: dict[str, object]) -> None:
+        if page_callback:
+            page_callback(page, text, source)
+        if collect_sources:
+            result.sources_by_page[page] = source
+
+    def checkpoint_source(page: int) -> dict[str, object]:
+        source_path = checkpoint_dir / f"page-{page:06d}.source.json"
+        if not source_path.is_file():
+            return {"page_number": page, "source_incomplete": True}
+        source = json.loads(source_path.read_text(encoding="utf-8"))
+        if source.get("page_number") != page:
+            raise CodexOCRError(f"无法校验 OCR 第 {page} 页模型来源: {source_path} | 来源页码不一致")
+        return source
+
+    if collect_sources or page_callback:
+        for page, text in sorted(completed.items()):
+            deliver(page, text, checkpoint_source(page))
+    tasks = [OCRPageTask(page) for page in selected if page not in completed]
+    report()
+
+    def recognize(task: OCRPageTask) -> str:
+        effective = select_pdf_ocr_page_model(primary, task.page_number, retry_plan)
+        payload: dict[str, object] = {
+            "model": effective.model,
+            "input": [{"role": "user", "content": [
+                {"type": "input_text", "text": prompt_builder(source_pdf.name, task.page_number, result.page_count)},
+                {"type": "input_image", "image_url": runtime.render_page(source_pdf, task.page_number, result.page_count)},
+            ]}],
+            "stream": True, "store": False,
+        }
+        if effective.reasoning_effort:
+            payload["reasoning"] = {"effort": effective.reasoning_effort}
+        if effective.fast_mode:
+            payload["service_tier"] = "priority"
+        return sanitize_gemini_ocr_text(strip_fenced_text(gateway.responses_stream_text(payload)))
+
+    def succeeded(task: OCRPageTask, text: str) -> None:
+        effective = select_pdf_ocr_page_model(primary, task.page_number, retry_plan)
+        if checkpoint_dir is not None:
+            runtime.write_source(checkpoint_dir, task.page_number, text, primary, effective)
+            runtime.write_checkpoint(checkpoint_dir, task.page_number, text)
+        if collect_sources or page_callback:
+            source = (checkpoint_source(task.page_number) if checkpoint_dir is not None
+                      else codex_ocr_page_source(task.page_number, text, primary, effective))
+            # 自定义运行时可能将检查点写到非文件存储。
+            if source.get("source_incomplete"):
+                source = codex_ocr_page_source(task.page_number, text, primary, effective)
+            deliver(task.page_number, text, source)
+        if effective.model != primary.model:
+            fallback_models[task.page_number] = effective.model
+        completed[task.page_number] = text
+        errors.pop(task.page_number, None)
+        report()
+
+    def failed(task: OCRPageTask, error: Exception) -> None:
+        errors[task.page_number] = str(error)
+        report()
+
+    page_run = run_staggered_page_ocr_tasks(
+        tasks, recognize, max_concurrency=options.max_concurrency,
+        submit_interval_seconds=options.submit_interval_seconds,
+        logger=LOGGER, on_succeeded=succeeded, on_failed=failed, stop_event=stop_event,
+    )
+    result.interrupted = page_run.interrupted
+    for page, error in page_run.errors_by_page.items():
+        errors.setdefault(page, str(error))
+
+
+def ocr_pdf_pages(
+    source_pdf: Path,
+    page_numbers: Iterable[int],
+    options: PDFOCROptions,
+    *,
+    gateway: OCRGateway,
+    checkpoint_dir: Path | None = None,
+    progress_callback: Callable[[PDFOCRPageState], None] | None = None,
+    page_callback: Callable[[int, str, dict[str, object]], None] | None = None,
+    prompt_builder: Callable[[str | Path, int, int], str] = build_codex_api_image_ocr_prompt,
+    retry_plan: PDFOCRRetryPlan | None = None,
+    stop_event: Event | None = None,
+    _runtime: PDFOCRRuntime | None = None,
+) -> PDFOCRPagesResult:
+    """识别原 PDF 的指定物理页，复用成功页并逐页报告来源。"""
+    if page_numbers is None:
+        raise CodexOCRError("指定页 OCR 必须提供明确的页码集合。")
+    result = PDFOCRPagesResult()
+    try:
+        _run_pdf_pages(source_pdf, page_numbers, options, gateway=gateway,
+                       checkpoint_dir=checkpoint_dir, progress_callback=progress_callback,
+                       page_callback=page_callback, prompt_builder=prompt_builder,
+                       retry_plan=retry_plan, stop_event=stop_event,
+                       runtime=_runtime or PDFOCRRuntime(), result=result, collect_sources=True)
+    except OSError as exc:
+        raise CodexOCRError(str(exc)) from exc
+    if progress_callback:
+        status = "interrupted" if result.interrupted else "partial" if result.errors_by_page else "success"
+        progress_callback(result.state(status))
+    return result
 
 
 def ocr_pdf(
@@ -347,79 +531,22 @@ def ocr_pdf(
     checkpoint_dir 是调用方选择的身份目录；可用 workflow 中的身份/命名空间
     helper 创建。重试计划只消费显式传入且与本 PDF/主模型身份匹配的计划。
     """
-    runtime = _runtime or PDFOCRRuntime()
-    if isinstance(gateway, CodexLBClient):
-        # OCR 必须由 completed 流提交成功页，即使调用者传了通用客户端的默认设置。
-        gateway = replace(gateway, require_stream_completed=True)
     source_pdf, output_text_path = Path(source_pdf), Path(output_text_path)
-    primary = PDFOCRPageModel(options.model.strip(), options.reasoning_effort.strip(), options.fast_mode)
-    completed: dict[int, str] = {}
-    fallback_models: dict[int, str] = {}
-    errors: dict[int, str] = {}
-    page_count = 0
+    pages = PDFOCRPagesResult()
 
-    def state(status: str = "running") -> PDFOCRPageState:
-        return PDFOCRPageState(page_count, tuple(sorted(completed)), dict(sorted(errors.items())),
-                               dict(sorted(fallback_models.items())), status=status)
-
-    def report(status: str = "running") -> None:
+    def report(status: str) -> None:
         if progress_callback:
-            progress_callback(state(status))
+            progress_callback(pages.state(status))
 
     try:
-        if not primary.model:
-            raise CodexOCRError("PDF OCR 需要明确指定 model。")
-        if options.max_concurrency < 1 or options.submit_interval_seconds < 0:
-            raise CodexOCRError("PDF OCR 并发数必须为正整数，投递间隔不能小于 0。")
-        if retry_plan is not None and retry_plan.identity_fingerprint != build_pdf_ocr_run_identity(
-            source_pdf, primary.model, primary.reasoning_effort,
-        ).fingerprint:
-            retry_plan = None
-        page_count = runtime.page_count(source_pdf)
-        if checkpoint_dir is not None:
-            completed.update(runtime.load_checkpoints(checkpoint_dir, page_count))
-            fallback_models.update(runtime.load_sources(checkpoint_dir, completed, primary.model))
-        tasks = [OCRPageTask(page) for page in range(1, page_count + 1) if page not in completed]
-        report()
-
-        def recognize(task: OCRPageTask) -> str:
-            effective = select_pdf_ocr_page_model(primary, task.page_number, retry_plan)
-            payload: dict[str, object] = {
-                "model": effective.model,
-                "input": [{"role": "user", "content": [
-                    {"type": "input_text", "text": prompt_builder(source_pdf.name, task.page_number, page_count)},
-                    {"type": "input_image", "image_url": runtime.render_page(source_pdf, task.page_number, page_count)},
-                ]}],
-                "stream": True, "store": False,
-            }
-            if effective.reasoning_effort:
-                payload["reasoning"] = {"effort": effective.reasoning_effort}
-            if effective.fast_mode:
-                payload["service_tier"] = "priority"
-            return sanitize_gemini_ocr_text(strip_fenced_text(gateway.responses_stream_text(payload)))
-
-        def succeeded(task: OCRPageTask, text: str) -> None:
-            effective = select_pdf_ocr_page_model(primary, task.page_number, retry_plan)
-            if checkpoint_dir is not None:
-                runtime.write_source(checkpoint_dir, task.page_number, text, primary, effective)
-                runtime.write_checkpoint(checkpoint_dir, task.page_number, text)
-            if effective.model != primary.model:
-                fallback_models[task.page_number] = effective.model
-            completed[task.page_number] = text
-            errors.pop(task.page_number, None)
-            report()
-
-        def failed(task: OCRPageTask, error: Exception) -> None:
-            errors[task.page_number] = str(error)
-            report()
-
-        page_run = run_staggered_page_ocr_tasks(
-            tasks, recognize, max_concurrency=options.max_concurrency,
-            submit_interval_seconds=options.submit_interval_seconds,
-            logger=LOGGER, on_succeeded=succeeded, on_failed=failed,
+        _run_pdf_pages(source_pdf, None, options, gateway=gateway,
+                       checkpoint_dir=checkpoint_dir, progress_callback=progress_callback,
+                       page_callback=None, prompt_builder=prompt_builder, retry_plan=retry_plan,
+                       stop_event=None, runtime=_runtime or PDFOCRRuntime(), result=pages,
+                       collect_sources=False)
+        completed, errors, fallback_models, page_count = (
+            pages.texts_by_page, pages.errors_by_page, pages.fallback_page_models, pages.page_count,
         )
-        for page, error in page_run.errors_by_page.items():
-            errors.setdefault(page, str(error))
         missing = [page for page in range(1, page_count + 1) if page not in completed]
         if missing:
             for page in missing:
@@ -431,14 +558,14 @@ def ocr_pdf(
         pending = output_text_path.with_suffix(output_text_path.suffix + ".pending")
         pending.write_text(text, encoding="utf-8")
         pending.replace(output_text_path)
-        warnings = [f"已使用 Codex API OCR。model={primary.model}；已完成 {len(completed)}/{page_count} 页。"]
+        warnings = [f"已使用 Codex API OCR。model={options.model.strip()}；已完成 {len(completed)}/{page_count} 页。"]
         if fallback_models:
-            pages = "、".join(str(page) for page in sorted(fallback_models))
-            warnings.append(f"上游输出失败页已使用 Gemini 补页；页码={pages}；来源见逐页 sidecar。")
+            fallback_pages = "、".join(str(page) for page in sorted(fallback_models))
+            warnings.append(f"上游输出失败页已使用 Gemini 补页；页码={fallback_pages}；来源见逐页 sidecar。")
         report("success")
-        return PDFOCRResult("success", source_pdf, output_text_path, state("success"), text, tuple(warnings))
+        return PDFOCRResult("success", source_pdf, output_text_path, pages.state("success"), text, tuple(warnings))
     except (ReferencePreparationError, OSError) as exc:
         error = exc if isinstance(exc, ReferencePreparationError) else CodexOCRError(str(exc))
         status = "partial" if isinstance(exc, CodexOCRPagesIncompleteError) else "failed"
         report(status)
-        return PDFOCRResult(status, source_pdf, output_text_path, state(status), error=error)
+        return PDFOCRResult(status, source_pdf, output_text_path, pages.state(status), error=error)

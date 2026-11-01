@@ -774,6 +774,14 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
 
       <n-collapse-transition :show="expanded">
         <n-flex vertical :size="20" class="status-detail">
+          <div v-if="kind === 'job' && state.library_material" class="library-attachments">
+            <h4 class="pipeline-title">本次参考材料快照</h4>
+            <n-flex :size="12" wrap>
+              <a :href="`/api/jobs/${encodeURIComponent(stateId)}/library-attachments/pdf`" target="_blank" rel="noopener">查看 PDF</a>
+              <a :href="`/api/jobs/${encodeURIComponent(stateId)}/library-attachments/txt`" target="_blank" rel="noopener">下载 TXT</a>
+              <a :href="`/api/jobs/${encodeURIComponent(stateId)}/library-attachments/sources`" target="_blank" rel="noopener">来源清单</a>
+            </n-flex>
+          </div>
           <div v-if="kind !== 'batch'" class="pipeline-section">
             <h4 class="pipeline-title">处理进度</h4>
             <div class="pipeline-flow">

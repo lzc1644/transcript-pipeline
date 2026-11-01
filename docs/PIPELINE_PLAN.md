@@ -300,6 +300,10 @@ Markdown 与 TXT 同时落盘，不再重组正文结构；TXT 由 Markdown 去�
 
 媒体转换、文件／流式／短句 ASR、PDF 逐页识别、通用网关与具体文字任务已按能力拆分；现有产品入口仍管理配置、会话和产物。依赖与使用示例见 [BACKEND_MODULES.md](BACKEND_MODULES.md)。本轮不推进新识别算法或新的整理阶段。
 
+## 独立产品：内网共享 PDF 书库（用户已批准）
+
+按关键通路 → 书库/导入 → OCR/修订 → 材料/校对 → 完整验收分批实施，不改变上述读书会阶段。书库以 SQLite＋本地文件独立保存原件、页修订和固定材料；通过 TXT 接入既有网页单次校对，不重新 OCR 已准备页。范围和实施证据见 [Epic 001](../codestable/epics/001-o-shared-pdf-library/spec.md)，使用与停服备份恢复见 [PDF_LIBRARY.md](PDF_LIBRARY.md)。不新增账户、新识别后端或书库 CLI/批量入口。
+
 ## 当前推荐推进顺序
 
 当前推荐主链：

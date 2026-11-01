@@ -21,6 +21,7 @@ const pages: Record<string, [string, string]> = {
   "/jobs": ["任务", "任务列表"],
   "/stage-runner": ["工具", "单阶段运行"],
   "/pdf-book-ocr": ["工具", "PDF 书籍 OCR"],
+  "/library": ["工具", "PDF 书库"],
   "/settings": ["设置", "运行设置"],
   "/dictation": ["工具", "语音输入"],
 };

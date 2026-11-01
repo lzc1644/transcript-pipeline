@@ -24,6 +24,8 @@ import JobStatusCard from "../components/JobStatusCard.vue";
 import ProfileSelector from "../components/ProfileSelector.vue";
 import AsrCandidateSelector from "../components/AsrCandidateSelector.vue";
 import RemoteFileUpload from "../components/RemoteFileUpload.vue";
+import LibraryMaterialPicker from "../components/LibraryMaterialPicker.vue";
+import type { LibraryRevision } from "../api/library";
 import { useConfigOptions } from "../composables/useConfigOptions";
 
 const message = useMessage();
@@ -50,6 +52,8 @@ const submitting = ref(false);
 const promptLoading = ref(false);
 const defaultRefinePrompt = ref("");
 const pollHandle = ref<number | null>(null);
+const referenceMode = ref<"upload" | "library">("upload");
+const selectedMaterial = ref<LibraryRevision | null>(null);
 
 const form = reactive({
   content_type: "book_club",
@@ -189,12 +193,17 @@ async function submit() {
     message.warning("视频或音频文件和服务器默认输出目录是必填项。");
     return;
   }
-  if (!isConversation.value && !form.reference) {
+  if (!isConversation.value && referenceMode.value === "upload" && !form.reference) {
     message.warning("读书会整理模式下参考源是必填项。");
+    return;
+  }
+  if (!isConversation.value && referenceMode.value === "library" && !selectedMaterial.value) {
+    message.warning("请选择书库材料的固定版本。");
     return;
   }
   if (
     !isConversation.value
+    && referenceMode.value === "upload"
     && (form.ocr_max_concurrency === null || form.ocr_submit_interval_seconds === null)
   ) {
     message.warning("请填写 PDF OCR 投递间隔和最大并发数。");
@@ -204,7 +213,8 @@ async function submit() {
   try {
     const response = await submitJob({
       video: form.video,
-      reference: isConversation.value ? null : form.reference,
+      reference: isConversation.value || referenceMode.value === "library" ? null : form.reference,
+      library_material_revision_id: !isConversation.value && referenceMode.value === "library" ? selectedMaterial.value?.id : null,
       output_dir: form.output_dir,
       content_type: form.content_type,
       profile: form.profile || null,
@@ -285,16 +295,22 @@ onBeforeUnmount(stopPolling);
                   <p class="prompt-hint">成功完成后自动删除服务器上的视频副本，保留音频和文字结果；失败任务保留视频供重试。</p>
                 </n-space>
               </n-form-item>
-              <n-form-item v-if="!isConversation" label="参考源文件或 URL" required>
+              <n-form-item v-if="!isConversation" label="参考材料" required>
                 <n-space vertical class="w-full">
-                  <n-input v-model:value="form.reference" placeholder="可粘贴 https:// 网址，或上传本机参考文件" />
+                  <n-radio-group v-model:value="referenceMode" aria-label="参考材料来源">
+                    <n-radio-button value="upload">上传文件／原有方式</n-radio-button>
+                    <n-radio-button value="library">从书库选择</n-radio-button>
+                  </n-radio-group>
+                  <n-input v-if="referenceMode === 'upload'" v-model:value="form.reference" placeholder="可粘贴 https:// 网址，或上传本机参考文件" />
                   <RemoteFileUpload
+                    v-if="referenceMode === 'upload'"
                     v-model="form.reference"
                     kind="reference"
                     label="参考源文件"
                     :accept="referenceAccept"
                     button-text="选择并上传本机参考源"
                   />
+                  <LibraryMaterialPicker v-else v-model="selectedMaterial" />
                 </n-space>
               </n-form-item>
               <n-form-item label="成果获取方式" required>
@@ -321,7 +337,7 @@ onBeforeUnmount(stopPolling);
               <section class="fast-mode-options" aria-label="快速模式">
                 <h4>快速模式 · 仅本次任务</h4>
                 <FastModeSwitch v-model="form.fast_mode" label="AI 精修快速模式" :disabled="loading" />
-                <FastModeSwitch v-if="!isConversation" v-model="form.ocr_fast_mode" label="PDF OCR 快速模式" :disabled="loading" />
+                <FastModeSwitch v-if="!isConversation && referenceMode === 'upload'" v-model="form.ocr_fast_mode" label="PDF OCR 快速模式" :disabled="loading" />
                 <p class="prompt-hint">通过 CPA 请求快速服务，可能增加额度消耗或费用；不改变模型或推理强度。PDF 开关仅在实际执行 OCR 时生效。</p>
               </section>
               <details class="advanced-options">
@@ -335,17 +351,17 @@ onBeforeUnmount(stopPolling);
                       </n-space>
                     </n-form-item>
                   </n-grid-item>
-                <n-grid-item v-if="!isConversation" span="2 m:1">
+                <n-grid-item v-if="!isConversation && referenceMode === 'upload'" span="2 m:1">
                   <n-form-item label="PDF OCR 模型">
                     <n-input v-model:value="form.ocr_model" placeholder="例如 gemini-3.5-flash-lite" />
                   </n-form-item>
                 </n-grid-item>
-                <n-grid-item v-if="!isConversation" span="2 m:1">
+                <n-grid-item v-if="!isConversation && referenceMode === 'upload'" span="2 m:1">
                   <n-form-item label="PDF OCR 推理强度">
                     <n-select v-model:value="form.ocr_reasoning_effort" :options="ocrReasoningOptions" />
                   </n-form-item>
                 </n-grid-item>
-                <n-grid-item v-if="!isConversation" span="2 m:1">
+                <n-grid-item v-if="!isConversation && referenceMode === 'upload'" span="2 m:1">
                   <n-form-item label="页面投递间隔（秒）" required>
                     <n-input-number
                       v-model:value="form.ocr_submit_interval_seconds"
@@ -355,7 +371,7 @@ onBeforeUnmount(stopPolling);
                     />
                   </n-form-item>
                 </n-grid-item>
-                <n-grid-item v-if="!isConversation" span="2 m:1">
+                <n-grid-item v-if="!isConversation && referenceMode === 'upload'" span="2 m:1">
                   <n-form-item label="最大在途请求数" required>
                     <n-input-number
                       v-model:value="form.ocr_max_concurrency"
