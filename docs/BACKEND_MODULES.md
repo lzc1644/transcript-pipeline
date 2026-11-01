@@ -148,7 +148,7 @@ else:
     print(result.comparison_summary, result.backend_results)
 ```
 
-对谈可省略 `reference_text`，并传入原对谈提示词。任务保留引用锁定、结果校验和单／双 ASR 差异。多个后端成功时保留候选供人工选择，不能擅自挑出一个当作最终稿。
+对谈可省略 `reference_text`，并传入原对谈提示词。默认单 ASR 将原始全文和参考附件一次提交，不先匹配、预替换、分成 SEGMENT 或锁定引用；双 ASR 继续传入同源候选。旧式分段装配和锁定检查工具仅保留给显式兼容调用。交付格式校验仍保留，语义保真需复核，`fidelity_report` 用 `checked=false`、`passed=null` 表示没有自动验真。多个后端成功时保留候选供人工选择，不能擅自挑出一个当作最终稿。
 
 要沿用完整产品产物和导出规则，运行现有组合入口：
 

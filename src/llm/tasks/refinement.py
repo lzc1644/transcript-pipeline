@@ -747,9 +747,13 @@ def build_single_pass_refine_prompt(
     backend: str,
     pre_replaced_segments: list[PreReplacementSegment],
     reference_full_text: str,
+    asr_full_text: str | None = None,
 ) -> str:
     # 业务编辑政策仅由传入的 Markdown 提示词拥有；这里只装配输入协议和接口契约。
     has_reference = input_paths.reference_text_path is not None
+    if asr_full_text is not None:
+        # 独立文字调用可直接提供参考内容，不要求存在参考文件或 job。
+        has_reference = has_reference or bool(reference_full_text.strip())
     sections = [prompt_text.strip(), REFINE_JSON_CONTRACT, f"当前文件: {input_paths.basename}.txt"]
     if input_paths.dual_asr_input is not None:
         sections.extend([
@@ -758,7 +762,14 @@ def build_single_pass_refine_prompt(
             "双 ASR 原始全文：",
             input_paths.dual_asr_input.render(),
         ])
+    elif asr_full_text is not None:
+        sections.extend([
+            "输入模式：整篇原始 ASR 单次校对，未做参考预替换或引用锁定。",
+            "录音转写全文：",
+            asr_full_text,
+        ])
     else:
+        # 兼容显式传入旧式分段的调用方；正式校对入口总是提供原始全文。
         rendered_segments = []
         for index, segment in enumerate(pre_replaced_segments, start=1):
             label = f"[SEGMENT {index:02d}][{segment.segment_type}]" if has_reference else f"[SEGMENT {index:02d}]"
@@ -1461,21 +1472,17 @@ def run_single_pass_backend_refinement(
             **asr_input_metadata(input_paths, runtime),
         },
     )
-    # 双 ASR 提供原始候选，不先用可能含 OCR 错误的附件改写/锁定其中一份。
-    pre_replaced_segments = [] if input_paths.dual_asr_input is not None else build_pre_replaced_document(
-        asr_full_text=asr_full_text,
-        reference_full_text=reference_full_text,
-        runtime=runtime,
-    )
-    edited_plain_text = asr_full_text if input_paths.dual_asr_input is not None else build_pre_replaced_plain_text(pre_replaced_segments)
+    # 单/双 ASR 均交付原始证据，不先按附件匹配、替换或锁定引用。
+    edited_plain_text = asr_full_text
 
     def run_backend_attempt(target_backend: str) -> BackendDocumentRefinementResult:
         prompt = build_single_pass_refine_prompt(
             markdown_prompt_text,
             input_paths,
             backend=target_backend,
-            pre_replaced_segments=pre_replaced_segments,
+            pre_replaced_segments=[],
             reference_full_text=reference_full_text,
+            asr_full_text=asr_full_text,
         )
         payload = run_backend_payload(
             target_backend,
@@ -1550,28 +1557,6 @@ def run_single_pass_backend_refinement(
 
     refinement_notes = list(document_result.refinement_notes)
     final_markdown = document_result.final_markdown
-    if not locked_quotes_preserved(final_markdown, pre_replaced_segments):
-        refinement_notes.append("locked_quote_changed_use_programmatic_fallback")
-        request_trace.write_json(
-            "locked-quote-validation.json",
-            {
-                "schema_version": TRACE_SCHEMA_VERSION,
-                "recorded_at": trace_now_iso(),
-                "passed": False,
-                "reason": "locked_quote_changed",
-            },
-        )
-        final_markdown = build_simple_markdown(input_paths.basename, edited_plain_text)
-        document_result = BackendDocumentRefinementResult(
-            backend=document_result.backend,
-            model_name=document_result.model_name or document_result.backend,
-            final_markdown=final_markdown,
-            refinement_strategy="programmatic_markdown_fallback",
-            refinement_reason="locked_quote_changed",
-            needs_review_sections=document_result.needs_review_sections,
-            refinement_notes=document_result.refinement_notes,
-            section_map=[],
-        )
 
     backend_statuses = dict(document_result.backend_statuses)
     if fallback_from_backend:
@@ -1582,14 +1567,12 @@ def run_single_pass_backend_refinement(
         )
 
     if logger is not None:
-        locked_count = len([segment for segment in pre_replaced_segments if segment.segment_type == "locked_quote"])
         logger.info(
-            "阶段 6 单次调用 | file=%s | backend=%s | actual_backend=%s | locked_segments=%s | total_segments=%s",
+            "阶段 6 单次调用 | file=%s | backend=%s | actual_backend=%s | input_mode=%s",
             input_paths.basename,
             backend,
             document_result.backend,
-            locked_count,
-            len(pre_replaced_segments),
+            "dual_asr" if input_paths.dual_asr_input is not None else "single_asr",
         )
 
     final_result = BackendDocumentRefinementResult(
@@ -1599,7 +1582,7 @@ def run_single_pass_backend_refinement(
         refinement_strategy=(
             document_result.refinement_strategy
             if document_result.refinement_strategy == "programmatic_markdown_fallback"
-            else "single_pass_dual_asr" if input_paths.dual_asr_input is not None else "single_pass_safe_replace"
+            else "single_pass_dual_asr" if input_paths.dual_asr_input is not None else "single_pass_raw_asr"
         ),
         refinement_reason=(
             document_result.refinement_reason
@@ -1609,7 +1592,8 @@ def run_single_pass_backend_refinement(
         needs_review_sections=document_result.needs_review_sections,
         refinement_notes=refinement_notes,
         edited_plain_text=edited_plain_text,
-        fidelity_report={"passed": True, "pre_replaced_segments": len(pre_replaced_segments)},
+        fidelity_report={"passed": None, "checked": False, "pre_replaced_segments": 0,
+                         "semantic_acceptance": "requires_manual_review"},
         section_map=document_result.section_map,
         backend_statuses=backend_statuses,
     )

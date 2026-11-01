@@ -8,7 +8,6 @@ import pytest
 from src.config_loader import load_settings
 from src.refine_utils import (
     PreReplacementSegment,
-    RefinementOutputValidationError,
     locked_quotes_preserved,
     markdown_to_plain_text,
     refine_batch,
@@ -61,55 +60,56 @@ def test_locked_quote_still_rejects_actual_content_changes(markdown: str) -> Non
     assert not locked_quotes_preserved(markdown, [locked_segment()])
 
 
-@pytest.mark.parametrize("mode", ["heading", "retry", "reject"])
-def test_refine_heading_acceptance_and_real_locked_quote_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+@pytest.mark.parametrize("has_reference", [False, True])
+def test_production_refine_preserves_raw_asr_without_replacement_or_locking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, has_reference: bool,
 ) -> None:
-    write_minimal_settings(tmp_path)
-    for directory in ("asr", "extracted_text"):
-        path = tmp_path / "data/intermediate" / directory / "source.txt"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{TITLE}\n\n{BODY}", encoding="utf-8")
+    write_minimal_settings(tmp_path, reference_overrides={"enabled": has_reference})
+    source_text = f"{TITLE}\n\n{BODY.replace('创造', '床造')}"
+    reference_text = f"{TITLE}\n\n{BODY.replace('创造', '创作')}"
+    asr_path = tmp_path / "data/intermediate/asr/source.txt"
+    asr_path.parent.mkdir(parents=True, exist_ok=True)
+    asr_path.write_text(source_text, encoding="utf-8")
+    ref_path = tmp_path / "data/intermediate/extracted_text/source.txt"
+    if has_reference:
+        ref_path.parent.mkdir(parents=True, exist_ok=True)
+        ref_path.write_text(reference_text, encoding="utf-8")
     settings = load_settings(project_root=tmp_path)
     prompts: list[str] = []
     valid = f"# {TITLE}\n\n> {BODY}"
 
     def fake_payload(prompt: str, _settings, **_kwargs):
         prompts.append(prompt)
-        markdown = valid if mode == "heading" or (mode == "retry" and len(prompts) == 2) else f"> {BODY}"
-        return {"final_markdown": markdown, "section_map": [], "refinement_notes": [], "needs_review_sections": []}
+        return {"final_markdown": valid, "section_map": [], "refinement_notes": [], "needs_review_sections": []}
 
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("正式入口不得预替换或验证工程锁定引用")
+
+    monkeypatch.setattr("src.llm.tasks.refinement.build_pre_replaced_document", forbidden)
+    monkeypatch.setattr("src.llm.tasks.refinement.locked_quotes_preserved", forbidden)
     monkeypatch.setattr("src.llm.tasks.refinement.run_codex_api_payload", fake_payload)
-    if mode == "reject":
-        with pytest.raises(RefinementOutputValidationError, match="locked_quote_changed"):
-            refine_batch(settings)
+    summary = refine_batch(settings)
+    assert summary.success == 1 and len(prompts) == 1
+    assert source_text in prompts[0]
+    assert "[SEGMENT " not in prompts[0] and "工程契约：不得改写 locked_quote" not in prompts[0]
+    if has_reference:
+        assert reference_text in prompts[0] and prompts[0].index(source_text) < prompts[0].index(reference_text)
+        assert ref_path.read_text() == reference_text
     else:
-        summary = refine_batch(settings)
-        assert summary.success == 1
-        result = json.loads((settings.path_for("refined_dir") / "source.json").read_text())
-        assert result["final_markdown"] == valid
-        assert result["model_results"]["codex_api"]["validation_retry_count"] == (0 if mode == "heading" else 1)
-
+        assert "本任务没有参考附件" in prompts[0]
+    result = json.loads((settings.path_for("refined_dir") / "source.json").read_text())
+    assert result["final_markdown"] == valid
+    assert result["prompt_mode"] == "single_pass_raw_asr"
+    assert result["edited_plain_text"] == source_text
+    assert result["fidelity_report"]["passed"] is None
+    assert result["fidelity_report"]["checked"] is False
+    assert result["fidelity_report"]["pre_replaced_segments"] == 0
+    assert result["model_results"]["codex_api"]["validation_retry_count"] == 0
+    assert asr_path.read_text() == source_text
     diagnostics = json.loads((settings.path_for("logs_dir") / "refine/diagnostics.json").read_text())
-    attempts = diagnostics["attempts"]
-    if mode == "heading":
-        assert len(prompts) == 1
-        assert attempts[0]["status"] == "accepted"
-        assert attempts[0]["validation_reasons"] == []
-    else:
-        assert len(prompts) == 2
-        assert "锁定原文校验失败" in prompts[1]
-        assert "locked_quote_changed" in attempts[0]["validation_reasons"]
-        assert attempts[0]["failure_category"] == "locked_quote_validation"
-        assert "不是后端调用失败" in attempts[0]["failure_summary"]
-        evidence_path = settings.path_for("logs_dir") / attempts[0]["diagnostic_directory"] / attempts[0]["failure_evidence_file"]
-        assert json.loads(evidence_path.read_text())["reason"] == "locked_quote_changed"
-        assert "candidate_file" not in attempts[0]  # 不把程序回退稿当模型候选稿
-        if mode == "reject":
-            assert [attempt["status"] for attempt in attempts] == ["rejected", "rejected"]
-            assert not (settings.path_for("refined_dir") / "source.json").exists()
-        else:
-            assert attempts[1]["status"] == "accepted"
+    assert len(diagnostics["attempts"]) == 1
+    assert diagnostics["attempts"][0]["status"] == "accepted"
+    assert not list(settings.path_for("logs_dir").rglob("locked-quote-validation.json"))
 
 
 def test_locked_quote_diagnostic_consumes_refinement_reason(tmp_path: Path) -> None:

@@ -57,7 +57,7 @@ def segment(text: str, *, locked: bool = False, index: int = 0) -> PreReplacemen
 
 
 @pytest.mark.parametrize("content_type", ["book_club", "conversation"])
-@pytest.mark.parametrize("mode", ["single_no_reference", "single_reference", "dual_reference"])
+@pytest.mark.parametrize("mode", ["single_no_reference", "single_reference", "dual_reference", "raw_single_no_reference", "raw_single_reference"])
 @pytest.mark.parametrize("backend", ["codex_api", "agy", "codex_cli"])
 def test_default_editing_policy_reaches_each_prompt_without_conflicting_tail(
     tmp_path: Path, content_type: str, mode: str, backend: str,
@@ -70,7 +70,7 @@ def test_default_editing_policy_reaches_each_prompt_without_conflicting_tail(
     assert load_markdown_assemble_prompt(settings, content_type=content_type) == policy
 
     asr_path = settings.path_for("asr_dir") / "demo.txt"
-    reference_path = None if mode == "single_no_reference" else settings.path_for("extracted_text_dir") / "demo.txt"
+    reference_path = None if mode in ("single_no_reference", "raw_single_no_reference") else settings.path_for("extracted_text_dir") / "demo.txt"
     quote = "万物各有其理。"
     speech = "嗯，我，我不是说两个条件一样。"
     reference = "参考附件：万物各有其理。" if reference_path else ""
@@ -93,6 +93,7 @@ def test_default_editing_policy_reaches_each_prompt_without_conflicting_tail(
     paths = RefinementInputPaths("demo", asr_path, reference_path, dual)
     prompt = build_single_pass_refine_prompt(
         policy, paths, backend=backend, pre_replaced_segments=parts, reference_full_text=reference,
+        asr_full_text=f"{quote}\n{speech}" if mode.startswith("raw_") else None,
     )
 
     assert prompt.startswith(policy) and prompt.count(policy) == 1
@@ -109,6 +110,9 @@ def test_default_editing_policy_reaches_each_prompt_without_conflicting_tail(
         assert dual.render() in prompt
         assert "[ASR A]" in prompt and "[ASR B]" in prompt
         assert "工程契约：不得改写 locked_quote" not in prompt
+    elif mode.startswith("raw_"):
+        assert f"{quote}\n{speech}" in prompt
+        assert "[SEGMENT " not in prompt and "工程契约：不得改写 locked_quote" not in prompt
     elif mode == "single_reference":
         assert "[SEGMENT 01][locked_quote]" in prompt
         assert "[SEGMENT 02][unlocked_text]" in prompt

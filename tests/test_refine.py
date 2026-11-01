@@ -440,8 +440,8 @@ def test_refine_batch_uses_single_codex_call_with_reference_context(
 
     assert len(prompts) == 1
     assert "整篇参考原文" in prompts[0]
-    assert "[SEGMENT 01][locked_quote]" in prompts[0]
-    assert "[SEGMENT 02][unlocked_text]" in prompts[0]
+    assert (asr_dir / "single-pass-demo.txt").read_text() in prompts[0]
+    assert "[SEGMENT " not in prompts[0] and "工程契约：不得改写 locked_quote" not in prompts[0]
 
 
 def test_refine_batch_without_reference_writes_null_source_reference(
@@ -980,7 +980,7 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     backend_result = json.loads(backend_path.read_text(encoding="utf-8"))
 
     assert summary.success == 1
-    assert result["prompt_mode"] == "single_pass_safe_replace"
+    assert result["prompt_mode"] == "single_pass_raw_asr"
     assert result["source_asr_file"] == "data/intermediate/asr/demo.txt"
     assert result["source_reference_file"] == "data/intermediate/extracted_text/demo.txt"
     assert result["refinement_backends"] == [BACKEND_CODEX_API]
@@ -991,7 +991,8 @@ def test_refine_batch_writes_expected_fulltext_output_structure(
     assert result["edited_plain_text"].startswith("九月零云至 崇尚敬江山")
     assert "这里 的意思 是 作者在说明情绪变化" in result["edited_plain_text"]
     assert result["deletion_candidates"] == []
-    assert result["fidelity_report"]["passed"] is True
+    assert result["fidelity_report"]["passed"] is None
+    assert result["fidelity_report"]["checked"] is False
     assert result["refinement_notes"] == ["codex_note"]
     assert "classification_summary" not in result
     assert backend_path.exists()
@@ -1382,13 +1383,14 @@ def test_refine_batch_uses_single_codex_api_call_for_long_line_based_asr(
 
     assert len(prompts) == 1
     assert "整篇参考原文" in prompts[0]
-    assert "预替换全文" in prompts[0]
+    assert asr_path.read_text() in prompts[0]
+    assert "预替换全文：" not in prompts[0] and "[SEGMENT " not in prompts[0]
     assert "当前块正文" not in prompts[0]
-    assert result["prompt_mode"] == "single_pass_safe_replace"
+    assert result["prompt_mode"] == "single_pass_raw_asr"
     assert result["backend_status"]["codex_api"] == "returned_single_pass:model=gpt-5.4"
     assert "第0000行转写文本" in result["final_markdown"]
     assert "第0199行转写文本" in result["final_markdown"]
-    assert sidecar["prompt_mode"] == "single_pass_safe_replace"
+    assert sidecar["prompt_mode"] == "single_pass_raw_asr"
 
 
 def test_refine_batch_does_not_use_block_concurrency_in_single_pass_mode(
@@ -1467,8 +1469,8 @@ def test_refine_batch_logs_single_pass_progress(
     assert len(progress_messages) == 1
     assert "file=progress-demo" in progress_messages[0]
     assert "backend=codex_api" in progress_messages[0]
-    assert "locked_segments=" in progress_messages[0]
-    assert "total_segments=" in progress_messages[0]
+    assert "input_mode=single_asr" in progress_messages[0]
+    assert "locked_segments=" not in progress_messages[0] and "total_segments=" not in progress_messages[0]
 
 
 def test_refine_batch_uses_fallback_when_all_backends_fail(

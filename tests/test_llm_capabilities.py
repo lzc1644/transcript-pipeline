@@ -166,11 +166,15 @@ def test_standalone_refinement_and_dictation_use_real_local_protocol(tmp_path, p
         connection = GatewayConnection(url, "local-fixture-only")
         gateway = GatewayClient(connection, timeout_seconds=3)
         result = refine_document("原文与讨论。", title="离线读书会", prompt=prompt,
+                                 reference_text="未预替换的参考原文。",
                                  logs_dir=tmp_path / "diagnostics", workdir=tmp_path,
                                  gateway=gateway, options=RefinementOptions(model="fixed", timeout_seconds=3))
         assert result.selected_result.final_markdown == "# 离线读书会\n\n原文与讨论。"
         assert result.comparison_summary.startswith("single_backend_selected:codex_api:")
         assert prompt in seen[0]["payload"]["input"]
+        assert "未预替换的参考原文。" in seen[0]["payload"]["input"]
+        assert "[SEGMENT " not in seen[0]["payload"]["input"]
+        assert result.selected_result.refinement_strategy == "single_pass_raw_asr"
         assert "max_output_tokens" not in seen[0]["payload"] and "temperature" not in seen[0]["payload"]
         request_meta = next((tmp_path / "diagnostics").rglob("request-meta.json")).read_text()
         assert "local-fixture-only" not in request_meta
