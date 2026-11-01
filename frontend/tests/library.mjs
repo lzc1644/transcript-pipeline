@@ -17,7 +17,7 @@ const errors = [];
 page.on('pageerror', error => errors.push(error.message));
 if (process.env.LIBRARY_MOBILE_STICKY_ONLY === '1') {
   try {
-    const pdf = await readFile(marker.pdf_a);
+    const pdf = Buffer.concat([await readFile(marker.pdf_a), Buffer.from(`\n% mobile sticky ${Date.now()}\n`)]);
     const uploaded = await fetch(`${base}/api/library/books?filename=mobile-sticky.pdf`, { method: 'POST', headers: { 'Content-Type': 'application/pdf' }, body: pdf });
     assert.equal(uploaded.status, 201);
     const book = await uploaded.json();
@@ -249,6 +249,8 @@ try {
   await page.goto(`${base}/single-job`);
   await page.locator('input[type=file]').first().setInputFiles({ name: 'sample.mp4', mimeType: 'video/mp4', buffer: Buffer.from('synthetic') });
   await page.getByText('从书库选择', { exact: true }).click();
+  await page.getByRole('button', { name: '返回任务' }).click();
+  await page.getByRole('button', { name: '复用已有材料' }).click();
   await page.locator('.library-picker .n-base-selection').nth(0).click();
   await page.getByText('第十二次读书会', { exact: true }).last().click();
   await page.locator('.library-picker .n-base-selection').nth(1).click();

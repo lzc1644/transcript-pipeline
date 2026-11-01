@@ -18,7 +18,7 @@ page.setDefaultTimeout(10000);
 const errors = [];
 const results = [];
 page.on('pageerror', error => errors.push(error.message));
-const routes = ['single-job', 'batch-job', 'jobs', 'stage-runner', 'pdf-book-ocr', 'settings'];
+const routes = ['single-job', 'batch-job', 'jobs', 'stage-runner', 'pdf/library', 'pdf/ocr', 'settings'];
 async function check(name, run) {
   if (process.env.WORKBENCH_FILTER && !new RegExp(process.env.WORKBENCH_FILTER).test(name)) return;
   await run(); results.push(name); console.log(`PASS ${name}`);
@@ -46,7 +46,7 @@ try {
           assert(await page.locator('#main-content').isVisible());
           assert.equal(await page.evaluate(() => document.documentElement.classList.contains('dark-mode')), theme === 'dark');
           await page.evaluate(() => scrollTo(0, 0));
-          await page.screenshot({ path: `${output}/${route}-${width}-${theme}.png`, fullPage: true });
+          await page.screenshot({ path: `${output}/${route.replaceAll("/", "-")}-${width}-${theme}.png`, fullPage: true });
         });
       }
     }
@@ -63,8 +63,11 @@ try {
     await page.waitForTimeout(250);
     assert.equal(await menu.evaluate(e => e === document.activeElement), true);
     for (const route of routes) {
+      // PDF 处理 has one sidebar entry; its OCR page is reached by the inner tab.
+      if (route === 'pdf/ocr') continue;
+      const href = route === 'pdf/library' ? '/pdf' : `/${route}`;
       await menu.click();
-      await page.locator(`#mobile-navigation a[href="/${route}"]`).click();
+      await page.locator(`#mobile-navigation a[href="${href}"]`).click();
       await page.locator('#mobile-navigation').waitFor({ state: 'hidden' });
       assert.equal(new URL(page.url()).pathname, `/${route}`);
     }

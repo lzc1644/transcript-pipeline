@@ -579,7 +579,7 @@ onBeforeUnmount(stopPolling);
                 <span>PDF OCR 任务历史</span>
                 <p class="pdf-book-ocr-history__copy">选择任一记录可恢复结果查看；运行中的任务会继续刷新。</p>
               </div>
-              <n-space><router-link to="/library?import=1"><n-button size="small">导入书库</n-button></router-link><n-button size="small" secondary :loading="historyLoading" @click="loadTaskHistory">刷新历史</n-button></n-space>
+              <n-space><router-link to="/pdf/library?import=1"><n-button size="small">导入书库</n-button></router-link><n-button size="small" secondary :loading="historyLoading" @click="loadTaskHistory">刷新历史</n-button></n-space>
             </n-flex>
           </template>
 

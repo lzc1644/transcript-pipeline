@@ -20,8 +20,8 @@ const pages: Record<string, [string, string]> = {
   "/batch-job": ["任务", "批量任务"],
   "/jobs": ["任务", "任务列表"],
   "/stage-runner": ["工具", "单阶段运行"],
-  "/pdf-book-ocr": ["工具", "PDF 书籍 OCR"],
-  "/library": ["工具", "PDF 书库"],
+  "/pdf/library": ["工具", "PDF 处理"],
+  "/pdf/ocr": ["工具", "PDF 处理"],
   "/settings": ["设置", "运行设置"],
   "/dictation": ["工具", "语音输入"],
 };

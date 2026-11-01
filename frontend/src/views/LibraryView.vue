@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { NAlert, NButton, NCheckbox, NInput, NSpace, NTag, useDialog, useMessage } from "naive-ui";
 import LibraryBookDetail from "../components/LibraryBookDetail.vue";
+import LibraryMaterialComposer from "../components/LibraryMaterialComposer.vue";
 import { getFrontendSettings, type FrontendSettings } from "../api/client";
 import { library, LibraryApiError, type HistoryCandidate, type ImportResult, type LibraryBook, type LibraryJob, type LibraryMaterial, type LibraryRange, type LibraryRevision, type OCRSettings } from "../api/library";
 
@@ -31,6 +32,7 @@ const settings = ref<FrontendSettings | null>(null);
 const uploadInput = ref<HTMLInputElement | null>(null);
 const uploading = ref(false);
 const working = ref(false);
+const showComposer = ref(false);
 const pageError = ref("");
 const materialConflict = ref<LibraryMaterial | null>(null);
 const draggedIndex = ref<number | null>(null);
@@ -180,6 +182,15 @@ async function openMaterial(id: string, force = false) {
     tab.value = "materials";
   } catch (error) { message.error(errorText(error)); }
 }
+async function composerSelected(revision: LibraryRevision) {
+  showComposer.value = false;
+  await loadMaterials();
+  if (bookDirty.value) {
+    message.success("材料已生成。当前页面修改仍保留，可在“本次材料”中查看新版本。");
+    return;
+  }
+  await openMaterial(revision.material_id);
+}
 async function saveMaterial(): Promise<LibraryMaterial | null> {
   if (!name.value.trim()) { message.warning("请填写材料名称。"); return null; }
   if (!ranges.value.length) { message.warning("请先从书籍详情加入至少一个页段。"); return null; }
@@ -250,7 +261,7 @@ onBeforeUnmount(() => { if (poll !== null) window.clearInterval(poll); });
 
 <template>
   <div class="workbench-page library-view">
-    <section class="page-heading"><div><h2>PDF 书库</h2><p>保存书籍和逐页文字，按读书会需要组合参考材料。</p></div></section>
+    <section class="page-heading"><div><h2>PDF 书库</h2><p>保存书籍和逐页文字，按读书会需要组合参考材料。</p></div><n-button type="primary" @click="showComposer = true">选书组装材料</n-button></section>
     <n-alert v-if="pageError" type="error" :bordered="false">{{ pageError }}</n-alert>
     <div class="library-tabs" aria-label="书库视图">
       <n-button :type="tab === 'books' ? 'primary' : 'default'" @click="switchTab('books')">书籍</n-button>
@@ -273,7 +284,7 @@ onBeforeUnmount(() => { if (poll !== null) window.clearInterval(poll); });
       <section v-else class="library-list">
         <div class="list-toolbar"><n-input v-model:value="query" placeholder="搜索书名、作者、版本或标签" clearable @keyup.enter="bookPage = 1; loadBooks()" /><n-button @click="bookPage = 1; loadBooks()">搜索</n-button>
           <input ref="uploadInput" type="file" accept=".pdf,application/pdf" multiple class="visually-hidden" @change="upload" />
-          <n-button type="primary" :loading="uploading" @click="uploadInput?.click()">上传 PDF</n-button><n-button @click="loadCandidates">导入历史 OCR</n-button><n-button @click="clearPreviews">清理预览缓存</n-button>
+          <n-button secondary :loading="uploading" @click="uploadInput?.click()">上传 PDF</n-button><n-button @click="loadCandidates">导入历史 OCR</n-button><n-button @click="clearPreviews">清理预览缓存</n-button>
           <n-checkbox v-model:checked="showArchived" @update:checked="switchArchived">查看归档</n-checkbox>
         </div>
         <n-alert type="info" :bordered="false">上传不会自动开始 OCR。相同 PDF 会提示已有书籍。</n-alert>
@@ -313,6 +324,7 @@ onBeforeUnmount(() => { if (poll !== null) window.clearInterval(poll); });
         </div>
       </div>
     </section>
+    <LibraryMaterialComposer v-model:show="showComposer" purpose="standalone" @saved="loadMaterials" @selected="composerSelected" />
   </div>
 </template>
 

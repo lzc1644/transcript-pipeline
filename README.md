@@ -25,7 +25,7 @@
 
 另有独立的[网页语音输入](docs/DICTATION.md)：实时双遍听写、录音上传、编辑、复制和 TXT 下载。CPU Streaming Paraformer 预览、GPU Qwen 0.6B 最终识别、Gemini 3.5 Flash Lite 逐句整理、Gemini 3.8 Flash High 全文整理；与读书会流水线的任务、配置及产物分开。内网 IP 使用麦克风需可信 HTTPS，见[内网 HTTPS 与证书信任](docs/HTTPS.md)。
 
-新增[内网共享 PDF 书库](docs/PDF_LIBRARY.md)：长期保存 PDF 与逐页文字，按物理页跨书组合固定材料，直接用于网页单次校对。上传不自动 OCR，已准备页直接复用；支持历史 OCR 导入、修订冲突、归档和材料 PDF／TXT 下载。沿用当前服务，SQLite 和文件保存在 `data/library/`，不引入账户系统。
+[PDF 处理与共享书库](docs/PDF_LIBRARY.md)：新建单任务时直接选书、预览、按物理页跨书组合并用于校对；侧栏“PDF 处理”统一书库管理和原整本 OCR。长期保存 PDF 与逐页文字，每次组合使用固定材料版本。上传不自动 OCR，已准备页直接复用；支持历史 OCR 导入、修订冲突、归档和材料 PDF／TXT 下载。沿用当前服务，SQLite 和文件保存在 `data/library/`，不引入账户系统。
 
 ## 后端模块化：四类能力，按场景组合
 

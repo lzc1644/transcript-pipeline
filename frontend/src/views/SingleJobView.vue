@@ -16,7 +16,7 @@ import {
   NSpace,
   useMessage,
 } from "naive-ui";
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch, nextTick } from "vue";
 
 import { getJob, getRefineDefaultInstruction, type JobState, submitJob } from "../api/client";
 import FastModeSwitch from "../components/FastModeSwitch.vue";
@@ -54,6 +54,13 @@ const defaultRefinePrompt = ref("");
 const pollHandle = ref<number | null>(null);
 const referenceMode = ref<"upload" | "library">("upload");
 const selectedMaterial = ref<LibraryRevision | null>(null);
+const materialPicker = ref<InstanceType<typeof LibraryMaterialPicker> | null>(null);
+watch(referenceMode, async mode => {
+  if (mode === "library") {
+    await nextTick();
+    materialPicker.value?.openComposer();
+  }
+});
 
 const form = reactive({
   content_type: "book_club",
@@ -198,7 +205,7 @@ async function submit() {
     return;
   }
   if (!isConversation.value && referenceMode.value === "library" && !selectedMaterial.value) {
-    message.warning("请选择书库材料的固定版本。");
+    message.warning("请先从书库选页，组合本次参考材料。");
     return;
   }
   if (
@@ -310,7 +317,7 @@ onBeforeUnmount(stopPolling);
                     :accept="referenceAccept"
                     button-text="选择并上传本机参考源"
                   />
-                  <LibraryMaterialPicker v-else v-model="selectedMaterial" />
+                  <LibraryMaterialPicker v-else ref="materialPicker" v-model="selectedMaterial" />
                 </n-space>
               </n-form-item>
               <n-form-item label="成果获取方式" required>

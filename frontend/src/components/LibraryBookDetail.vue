@@ -155,6 +155,12 @@ onMounted(() => void loadPage(1, true));
         <n-button size="small" :type="panel === 'preview' ? 'primary' : 'default'" @click="panel = 'preview'">原页</n-button>
         <n-button size="small" :type="panel === 'text' ? 'primary' : 'default'" @click="panel = 'text'">文字</n-button>
       </div>
+      <div class="range-picker range-picker--desktop">
+        <strong>加入本次材料</strong>
+        <label>PDF 第 <n-input-number v-model:value="first" :min="1" :max="book.page_count" :show-button="false" :input-props="{ 'aria-label': '起始 PDF 页码' }" size="small" class="page-number" /> 页</label>
+        <label>至 <n-input-number v-model:value="last" :min="1" :max="book.page_count" :show-button="false" :input-props="{ 'aria-label': '结束 PDF 页码' }" size="small" class="page-number" /> 页</label>
+        <n-button type="primary" secondary @click="addRange">加入页段</n-button>
+      </div>
       <div class="range-picker range-picker--mobile">
         <strong>选页</strong>
         <n-input-number v-model:value="first" :min="1" :max="book.page_count" :show-button="false" :input-props="{ 'aria-label': '起始 PDF 页码' }" size="small" class="page-number" />
@@ -194,12 +200,6 @@ onMounted(() => void loadPage(1, true));
         </template>
       </section>
     </div>
-    <div class="range-picker range-picker--desktop">
-      <strong>加入本次材料</strong>
-      <label>PDF 第 <n-input-number v-model:value="first" :min="1" :max="book.page_count" :show-button="false" size="small" class="page-number" /> 页</label>
-      <label>至 <n-input-number v-model:value="last" :min="1" :max="book.page_count" :show-button="false" size="small" class="page-number" /> 页</label>
-      <n-button type="primary" secondary @click="addRange">加入页段</n-button>
-    </div>
   </section>
 </template>
 
@@ -215,7 +215,7 @@ onMounted(() => void loadPage(1, true));
 .preview-pane img { display:block; width:100%; height:auto; background:white; box-shadow:0 2px 14px #0002; }
 .text-heading { display:flex; justify-content:space-between; align-items:center; gap:10px; }.history-text { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; max-height:300px; overflow:auto; }
 .history-list details { border-top:1px solid var(--border-subtle); padding:8px 0; }.history-list h5 { margin:0 0 8px; }.mobile-switch { display:none; }
-.range-picker--desktop { border-top:1px solid var(--border-subtle); padding-top:16px; }.range-picker--mobile { display:none; }
+.range-picker--desktop { padding:8px 0; }.range-picker--mobile { display:none; }
 @media(max-width:700px) {
   .page-controls { position:sticky; top:0; z-index:20; align-self:start; gap:8px; padding:8px 0; background:var(--surface-canvas); border-bottom:1px solid var(--border-subtle); }
   .page-controls .page-number { width:62px; }
