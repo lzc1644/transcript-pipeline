@@ -1618,7 +1618,6 @@ onBeforeUnmount(stopPolling);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
-  align-items: center;
   gap: 14px;
   -webkit-overflow-scrolling: touch;
 }
@@ -1627,6 +1626,8 @@ onBeforeUnmount(stopPolling);
   display: flex;
   flex-direction: column;
   align-items: center;
+  margin-left: auto;
+  margin-right: auto;
   background: var(--surface-canvas);
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
@@ -1720,6 +1721,8 @@ onBeforeUnmount(stopPolling);
   display: flex;
   flex-direction: column;
   padding: 6px 12px 10px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .mode-fit-page .page-card-header {
@@ -1757,6 +1760,8 @@ onBeforeUnmount(stopPolling);
   height: auto;
   flex-shrink: 0;
   padding: 8px 12px 12px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .mode-fit-width .page-image-wrapper {

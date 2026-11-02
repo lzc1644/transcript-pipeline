@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { onBeforeRouteLeave, useRoute } from "vue-router";
 import {
   NAlert,
   NButton,
@@ -138,6 +138,42 @@ const isMaterialDirty = computed(() => {
     JSON.stringify(ranges.value) !== JSON.stringify(material.value.ranges)
   );
 });
+
+const hasUnsavedChanges = computed(() => {
+  if (tab.value === "books" && book.value && bookDirty.value) {
+    return true;
+  }
+  if (tab.value === "materials" && isMaterialDirty.value) {
+    return true;
+  }
+  return false;
+});
+
+function getUnsavedPrompt(): string {
+  if (tab.value === "books" && book.value && bookDirty.value) {
+    return "当前有未保存的页面或书籍修改，离开后将丢失。确定要离开吗？";
+  }
+  if (tab.value === "materials" && isMaterialDirty.value) {
+    return "当前材料草稿有未保存的修改，离开后将丢失。确定要离开吗？";
+  }
+  return "当前有未保存的修改，离开后将丢失。确定要离开吗？";
+}
+
+onBeforeRouteLeave(() => {
+  if (hasUnsavedChanges.value) {
+    if (!window.confirm(getUnsavedPrompt())) {
+      return false;
+    }
+  }
+});
+
+function handleBeforeUnload(event: BeforeUnloadEvent) {
+  if (hasUnsavedChanges.value) {
+    event.preventDefault();
+    event.returnValue = "";
+    return "";
+  }
+}
 
 const selectedPages = computed(() =>
   ranges.value.reduce((total, range) => total + range.end_page - range.start_page + 1, 0)
@@ -642,6 +678,7 @@ async function switchArchived() {
 }
 
 onMounted(async () => {
+  window.addEventListener("beforeunload", handleBeforeUnload);
   try {
     settings.value = await getFrontendSettings();
   } catch (error) {
@@ -658,6 +695,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener("beforeunload", handleBeforeUnload);
   if (poll !== null) {
     window.clearInterval(poll);
   }

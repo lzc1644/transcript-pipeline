@@ -208,6 +208,27 @@ try {
   const changed = await fetch(`${base}/api/library/books/${a.id}/pages/1/text`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '他人的修改', base_revision_id: pageBefore.current_revision_id, note: '' }) });
   assert.equal(changed.status, 200);
   await page.getByPlaceholder('输入或修改本页文字').fill('我的修改');
+
+  // Route leave protection & beforeunload check when modifications exist
+  const beforeUnloadBlocked = await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  assert(beforeUnloadBlocked, 'beforeunload must be prevented when page is dirty');
+
+  let leaveDialogSeen = false;
+  page.once('dialog', dialog => {
+    assert.match(dialog.message(), /未保存/);
+    leaveDialogSeen = true;
+    dialog.dismiss();
+  });
+  await page.getByRole('link', { name: '整本 OCR' }).click();
+  await page.waitForTimeout(200);
+  assert(leaveDialogSeen, 'Route leave must trigger confirmation dialog when page is dirty');
+  assert(page.url().includes('/pdf/library'), 'Route navigation must be canceled when dismissed');
+  assert.equal(await page.getByPlaceholder('输入或修改本页文字').inputValue(), '我的修改');
+
   page.once('dialog', dialog => dialog.dismiss());
   await page.getByRole('button', { name: /本次材料/ }).click();
   assert.equal(await page.getByPlaceholder('输入或修改本页文字').inputValue(), '我的修改');

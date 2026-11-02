@@ -320,6 +320,63 @@ try {
     await composer.waitFor({ state: 'visible' });
     assert(await footer.getByRole('button', { name: '生成材料' }).isVisible());
   });
+
+  await record('放大预览无裁切与左右边缘访问', async () => {
+    await page.locator('.book-choice').first().click();
+    await page.waitForSelector('.preview-scroll .pdf-page-card');
+
+    // Test Fit Width at 150% zoom
+    await page.getByRole('button', { name: '适应宽度' }).click();
+    await page.getByRole('button', { name: '放大' }).click();
+    await page.getByRole('button', { name: '放大' }).click();
+    await page.waitForTimeout(200);
+
+    const zoomCheck = await page.evaluate(() => {
+      const scroll = document.querySelector('.preview-scroll');
+      const card = document.querySelector('.pdf-page-card');
+      const img = document.querySelector('.pdf-page-img');
+
+      scroll.scrollLeft = 0;
+      const leftAt0 = card.getBoundingClientRect().left - scroll.getBoundingClientRect().left;
+      const imgLeftAt0 = img.getBoundingClientRect().left - scroll.getBoundingClientRect().left;
+
+      scroll.scrollLeft = scroll.scrollWidth;
+      const rightAtEnd = scroll.getBoundingClientRect().right - card.getBoundingClientRect().right;
+
+      return {
+        leftAt0,
+        imgLeftAt0,
+        rightAtEnd,
+        maxScroll: scroll.scrollWidth - scroll.clientWidth,
+      };
+    });
+
+    assert(zoomCheck.leftAt0 >= 0, `Card left edge must not be clipped: ${JSON.stringify(zoomCheck)}`);
+    assert(zoomCheck.imgLeftAt0 >= 0, `Image left edge must not be clipped: ${JSON.stringify(zoomCheck)}`);
+    assert(zoomCheck.rightAtEnd >= 0, `Card right edge must be reachable: ${JSON.stringify(zoomCheck)}`);
+    assert(zoomCheck.maxScroll > 50, `Must be horizontally scrollable when zoomed: ${JSON.stringify(zoomCheck)}`);
+
+    // Reset zoom and check centering
+    await page.getByRole('button', { name: '适应整页' }).click();
+    await page.locator('.zoom-reset-btn').click();
+    await page.waitForTimeout(200);
+
+    const centerDiff = await page.evaluate(() => {
+      const scroll = document.querySelector('.preview-scroll');
+      const card = document.querySelector('.pdf-page-card');
+      const scrollRect = scroll.getBoundingClientRect();
+      const cardRect = card.getBoundingClientRect();
+      return Math.abs((cardRect.left - scrollRect.left) - (scrollRect.right - cardRect.right));
+    });
+    assert(centerDiff <= 2, `Card must be centered when smaller than container: diff=${centerDiff}`);
+
+    // Verify fullscreen toggle expands preview to full width
+    await page.getByRole('button', { name: '全屏' }).click();
+    await page.waitForTimeout(200);
+    const fsWidth = await page.evaluate(() => document.querySelector('.preview-panel')?.getBoundingClientRect().width ?? 0);
+    assert(fsWidth > 900, `Fullscreen preview width must expand, got: ${fsWidth}`);
+    await page.getByRole('button', { name: '恢复三栏' }).click();
+  });
   assert.deepEqual(errors, []);
   await writeFile(`${output}/composer-report.json`, JSON.stringify({ result: 'passed', isolated: true, model_execution: false,
     real_books: [realA.title, realB.title], selected_revision: revision.id, ocr_test_requests_mocked: ocrRequests,
