@@ -249,6 +249,33 @@ try {
   await page.getByRole('button', { name: '加入页段' }).click();
   await page.getByRole('button', { name: /本次材料/ }).click();
   await page.getByPlaceholder('例如：第十二次读书会').fill('第十二次读书会');
+
+  // Verify switching to "书籍" tab preserves draft and retains route leave / beforeunload protection
+  await page.getByRole('button', { name: '书籍' }).click();
+  await page.waitForTimeout(200);
+
+  const draftUnloadBlocked = await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+  assert(draftUnloadBlocked, 'beforeunload must be prevented on books tab when hidden material draft is dirty');
+
+  let draftLeaveDialogSeen = false;
+  page.once('dialog', dialog => {
+    assert.match(dialog.message(), /材料草稿有未保存的修改/);
+    draftLeaveDialogSeen = true;
+    dialog.dismiss();
+  });
+  await page.getByRole('link', { name: '整本 OCR' }).click();
+  await page.waitForTimeout(200);
+  assert(draftLeaveDialogSeen, 'Route leave from books tab must prompt when hidden material draft is dirty');
+  assert(page.url().includes('/pdf/library'), 'Route navigation must be canceled when dismissed');
+
+  // Switch back to "参考材料" and verify draft name was preserved
+  await page.getByRole('button', { name: /本次材料/ }).click();
+  assert.equal(await page.getByPlaceholder('例如：第十二次读书会').inputValue(), '第十二次读书会');
+
   await page.getByRole('button', { name: '上移第 3 段' }).click();
   const text = await page.locator('.ranges li').allTextContents();
   assert.match(text[0], /A.*1—1/); assert.match(text[1], /B.*1—1/); assert.match(text[2], /A.*2—2/);

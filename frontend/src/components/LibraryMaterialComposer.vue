@@ -2061,20 +2061,30 @@ onBeforeUnmount(stopPolling);
     height: auto;
     max-height: none;
     min-height: calc(560px * var(--zoom, 1));
-    width: 100%;
+    width: calc(100% * var(--zoom, 1));
+    max-width: none;
+    margin-left: auto;
+    margin-right: auto;
   }
 
   .mode-fit-page .page-image-wrapper {
     flex: none;
     height: auto;
     min-height: calc(280px * var(--zoom, 1));
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
   }
 
   .mode-fit-page .pdf-page-img {
-    width: calc(100% * var(--zoom, 1));
+    width: 100%;
     height: auto;
     max-height: none;
     max-width: none;
+    margin-left: auto;
+    margin-right: auto;
+    display: block;
   }
 
   .composer-footer {

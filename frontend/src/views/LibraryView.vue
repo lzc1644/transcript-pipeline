@@ -139,21 +139,21 @@ const isMaterialDirty = computed(() => {
   );
 });
 
-const hasUnsavedChanges = computed(() => {
-  if (tab.value === "books" && book.value && bookDirty.value) {
-    return true;
-  }
-  if (tab.value === "materials" && isMaterialDirty.value) {
-    return true;
-  }
-  return false;
-});
+const hasBookChanges = computed(() => Boolean(book.value && bookDirty.value));
+const hasMaterialChanges = computed(() => Boolean(isMaterialDirty.value));
+
+const hasUnsavedChanges = computed(
+  () => hasBookChanges.value || hasMaterialChanges.value
+);
 
 function getUnsavedPrompt(): string {
-  if (tab.value === "books" && book.value && bookDirty.value) {
+  if (hasBookChanges.value && hasMaterialChanges.value) {
+    return "当前有未保存的书籍修改和材料草稿，离开后将丢失。确定要离开吗？";
+  }
+  if (hasBookChanges.value) {
     return "当前有未保存的页面或书籍修改，离开后将丢失。确定要离开吗？";
   }
-  if (tab.value === "materials" && isMaterialDirty.value) {
+  if (hasMaterialChanges.value) {
     return "当前材料草稿有未保存的修改，离开后将丢失。确定要离开吗？";
   }
   return "当前有未保存的修改，离开后将丢失。确定要离开吗？";

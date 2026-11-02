@@ -377,6 +377,55 @@ try {
     assert(fsWidth > 900, `Fullscreen preview width must expand, got: ${fsWidth}`);
     await page.getByRole('button', { name: '恢复三栏' }).click();
   });
+
+  await record('手机默认适应整页放大预览无裁切与边缘访问', async () => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const tabs = composer.locator('.mobile-tabs');
+    if (await tabs.isVisible()) await tabs.getByRole('button', { name: '预览选页', exact: true }).click();
+    await page.waitForSelector('.preview-scroll .pdf-page-card');
+
+    // Default is "适应整页"; zoom to 150%
+    await page.getByRole('button', { name: '放大' }).click();
+    await page.getByRole('button', { name: '放大' }).click();
+    await page.waitForTimeout(200);
+
+    const mobileZoomCheck = await page.evaluate(() => {
+      const scroll = document.querySelector('.preview-scroll');
+      const card = document.querySelector('.pdf-page-card');
+      const img = document.querySelector('.pdf-page-img');
+
+      scroll.scrollLeft = 0;
+      const leftAt0 = card.getBoundingClientRect().left - scroll.getBoundingClientRect().left;
+      const imgLeftAt0 = img.getBoundingClientRect().left - scroll.getBoundingClientRect().left;
+
+      scroll.scrollLeft = scroll.scrollWidth;
+      const rightAtEnd = scroll.getBoundingClientRect().right - img.getBoundingClientRect().right;
+
+      return {
+        leftAt0,
+        imgLeftAt0,
+        rightAtEnd,
+        maxScroll: scroll.scrollWidth - scroll.clientWidth,
+      };
+    });
+
+    assert(mobileZoomCheck.leftAt0 >= 0, `Mobile card left edge must not be clipped: ${JSON.stringify(mobileZoomCheck)}`);
+    assert(mobileZoomCheck.imgLeftAt0 >= 0, `Mobile image left edge must not be clipped: ${JSON.stringify(mobileZoomCheck)}`);
+    assert(mobileZoomCheck.rightAtEnd >= 0, `Mobile image right edge must be reachable: ${JSON.stringify(mobileZoomCheck)}`);
+    assert(mobileZoomCheck.maxScroll > 50, `Mobile must be horizontally scrollable when zoomed: ${JSON.stringify(mobileZoomCheck)}`);
+
+    // Reset zoom and check that horizontal scroll disappears at 100%
+    await page.locator('.zoom-reset-btn').click();
+    await page.waitForTimeout(200);
+    const mobile100Check = await page.evaluate(() => {
+      const scroll = document.querySelector('.preview-scroll');
+      return scroll.scrollWidth - scroll.clientWidth;
+    });
+    assert.equal(mobile100Check, 0, 'Mobile must not overflow horizontally at 100% zoom');
+
+    // Restore desktop viewport
+    await page.setViewportSize({ width: 1440, height: 1000 });
+  });
   assert.deepEqual(errors, []);
   await writeFile(`${output}/composer-report.json`, JSON.stringify({ result: 'passed', isolated: true, model_execution: false,
     real_books: [realA.title, realB.title], selected_revision: revision.id, ocr_test_requests_mocked: ocrRequests,
