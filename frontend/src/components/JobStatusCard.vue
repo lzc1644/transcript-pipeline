@@ -1073,6 +1073,9 @@ function getStepState(stageKey: string): "completed" | "active" | "failed" | "pe
 .summary-cell.is-wide { grid-column: 1 / -1; }
 .summary-cell strong { display: block; margin-top: 4px; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
 .status-detail { padding-top: 8px; }
+.library-attachments { padding: 12px 16px; background: var(--surface-subtle); border-radius: 8px; border-left: 3px solid var(--primary); }
+.library-attachments a { color: var(--primary); font-size: 13px; text-decoration: underline; text-underline-offset: 3px; }
+.library-attachments a:hover { opacity: 0.85; }
 .pipeline-section, .batch-items-section { min-width: 0; }
 .pipeline-title, .batch-items-title, .rerun-title { margin: 0 0 12px; font-size: 14px; font-weight: 600; }
 .pipeline-flow { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 12px 8px; }

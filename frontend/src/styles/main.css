@@ -14,6 +14,7 @@
   --surface-subtle: #e5e4de;
   --surface-raised: #f5f4ef;
   --surface-overlay: #f5f4ef;
+  --surface-card: #f5f4ef;
   --border-subtle: #dcdad3;
   --border-strong: #ceccc4;
   --color-success: #18784a;
@@ -43,6 +44,7 @@
   --surface-subtle: #202125;
   --surface-raised: #24252a;
   --surface-overlay: #24252a;
+  --surface-card: #24252a;
   --border-subtle: #2e2f35;
   --border-strong: #36373e;
   --color-success: #7fcea1;
